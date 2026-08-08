@@ -2,7 +2,7 @@
 # 安装内置 Noto Sans CJK 到系统/用户字体目录
 # （ofd-core 渲染中文兜底；fontdb 直接扫描目录，无需 fc-cache 亦生效）
 set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$DIR/fonts/NotoSansCJK-Regular.ttc"
 [ -f "$SRC" ] || { echo "未找到字体: $SRC"; exit 1; }
 
