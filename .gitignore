@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+# 第三方预编译库按架构分目录；x64 仅本地验证用，不入库
+third_party/*/x64
+third_party/*/aarch64
+third_party/*.tgz
+third_party/dl/
+# 构建/打包产物
+/dist
+# CJK 字体由 scripts/install-font.sh 安装，不入库
+/fonts
+# 真实公文样本体积大，不入库；tests/samples 生成样本保留
+/tests/real_samples
