@@ -157,7 +157,7 @@ fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
             push_line_region(&seg, &line, page, &mut regions);
         }
 
-        for t in reading_order::order_text_regions(&regions) {
+        for t in reading_order::postprocess_lines(reading_order::order_text_regions(&regions)) {
             out.push_str(&t);
             out.push('\n');
         }

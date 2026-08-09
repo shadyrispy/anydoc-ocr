@@ -74,7 +74,9 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                     .into_iter()
                     .map(|(x0, x1, y0, y1, s)| (x0 as f32, x1 as f32, y0 as f32, y1 as f32, s))
                     .collect();
-                let md = reading_order::order_text_regions(&regions).join("\n");
+                let md =
+                    reading_order::postprocess_lines(reading_order::order_text_regions(&regions))
+                        .join("\n");
                 out_pages.push(md);
             }
         }
