@@ -7,7 +7,7 @@
 //! 表格区域单独用 `html_structure` 输出，并剔除落在表格内的文本区域以防重复。
 //!
 //! 阅读顺序由公共模块 `crate::reading_order` 还原（双列感知），与文字层通路共用。
-use crate::reading_order::{order_text_regions, postprocess_lines};
+use crate::reading_order::{order_text_regions, postprocess_lines, title_level};
 use oar_ocr::domain::structure::StructureResult;
 
 /// 多页 StructureResult 转为 GFM 文本。
@@ -49,7 +49,8 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 );
             }
         }
-        for t in postprocess_lines(order_text_regions(&regions)) {
+        let lines = postprocess_lines(order_text_regions(&regions));
+        for t in apply_title_prefixes(lines, page) {
             out.push_str(&t);
             out.push('\n');
         }
@@ -61,6 +62,52 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+/// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
+///
+/// MinerU 式标题检测：仅对 `LayoutElementType::is_title()`（DocTitle/ParagraphTitle）
+/// 的块加前缀；级别来自编号启发式 `title_level`，无编号的短标题（<=40 字符、
+/// 不以 。，；： 结尾）回落为 `##`。匹配规则：输出行 trim 后与标题文本相等
+/// 或一方包含另一方；已带 `#` 前缀的行跳过，防双重标记。
+fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<String> {
+    let mut titles: Vec<(String, usize)> = Vec::new();
+    for el in &page.layout_elements {
+        if !el.element_type.is_title() {
+            continue;
+        }
+        let Some(t) = el.text.as_ref() else { continue };
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // 编号启发式；无编号且像标题（短、无句末标点）→ 2
+        let level = title_level(t).or_else(|| {
+            let n = t.chars().count();
+            (n > 0 && n <= 40 && !t.ends_with(['。', '，', '；', '：'])).then_some(2)
+        });
+        if let Some(lv) = level {
+            titles.push((t.to_string(), lv));
+        }
+    }
+    if titles.is_empty() {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                return line;
+            }
+            for (tt, lv) in &titles {
+                let lt = line.trim();
+                if lt == tt || lt.contains(tt.as_str()) || tt.contains(lt) {
+                    return format!("{} {}", "#".repeat(*lv), line);
+                }
+            }
+            line
+        })
+        .collect()
 }
 
 /// 剥离 oar-ocr 表格 HTML 的 `<html>/<body>` 包裹（若有），仅保留 `<table>`。

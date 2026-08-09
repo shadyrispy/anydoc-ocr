@@ -10,8 +10,11 @@
 //! （先于列检测糊掉列边界），所以这里在检测到双列后**按 gutter 拆行**，把每行
 //! 拆成列内独立行，再交给 `order_text_regions` 做左列全→右列全。
 //!
-//! T2-A：文字层输出为纯行文本（与 OCR 通路的正文行一致），表格**不会**以 HTML
-//! 形式输出（已知限制）；OCR 通路 / `--pdf-force-ocr` 会输出表格 HTML。
+//! T2-B：文字层通路对"含表格页"回退 OCR——复用 pdf-inspector 全文档布局复杂度
+//! 检测（rect→line→启发式三级，`PagesExtractionResult::pages_with_tables`，TOC
+//! 页不计入），命中页渲染单页后走 OCR 管线输出 `<table>` HTML（MinerU 对齐：
+//! 表格只出自识别模型，不来自文字层），其余页保持快速文字层；页序混排保序，
+//! OCR 失败回落该页文字层。`--pdf-force-ocr` 仍为整文档 OCR。
 //!
 //! T2-B：跨页重复的"页面家具/水印"（页眉/页脚/居中/斜向水印）在文字层按
 //! "同文本 + 同归一化位置跨页重复达阈值"剔除，避免污染阅读顺序。
@@ -34,7 +37,7 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     // 文字型：pdf-inspector 提取 + 自建阅读顺序；非文字型/失败回退 OCR。
     // --pdf-force-ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
     if !opts.pdf_force_ocr {
-        if let Some(md) = text_layer_markdown(path)? {
+        if let Some(md) = text_layer_markdown(path, opts)? {
             return Ok(md);
         }
     }
@@ -50,10 +53,11 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     Ok(md)
 }
 
-/// 文字层 Markdown：pdf-inspector 提取 TextItem → 列感知拆行 → 排序。
+/// 文字层 Markdown：pdf-inspector 提取 TextItem → 列感知拆行 → 排序；
+/// 含表格页回退 OCR 输出 `<table>` HTML（见模块文档 T2-B）。
 ///
 /// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
-fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
+fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
     // 坏字体（GID/编码损坏）防护：调用 pdf-inspector 的健壮检测器做一次全文档
     // markdown 抽取（其内部本就全页抽取），统计被判 `suspected_garbled_text` 的页数。
     // 系统性坏字体 → 大量页面乱码（占比高）→ 文字层不可信，回退 OCR；健康文档即使
@@ -62,22 +66,28 @@ fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
     // 检不出）由此兜住。开销约 0.3s（全页 markdown 构建），可接受。
     // 注：原设想"第 1 页 pages_needing_ocr 非空即坏字体"对本样例不成立——封面页
     // 干净而正文全坏，故改为全文档占比判定。
-    if let Ok(extraction) = pdf_inspector::extract_pages_markdown(path, None) {
-        let total = extraction.pages.len();
-        let garbled = extraction
-            .ocr_reasons_by_page
-            .iter()
-            .filter(|r| {
-                r.reasons
-                    .iter()
-                    .any(|s| s == pdf_inspector::OCR_REASON_SUSPECTED_GARBLED_TEXT)
-            })
-            .count();
-        // 乱码页占比 >=20% 且至少 3 页 → 判定系统性坏字体，回退 OCR。
-        if garbled >= 3 && total > 0 && garbled * 100 >= total * 20 {
-            return Ok(None);
+    // 同一次抽取顺带拿到 `pages_with_tables`（1 起始页号）——布局复杂度检测与
+    // 文本抽取同内存，近乎零额外开销，直接作为表格页判据（见模块文档 T2-B）。
+    let extraction = match pdf_inspector::extract_pages_markdown(path, None) {
+        Ok(extraction) => {
+            let total = extraction.pages.len();
+            let garbled = extraction
+                .ocr_reasons_by_page
+                .iter()
+                .filter(|r| {
+                    r.reasons
+                        .iter()
+                        .any(|s| s == pdf_inspector::OCR_REASON_SUSPECTED_GARBLED_TEXT)
+                })
+                .count();
+            // 乱码页占比 >=20% 且至少 3 页 → 判定系统性坏字体，回退 OCR。
+            if garbled >= 3 && total > 0 && garbled * 100 >= total * 20 {
+                return Ok(None);
+            }
+            Some(extraction)
         }
-    }
+        Err(_) => None,
+    };
     let items = match pdf_inspector::extract_text_with_positions(path) {
         Ok(items) => items,
         Err(_) => return Ok(None),
@@ -109,8 +119,52 @@ fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
         by_page.entry(item.page).or_default().push(item);
     }
 
+    // T2-B：表格页走 OCR 通路。pdf-inspector 布局复杂度检测（rect→line→启发式
+    // 三级、band 内检测、TOC 不计入）给出的 `pages_with_tables` 为 1 起始页号，
+    // 与 TextItem.page 一致。仅当命中表格页才整文档懒渲染一次，批量 OCR 表格页
+    // （一次构建分析器 + 页级并发），结果按单页 `structure_results_to_gfm` 对齐
+    // 回 `table_out`。渲染/OCR 任一环节失败 → 该页无表项 → 回落文字层，不炸文档。
+    let mut table_out: BTreeMap<u32, String> = BTreeMap::new();
+    if let Some(extraction) = extraction.as_ref() {
+        if !extraction.pages_with_tables.is_empty() {
+            if let Ok(images) = render::render_pdf_pages(path, opts.dpi) {
+                // 渲染输出按文档页序（0 起始）；要求页号在范围内，防缺页错位。
+                let table_idx: Vec<(u32, usize)> = extraction
+                    .pages_with_tables
+                    .iter()
+                    .filter(|p| by_page.contains_key(p))
+                    .filter_map(|p| {
+                        let idx = *p as usize - 1;
+                        (idx < images.len()).then_some((*p, idx))
+                    })
+                    .collect();
+                if !table_idx.is_empty() {
+                    let imgs: Vec<image::RgbImage> =
+                        table_idx.iter().map(|(_, i)| images[*i].clone()).collect();
+                    if let Ok(results) =
+                        ocr::ocr_images(imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
+                    {
+                        for ((page, _), res) in table_idx.into_iter().zip(results) {
+                            table_out.insert(
+                                page,
+                                gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut out = String::new();
     for (page, page_items) in by_page {
+        // 表格页：直接用 OCR 通路输出（行 + <table> HTML），页序与文字层混排。
+        if let Some(ocr_md) = table_out.get(&page) {
+            out.push_str(ocr_md);
+            out.push('\n');
+            out.push('\n');
+            continue;
+        }
         let page_w = page_items
             .iter()
             .map(|i| i.x + i.width)
