@@ -5,22 +5,26 @@
 //! 整页图片型文档误判为 `Header`/`Footer`，而 `to_markdown()` 会跳过这些
 //! 类型，导致正文丢失。文本区域是 OCR 的直接、可靠结果，不受版面语义分类影响。
 //! 表格区域单独用 `html_structure` 输出，并剔除落在表格内的文本区域以防重复。
+//!
+//! 阅读顺序由公共模块 `crate::reading_order` 还原（双列感知），与文字层通路共用。
+use crate::reading_order::order_text_regions;
 use oar_ocr::domain::structure::StructureResult;
 
 /// 多页 StructureResult 转为 GFM 文本。
 pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
+    let debug = std::env::var("ANYDOC_DEBUG_GFM").is_ok();
     let mut out = String::new();
-    for page in pages {
-        let mut text: Vec<(f32, f32, String)> = Vec::new();
-        if let Some(regions) = &page.text_regions {
-            for r in regions {
+    for (pi, page) in pages.iter().enumerate() {
+        // 收集文本区域（剔除落在表格内的，避免与表格 HTML 重复）
+        let mut regions: Vec<(f32, f32, f32, f32, String)> = Vec::new();
+        if let Some(regs) = &page.text_regions {
+            for r in regs {
                 let Some(t) = r.text.as_ref() else { continue };
                 let t = t.trim();
                 if t.is_empty() {
                     continue;
                 }
                 let b = &r.bounding_box;
-                // 落在表格 bbox 内的文本由表格 HTML 表达，跳过避免重复
                 let in_table = page.tables.iter().any(|tb| {
                     let tb = &tb.bbox;
                     b.x_min() >= tb.x_min()
@@ -31,16 +35,22 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 if in_table {
                     continue;
                 }
-                text.push((b.y_min(), b.x_min(), t.to_string()));
+                regions.push((b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string()));
             }
         }
-        text.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        });
-        for (_, _, t) in &text {
-            out.push_str(t);
+        if debug && pi < 7 {
+            let pw = regions.iter().map(|r| r.1).fold(0.0_f32, f32::max);
+            eprintln!("[gfm-dbg] page={pi} page_w={pw:.0} n_regions={}", regions.len());
+            for (x0, x1, y0, y1, t) in &regions {
+                let cx = (x0 + x1) / 2.0;
+                let wide = (x1 - x0) > 0.6 * pw;
+                eprintln!(
+                    "[gfm-dbg]   x0={x0:6.0} x1={x1:6.0} cx={cx:6.0} y0={y0:6.0} y1={y1:6.0} wide={wide} | {t}"
+                );
+            }
+        }
+        for t in order_text_regions(&regions) {
+            out.push_str(&t);
             out.push('\n');
         }
         for table in &page.tables {
