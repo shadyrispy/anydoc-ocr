@@ -8,6 +8,7 @@ pub mod gfm_adapter;
 pub mod models;
 pub mod ofd;
 pub mod pdf;
+pub mod reading_order;
 pub mod timing;
 
 pub use convert::{convert_to_markdown, ConvertOptions};
