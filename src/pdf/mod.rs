@@ -199,18 +199,44 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         }
     }
 
-    let mut out = String::new();
-    for (page, _page_items) in by_page {
-        // 表格页（布局确认）：直接用 OCR 通路输出（行 + <table> HTML），页序与文字层混排。
-        if let Some(ocr_md) = table_out.get(&page) {
-            out.push_str(ocr_md);
-            out.push('\n');
-            out.push('\n');
+    // ── 输出装配：文字层网格表（免 OCR、跨页合并）+ OCR 确认表 + 普通行，页序混排 ──
+    let mut segments: BTreeMap<u32, String> = BTreeMap::new();
+    let mut pending: Option<(TableGrid, u32)> = None;
+    for (page, page_items) in by_page.iter() {
+        let page_w = page_w[page];
+        let full_lines = &lines_by_page[page];
+
+        // 1) 文字层网格表格（快速、免 OCR）：按页续接合并（B4）
+        if let Some(grid) = reconstruct_table_grid(page_items, page_w) {
+            match pending.take() {
+                Some((mut p, sp)) if p.cols == grid.cols => {
+                    extend_table_grid(&mut p, grid);
+                    pending = Some((p, sp));
+                }
+                Some((p, sp)) => {
+                    flush_table(&mut segments, p, sp);
+                    pending = Some((grid, *page));
+                }
+                None => pending = Some((grid, *page)),
+            }
             continue;
         }
-        let page_w = page_w[&page];
-        let full_lines = &lines_by_page[&page];
 
+        // 2) 版面 OCR 确认的表格页：直接输出 OCR 通路结果（行 + <table>）
+        if let Some(ocr_md) = table_out.get(page) {
+            if let Some((p, sp)) = pending.take() {
+                flush_table(&mut segments, p, sp);
+            }
+            segments.entry(*page).or_default().push_str(ocr_md);
+            segments.entry(*page).or_default().push_str("\n\n");
+            continue;
+        }
+
+        // 3) 普通页：先冲掉挂起的跨页表，再输出文字层行
+        if let Some((p, sp)) = pending.take() {
+            flush_table(&mut segments, p, sp);
+        }
+        let mut seg_out = String::new();
         // 列间隙检测：行级候选间隙聚类。封面/标题的字母间距是单行现象、每行
         // split_x 各不相同，聚类不到 >=3 行；双列正文的 gutter 在每行同一 x 处
         // 重复出现，聚成主簇 → 只拆这些行，标题行保持整行。
@@ -240,39 +266,249 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
                     for item in sorted.drain(..idx) {
                         seg.push(item);
                     }
-                    push_line_region(&seg, &line, page, &mut regions);
+                    push_line_region(&seg, &line, *page, &mut regions);
                     seg = sorted;
-                    push_line_region(&seg, &line, page, &mut regions);
+                    push_line_region(&seg, &line, *page, &mut regions);
                     continue;
                 }
             }
             seg = sorted;
-            push_line_region(&seg, &line, page, &mut regions);
+            push_line_region(&seg, &line, *page, &mut regions);
         }
 
         for t in reading_order::postprocess_lines(reading_order::order_text_regions(&regions)) {
-            out.push_str(&t);
-            out.push('\n');
+            seg_out.push_str(&t);
+            seg_out.push('\n');
         }
 
         // R3 兜底：末页布局未确认但 pdf-inspector 探针提取到表格（版权栏等小表格）
         // → 文字层行后追加管道表，保证表格信息不丢（保留正文行，仅追加结构）。
-        if page == last_page {
+        if *page == last_page {
             if let Some(tbl) = &last_table_md {
-                out.push('\n');
-                out.push_str(tbl);
-                out.push('\n');
+                seg_out.push('\n');
+                seg_out.push_str(tbl);
+                seg_out.push('\n');
             }
         }
-        out.push('\n');
+        seg_out.push('\n');
+        segments.entry(*page).or_default().push_str(&seg_out);
     }
-
+    if let Some((p, sp)) = pending.take() {
+        flush_table(&mut segments, p, sp);
+    }
+    let mut out = String::new();
+    for (_, seg) in segments {
+        out.push_str(&seg);
+    }
     let md = out.trim_end().to_string();
     if md.is_empty() {
         Ok(None)
     } else {
         Ok(Some(md))
     }
+}
+
+/// 文字层表格网格（行×列文本）。
+struct TableGrid {
+    cols: usize,
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+/// 从一页原始 TextItem 重建表格网格：按 y 组行、行内按 x 间隙聚列。
+/// 要求：列数>=2 且 >=2 行同列数；**列 x 对齐**（同列首格 x 散布小，双列正文参差则拒）；
+/// 非"双列正文"（长句/句末标点单元格占比 <=60%）。
+/// 不使用 `group_into_lines`（其会把单元格拆成独立行）。
+fn reconstruct_table_grid(
+    page_items: &[pdf_inspector::TextItem],
+    page_w: f32,
+) -> Option<TableGrid> {
+    if page_items.len() < 4 {
+        return None;
+    }
+    let mut sorted: Vec<&pdf_inspector::TextItem> = page_items.iter().collect();
+    sorted.sort_by(|a, b| b.y.total_cmp(&a.y)); // PDF 左下原点：y 大=靠上
+    let row_tol = 4.0_f32;
+    let gap_thr = 0.012 * page_w;
+    let mut rows: Vec<Vec<(f32, String)>> = Vec::new();
+    let mut cur: Vec<&pdf_inspector::TextItem> = Vec::new();
+    let mut cur_y = 0.0_f32;
+    for it in sorted {
+        if !cur.is_empty() && (cur_y - it.y).abs() > row_tol {
+            rows.push(cluster_row(&cur, gap_thr));
+            cur.clear();
+        }
+        if cur.is_empty() {
+            cur_y = it.y;
+        }
+        cur.push(it);
+    }
+    if !cur.is_empty() {
+        rows.push(cluster_row(&cur, gap_thr));
+    }
+    // 只保留列数 >=2 的行（丢弃单格散落文本）
+    let rows: Vec<Vec<(f32, String)>> = rows.into_iter().filter(|r| r.len() >= 2).collect();
+    if rows.len() < 2 {
+        return None;
+    }
+    let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for r in &rows {
+        *counts.entry(r.len()).or_default() += 1;
+    }
+    let (cols, col_rows) = counts.iter().max_by_key(|(_, c)| **c)?;
+    let (cols, col_rows) = (*cols, *col_rows);
+    if cols < 2 || col_rows < 2 {
+        return None;
+    }
+    // 对齐到众数列数（不足补空）
+    let mut aligned: Vec<Vec<(f32, String)>> = Vec::new();
+    for r in &rows {
+        let mut a = r.clone();
+        a.resize(cols, (0.0, String::new()));
+        aligned.push(a);
+    }
+    // 列 x 对齐检测：同列首格 x 散布 > 容差 → 列参差（双列正文）→ 拒
+    let col_tol = (0.02 * page_w).max(10.0);
+    for c in 0..cols {
+        let xs: Vec<f32> = aligned
+            .iter()
+            .filter(|r| !r[c].1.is_empty())
+            .map(|r| r[c].0)
+            .collect();
+        if xs.len() >= 2 {
+            let mn = xs.iter().copied().fold(f32::INFINITY, f32::min);
+            let mx = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if mx - mn > col_tol {
+                return None;
+            }
+        }
+    }
+    // 双列正文判定：长句/句末标点单元格占比 >60% → 不是表
+    let mut long = 0usize;
+    let mut total = 0usize;
+    for r in &aligned {
+        for (_, c) in r {
+            if c.is_empty() {
+                continue;
+            }
+            total += 1;
+            if c.chars().count() >= 15
+                || c.ends_with('。')
+                || c.ends_with('，')
+                || c.ends_with('；')
+                || c.ends_with('：')
+            {
+                long += 1;
+            }
+        }
+    }
+    if total > 0 && long * 100 >= total * 60 {
+        return None;
+    }
+    let text_rows: Vec<Vec<String>> = aligned
+        .iter()
+        .map(|r| r.iter().map(|(_, t)| t.clone()).collect())
+        .collect();
+    let header = text_rows[0].clone();
+    let rows = text_rows[1..].to_vec();
+    Some(TableGrid { cols, header, rows })
+}
+
+/// 跨页续接：列数一致时合并（若下页首行 == 已有表头 → 去重表头）。
+fn extend_table_grid(acc: &mut TableGrid, next: TableGrid) {
+    if next.cols != acc.cols {
+        return;
+    }
+    let first_matches = next
+        .rows
+        .first()
+        .map(|r| r == &acc.header)
+        .unwrap_or(false);
+    if first_matches {
+        acc.rows.extend(next.rows.iter().skip(1).cloned());
+    } else {
+        acc.rows.extend(next.rows);
+    }
+}
+
+/// 把已定型的跨页表写入其"首表页"段（保证阅读顺序）。
+fn flush_table(segments: &mut BTreeMap<u32, String>, grid: TableGrid, start_page: u32) {
+    let e = segments.entry(start_page).or_default();
+    e.push_str(&table_grid_to_html(&grid));
+    e.push('\n');
+    e.push('\n');
+}
+
+/// 行内按 x 间隙聚列，返回 (列首格 x, 单元格文本)。
+fn cluster_row(items: &[&pdf_inspector::TextItem], gap_thr: f32) -> Vec<(f32, String)> {
+    let mut cells: Vec<(f32, String)> = Vec::new();
+    let mut cluster: Vec<pdf_inspector::TextItem> = Vec::new();
+    let mut x0 = 0.0_f32;
+    for &it in items {
+        if let Some(prev) = cluster.last() {
+            if it.x - (prev.x + prev.width) > gap_thr {
+                cells.push((x0, join_cell_items(&cluster)));
+                cluster.clear();
+            }
+        }
+        if cluster.is_empty() {
+            x0 = it.x;
+        }
+        cluster.push(it.clone());
+    }
+    if !cluster.is_empty() {
+        cells.push((x0, join_cell_items(&cluster)));
+    }
+    cells
+}
+
+/// 单元格内多个 TextItem 拼接：仅 ASCII 字母数字间加空格（CJK 不加）。
+fn join_cell_items(items: &[pdf_inspector::TextItem]) -> String {
+    let mut s = String::new();
+    for (i, it) in items.iter().enumerate() {
+        if i > 0 {
+            let a = s
+                .chars()
+                .last()
+                .map(|c| c.is_ascii_alphanumeric())
+                .unwrap_or(false);
+            let b = it
+                .text
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphanumeric())
+                .unwrap_or(false);
+            if a && b {
+                s.push(' ');
+            }
+        }
+        s.push_str(it.text.trim());
+    }
+    s
+}
+
+/// TableGrid → `<table><thead>…</thead><tbody>…</tbody></table>`（HTML 转义）。
+fn table_grid_to_html(g: &TableGrid) -> String {
+    let mut s = String::from("<table><thead><tr>");
+    for h in &g.header {
+        s.push_str(&format!("<td>{}</td>", escape_html(h)));
+    }
+    s.push_str("</tr></thead><tbody>");
+    for r in &g.rows {
+        s.push_str("<tr>");
+        for c in r {
+            s.push_str(&format!("<td>{}</td>", escape_html(c)));
+        }
+        s.push_str("</tr>");
+    }
+    s.push_str("</tbody></table>");
+    s
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。
@@ -508,7 +744,10 @@ fn push_line_region(
 
 #[cfg(test)]
 mod tests {
-    use super::{clustered_row_split, is_repeated_furniture, looks_garbled};
+    use super::{
+        clustered_row_split, extend_table_grid, is_repeated_furniture, looks_garbled,
+        reconstruct_table_grid, TableGrid,
+    };
     use pdf_inspector::extractor::TextLine;
     use pdf_inspector::TextItem;
 
@@ -698,5 +937,74 @@ mod tests {
         // 单页文档：pages_needed=3 > total=1 → 空集
         let single = vec![tif("标题", 200.0, 800.0, 100.0, 10.0, 1)];
         assert!(is_repeated_furniture(&single, 3, 1).is_empty());
+    }
+
+    // ── 文字层表格网格重建 + 跨页合并 ──
+
+    fn tcell(t: &str, x: f32, y: f32) -> TextItem {
+        tif(t, x, y, 20.0, 10.0, 1)
+    }
+
+    #[test]
+    fn grid_table_reconstructed_from_items() {
+        // 3 行 × 2 列：header + 2 数据行
+        let items = vec![
+            tcell("ID", 10.0, 90.0),
+            tcell("Name", 60.0, 90.0),
+            tcell("1", 10.0, 80.0),
+            tcell("Alice", 60.0, 80.0),
+            tcell("2", 10.0, 70.0),
+            tcell("Bob", 60.0, 70.0),
+        ];
+        let g = reconstruct_table_grid(&items, 200.0).expect("grid");
+        assert_eq!(g.cols, 2);
+        assert_eq!(g.header, vec!["ID", "Name"]);
+        assert_eq!(g.rows.len(), 2);
+        assert_eq!(g.rows[1], vec!["2", "Bob"]);
+    }
+
+    #[test]
+    fn two_column_prose_not_table() {
+        // 双列正文：单元格长句 → 拒
+        let items = vec![
+            tcell("经研究，市人民政府决定，对下列市政府规章予以修改和废止。", 10.0, 90.0),
+            tcell("受市生态环境部门委托，负责放射源销售单位的许可证核发。", 60.0, 90.0),
+            tcell("一、对下列政府规章的部分条款予以修改，现予公布施行。", 10.0, 80.0),
+            tcell("修改为：市生态环境部门对本市范围内放射性同位素实施统一监管。", 60.0, 80.0),
+            tcell("（一）上海市放射性污染防治若干规定，自2025年1月1日起施行。", 10.0, 70.0),
+            tcell("前增加“Ⅱ类”，并采取有效措施防止放射性污染。", 60.0, 70.0),
+        ];
+        assert!(reconstruct_table_grid(&items, 300.0).is_none());
+    }
+
+    #[test]
+    fn single_column_not_table() {
+        let items = vec![
+            tcell("A", 10.0, 90.0),
+            tcell("B", 10.0, 80.0),
+            tcell("C", 10.0, 70.0),
+        ];
+        assert!(reconstruct_table_grid(&items, 200.0).is_none());
+    }
+
+    #[test]
+    fn cross_page_merge_drops_repeated_header() {
+        let mut acc = TableGrid {
+            cols: 2,
+            header: vec!["ID".into(), "Name".into()],
+            rows: vec![vec!["1".into(), "Alice".into()]],
+        };
+        // 下页：重复表头 + 续行
+        let next = TableGrid {
+            cols: 2,
+            header: vec!["ID".into(), "Name".into()],
+            rows: vec![
+                vec!["ID".into(), "Name".into()],
+                vec!["2".into(), "Bob".into()],
+            ],
+        };
+        extend_table_grid(&mut acc, next);
+        assert_eq!(acc.rows.len(), 2, "表头去重，仅剩 Alice/Bob");
+        assert_eq!(acc.rows[1], vec!["2", "Bob"]);
     }
 }
