@@ -156,14 +156,25 @@ fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<Strin
         .collect()
 }
 
-/// 剥离 oar-ocr 表格 HTML 的 `<html>/<body>` 包裹（若有），仅保留 `<table>`。
+/// 剥离 oar-ocr 表格 HTML 的 `<html>/<body>` 包裹（若有），仅保留 `<table>…</table>`。
+///
+/// 兼容闭合标签缺失 `>` 的畸形输出：实测 oar-ocr 的 html_structure 闭合有时是
+/// `</table`（无 `>`）后直接跟同页正文，`rfind("</table>")` 找不到会返回整个
+/// html（表格后正文混入）。这里用 `rfind("</table")`（不带 `>`）定位闭合，
+/// 截取到闭合标签末尾并补齐缺失的 `>`；表格后的正文由 lines 路径输出，此处丢弃。
 fn simplify_table_html(html: &str) -> String {
     let h = html.trim();
-    if let (Some(s), Some(e)) = (h.find("<table"), h.rfind("</table>")) {
-        // 防御畸形结构（</table> 先于 <table> 出现），避免切片越界 panic
-        if s <= e {
-            let end = (e + 7).min(h.len());
-            return h[s..end].to_string();
+    if let Some(s) = h.find("<table") {
+        if let Some(rel) = h[s..].rfind("</table") {
+            let mut end = s + rel + "</table".len();
+            if h.as_bytes().get(end) == Some(&b'>') {
+                end += 1;
+            }
+            let mut out = h[s..end].to_string();
+            if !out.ends_with('>') {
+                out.push('>');
+            }
+            return out;
         }
     }
     h.to_string()
