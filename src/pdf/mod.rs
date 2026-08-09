@@ -63,6 +63,15 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
 ///
 /// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
 fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
+    // 先做廉价文本提取：图片型/扫描件（items 空）直接回落 OCR，跳过开销大且
+    // pdf-inspector 有行分组 bug（layout.rs:1270 panic）的 garbled 预检。
+    let items = match pdf_inspector::extract_text_with_positions(path) {
+        Ok(items) => items,
+        Err(_) => return Ok(None),
+    };
+    if items.is_empty() {
+        return Ok(None);
+    }
     // 坏字体（GID/编码损坏）防护：调用 pdf-inspector 的健壮检测器做一次全文档
     // markdown 抽取（其内部本就全页抽取），统计被判 `suspected_garbled_text` 的页数。
     // 系统性坏字体 → 大量页面乱码（占比高）→ 文字层不可信，回退 OCR；健康文档即使
@@ -71,9 +80,13 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     // 检不出）由此兜住。开销约 0.3s（全页 markdown 构建），可接受。
     // 注：原设想"第 1 页 pages_needing_ocr 非空即坏字体"对本样例不成立——封面页
     // 干净而正文全坏，故改为全文档占比判定。
-    // 同一次抽取顺带拿到每页 OCR 原因（用于乱码占比判定）。
-    match pdf_inspector::extract_pages_markdown(path, None) {
-        Ok(extraction) => {
+    // 注意：pdf-inspector 内部行分组有 bug（layout.rs:1270 空列集 then_some
+    // 立即求值 panic），garbled 检查的 extract_pages_markdown 也会触发。
+    // 用 catch_unwind 兜底：panic 视为"无法预检"→ 跳过 garbled 检查继续。
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_inspector::extract_pages_markdown(path, None)
+    })) {
+        Ok(Ok(extraction)) => {
             let total = extraction.pages.len();
             let garbled = extraction
                 .ocr_reasons_by_page
@@ -89,14 +102,7 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
                 return Ok(None);
             }
         }
-        Err(_) => {}
-    }
-    let items = match pdf_inspector::extract_text_with_positions(path) {
-        Ok(items) => items,
-        Err(_) => return Ok(None),
-    };
-    if items.is_empty() {
-        return Ok(None);
+        _ => {}
     }
     // 廉价坏字体防护：提取文本若大量出现替换符/私有区/控制符（GID 坏字体常见
     // 特征），文字层输出是乱码，回退 OCR。正常 PDF 几乎无此类字符，零开销。
@@ -140,10 +146,21 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         }
         page_w.insert(page, w);
         page_h.insert(page, h);
-        lines_by_page.insert(
-            page,
-            pdf_inspector::extractor::group_into_lines_preserving_all_text(page_items.clone()),
-        );
+        // 空页防护：pdf-inspector 的 group_into_lines 对空 items 会 panic
+        // （layout.rs index out of bounds）。某页无提取文本（如扫描件夹杂页）
+        // 时跳过行分组，该页后续按无行处理（不崩、回落/空输出）。
+        let lines = if page_items.is_empty() {
+            Vec::new()
+        } else {
+            // pdf-inspector 自身 bug 兜底：group_into_lines 内部
+            // `(len==2).then_some(columns[0])` 对空列集立即求值 → index panic
+            // （layout.rs:1270）。正常页不触发、零开销；异常页回落空行组。
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pdf_inspector::extractor::group_into_lines_preserving_all_text(page_items.clone())
+            }))
+            .unwrap_or_default()
+        };
+        lines_by_page.insert(page, lines);
     }
 
     // ── T2-B/R1/R3：可疑表格页集合（三信号并集，最终确认靠版面 OCR）──
