@@ -14,6 +14,12 @@ use std::path::Path;
 
 use crate::{gfm_adapter, reading_order, timing::StageTimer, ConvertOptions, Result};
 
+/// garbled 检测常量：最多扫描前 4000 个 TextItem；字符总数须 >50，且
+/// 坏字符占比 >=20%（bad * 100 >= total * 20）才判定为乱码。
+const GARBLED_MAX_ITEMS: usize = 4000;
+const GARBLED_MIN_TOTAL: usize = 50;
+const GARBLED_BAD_PERCENT: usize = 20;
+
 pub mod ocr;
 pub mod render;
 
@@ -52,20 +58,7 @@ fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
     // 廉价坏字体防护：提取文本若大量出现替换符/私有区/控制符（GID 坏字体常见
     // 特征），文字层输出是乱码，回退 OCR。正常 PDF 几乎无此类字符，零开销。
     // 注：拉丁扩展乱码（如某些 GID 字体）此处检不出，行为与旧 anydoc 一致。
-    let mut total = 0usize;
-    let mut bad = 0usize;
-    for item in items.iter().take(4000) {
-        for c in item.text.chars() {
-            total += 1;
-            if c == '\u{FFFD}'
-                || ('\u{E000}'..='\u{F8FF}').contains(&c)
-                || c.is_control()
-            {
-                bad += 1;
-            }
-        }
-    }
-    if total > 50 && bad * 100 >= total * 20 {
+    if looks_garbled(&items) {
         return Ok(None);
     }
 
@@ -185,6 +178,26 @@ fn clustered_row_split(
     (dominant.len() >= 3).then(|| dominant.iter().sum::<f32>() / dominant.len() as f32)
 }
 
+/// 坏字体乱码检测：前 4000 个 TextItem 中替换符 `\u{FFFD}`、私有区
+/// (U+E000..=U+F8FF)、控制字符占比达 20% 且字符总数 >50 → 判定乱码，
+/// 文字层应回退 OCR。
+fn looks_garbled(items: &[pdf_inspector::TextItem]) -> bool {
+    let mut total = 0usize;
+    let mut bad = 0usize;
+    for item in items.iter().take(GARBLED_MAX_ITEMS) {
+        for c in item.text.chars() {
+            total += 1;
+            if c == '\u{FFFD}'
+                || ('\u{E000}'..='\u{F8FF}').contains(&c)
+                || c.is_control()
+            {
+                bad += 1;
+            }
+        }
+    }
+    total > GARBLED_MIN_TOTAL && bad * 100 >= total * GARBLED_BAD_PERCENT
+}
+
 /// 把一段（列内）TextItem 组行并转为 region。复用 pdf-inspector 的文本拼接。
 fn push_line_region(
     seg: &[pdf_inspector::TextItem],
@@ -216,4 +229,109 @@ fn push_line_region(
     // PDF 坐标原点左下（y 大=靠上）。reading_order 约定 y 越小越靠上，翻转：-y。
     let y_flip = -line.y;
     regions.push((x_min, x_max, y_flip, y_flip + (y_max_pdf - line.y).max(1.0), text));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clustered_row_split, looks_garbled};
+    use pdf_inspector::extractor::TextLine;
+    use pdf_inspector::TextItem;
+
+    const PAGE_W: f32 = 595.0; // A4 宽（pt）
+
+    fn ti(text: &str, x: f32, width: f32) -> TextItem {
+        TextItem {
+            text: text.to_string(),
+            x,
+            y: 0.0,
+            width,
+            height: 10.0,
+            font: "test".into(),
+            font_size: 10.0,
+            page: 1,
+            is_bold: false,
+            is_italic: false,
+            is_underline: false,
+            is_strikeout: false,
+            item_type: Default::default(),
+            mcid: None,
+        }
+    }
+
+    fn tl(items: Vec<TextItem>) -> TextLine {
+        TextLine {
+            items,
+            y: 0.0,
+            page: 1,
+            adaptive_threshold: 0.0,
+        }
+    }
+
+    /// 双列正文：左列 x≈50..65，右列 x≈340..355，gutter 中点 ≈202.5。
+    /// 4 行重复同一 gutter → 主簇 >=3 → 返回 ≈202.5。
+    #[test]
+    fn two_column_rows_return_gutter_midpoint() {
+        let lines: Vec<TextLine> = (0..4)
+            .map(|_| {
+                tl(vec![
+                    ti("左", 50.0, 5.0),
+                    ti("列", 55.0, 5.0),
+                    ti("文", 60.0, 5.0),
+                    ti("右", 340.0, 5.0),
+                    ti("列", 345.0, 5.0),
+                    ti("文", 350.0, 5.0),
+                ])
+            })
+            .collect();
+        let split = clustered_row_split(&lines, PAGE_W).expect("应检测到双列 gutter");
+        assert!((split - 202.5).abs() < 1e-3, "split={split}");
+    }
+
+    /// 标题行字母间距大（每行 split_x 不同）+ 两行各自不同的大间隙 → 每簇仅 1 行，
+    /// 无 >=3 主簇 → None，标题行保持整行。
+    #[test]
+    fn scattered_gaps_return_none() {
+        // 标题行：等宽字母间距 20（> min_gap 5.95），只产生 1 个候选
+        let title = tl(vec![
+            ti("T", 50.0, 10.0),
+            ti("I", 80.0, 10.0),
+            ti("T", 110.0, 10.0),
+            ti("L", 140.0, 10.0),
+        ]);
+        // 另两行：间隙不同 x 处，各自形成独立簇
+        let row2 = tl(vec![ti("a", 50.0, 20.0), ti("b", 250.0, 20.0)]);
+        let row3 = tl(vec![ti("c", 60.0, 20.0), ti("d", 300.0, 20.0)]);
+        let split = clustered_row_split(&[title, row2, row3], PAGE_W);
+        assert_eq!(split, None);
+    }
+
+    /// 候选行 <3 → None。
+    #[test]
+    fn fewer_than_three_candidate_rows_return_none() {
+        let lines: Vec<TextLine> = (0..2)
+            .map(|_| {
+                tl(vec![
+                    ti("左", 50.0, 5.0),
+                    ti("列", 55.0, 5.0),
+                    ti("右", 340.0, 5.0),
+                    ti("列", 345.0, 5.0),
+                ])
+            })
+            .collect();
+        assert_eq!(clustered_row_split(&lines, PAGE_W), None);
+    }
+
+    /// 大量替换符 \u{FFFD}（占比 50% > 20%）→ 乱码。
+    #[test]
+    fn many_replacement_chars_is_garbled() {
+        let items = vec![ti(&format!("{}{}", "a".repeat(30), "\u{FFFD}".repeat(30)), 0.0, 10.0)];
+        assert!(looks_garbled(&items));
+    }
+
+    /// 正常 CJK/Latin 文本 → 非乱码。
+    #[test]
+    fn normal_text_is_not_garbled() {
+        let items = vec![ti("你好，世界 Hello World, this is a normal sentence.", 0.0, 10.0)];
+        assert!(!looks_garbled(&items));
+    }
 }

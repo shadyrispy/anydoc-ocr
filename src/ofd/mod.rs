@@ -13,8 +13,13 @@ use ofd_core::{OfdReader, RenderOptions};
 
 use crate::gfm_adapter;
 use crate::pdf::ocr;
+use crate::reading_order;
 use crate::timing::StageTimer;
 use crate::{ConvertOptions, Result as CResult};
+
+/// 页型判定阈值：文字总量（字符数）低于该值且存在图像对象时视为图片型页，
+/// 走渲染+OCR；否则按坐标提取文字层（与 `--ofd-force-ocr` 无关的默认判定）。
+const IMAGE_PAGE_MIN_TEXT_CHARS: usize = 5;
 
 /// OFD → Markdown 总入口。
 pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
@@ -47,7 +52,8 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             let texts = collect_text_lines(&page);
             let text_len: usize = texts.iter().map(|(_, _, s)| s.chars().count()).sum();
             let img_count = count_images(&page);
-            let is_image = opts.ofd_force_ocr || (text_len < 5 && img_count > 0);
+            let is_image = opts.ofd_force_ocr
+                || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
                 let img: RgbaImage = reader
@@ -58,18 +64,19 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 out_pages.push(String::new());
                 img_batch.push((slot, rgb));
             } else {
-                // 按 (y, x) 排序：同一行（同 y）的多个 TextObject 按 x 次级排序保证顺序
-                let mut t = texts;
-                t.sort_by(|a, b| {
-                    a.0.partial_cmp(&b.0)
-                        .unwrap_or(Ordering::Equal)
-                        .then(a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
-                });
-                let md = t
+                // 双列/多列阅读顺序：复用共享 `reading_order`（PDF 文字层同一算法）。
+                // 每行 TextObject 是完整一行，用首字符页面坐标作为区域：x_min=x_max=首字符 x
+                // （列检测只看中心 x，行内宽度不影响分列）；y 已按 OFD 左上原点（小=上），
+                // 无需翻转。y_max 取 y+1 仅为满足区域高度非零约定。
+                let regions: Vec<(f32, f32, f32, f32, String)> = texts
                     .into_iter()
-                    .map(|(_, _, s)| s)
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .map(|(y, x, s)| {
+                        let xf = x as f32;
+                        let yf = y as f32;
+                        (xf, xf, yf, yf + 1.0, s)
+                    })
+                    .collect();
+                let md = reading_order::order_text_regions(&regions).join("\n");
                 out_pages.push(md);
             }
         }
@@ -89,7 +96,12 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     Ok(out_pages.join("\n\n"))
 }
 
-/// 收集一页所有 TextObject 的文本，返回 (y, x, 行文本)。
+/// 收集一页所有 TextObject 的文本，返回 (y, x, 行文本)，坐标为**页面坐标**。
+///
+/// `TextCode` 的 X/Y 是对象局部坐标（同一对象内相对原点），实际页面位置需经
+/// 对象边界平移 + CTM 变换得出：`page = boundary + CTM(code)`。OFD 页面坐标系
+/// 原点在左上、y 轴向下（`render` 的 `page_to_device` 直接把物理区左上角映射到
+/// 设备原点），故返回的 y 已是"越小越靠上"，与 `reading_order` 约定一致。
 fn collect_text_lines(page: &PageObject) -> Vec<(f64, f64, String)> {
     let mut out = Vec::new();
     if let Some(content) = &page.content {
@@ -111,11 +123,22 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<(f64, f64, String)>) 
                     .collect();
                 codes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
                 let line: String = codes.iter().map(|(_, t)| *t).collect();
-                let y = t.text_codes.first().and_then(|c| c.y).unwrap_or(0.0);
-                let x = t.text_codes.first().and_then(|c| c.x).unwrap_or(0.0);
-                if !line.trim().is_empty() {
-                    out.push((y, x, line));
+                if line.trim().is_empty() {
+                    continue;
                 }
+                // TextCode 首字符局部坐标 → 页面坐标：boundary 平移 + CTM 变换。
+                let (lx, ly) = t
+                    .text_codes
+                    .first()
+                    .map(|c| (c.x.unwrap_or(0.0), c.y.unwrap_or(0.0)))
+                    .unwrap_or((0.0, 0.0));
+                let (a, b_, c, d, e, f) = match t.ctm.as_ref().map(|m| m.as_slice()) {
+                    Some(m) if m.len() == 6 => (m[0], m[1], m[2], m[3], m[4], m[5]),
+                    _ => (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                };
+                let x = t.boundary.x + a * lx + c * ly + e;
+                let y = t.boundary.y + b_ * lx + d * ly + f;
+                out.push((y, x, line));
             }
             PageBlock::Block(g) => collect_text_blocks(&g.objects, out),
             _ => {}
