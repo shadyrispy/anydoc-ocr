@@ -145,6 +145,59 @@ fn sort_by_y(regions: &[(f32, f32, f32, f32, String)]) -> Vec<String> {
     v.into_iter().map(|(_, t)| t).collect()
 }
 
+/// 行级后处理：西文连字符合并 + 全角 ASCII 归一化。
+///
+/// 借鉴 MinerU `merge_para_with_text`/`full_to_half_exclude_marks`：
+/// - 行尾 ASCII 连字符 + 下行以小写字母开头 → 合并断词（如 "mainten-" + "ance" → "maintenance"）。
+/// - 全角数字/字母 → 半角（０-９→0-9，Ａ-Ｚ→A-Z，ａ-ｚ→a-z）；中文全角标点保留。
+pub fn postprocess_lines(lines: Vec<String>) -> Vec<String> {
+    merge_hyphenated_lines(lines)
+        .into_iter()
+        .map(|l| normalize_full_width_ascii(&l))
+        .collect()
+}
+
+/// 西文连字符合并：行尾 `-` 且下一行以小写字母开头时，去连字符拼接（无空格）。
+fn merge_hyphenated_lines(lines: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut iter = lines.into_iter().peekable();
+    while let Some(mut cur) = iter.next() {
+        loop {
+            let Some(next) = iter.peek() else { break };
+            let cur_trim = cur.trim_end();
+            let Some(base) = cur_trim.strip_suffix('-') else { break };
+            let nxt = next.trim_start();
+            let Some(c) = nxt.chars().next() else { break };
+            if !c.is_ascii_lowercase() {
+                break;
+            }
+            cur = format!("{base}{nxt}");
+            iter.next();
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// 全角数字/字母 → 半角（保留中文全角标点，如 （）《》…）。
+fn normalize_full_width_ascii(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let cp = c as u32;
+        let half = match cp {
+            0xFF10..=0xFF19 => Some((cp - 0xFF10) as u8 + b'0'), // ０-９
+            0xFF21..=0xFF3A => Some((cp - 0xFF21) as u8 + b'A'), // Ａ-Ｚ
+            0xFF41..=0xFF5A => Some((cp - 0xFF41) as u8 + b'a'), // ａ-ｚ
+            _ => None,
+        };
+        match half {
+            Some(b) => out.push(b as char),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::order_text_regions;
@@ -236,5 +289,24 @@ mod tests {
             reg(50.0, 450.0, -200.0, "middle"),
         ];
         assert_eq!(order_text_regions(&regions), vec!["top", "middle", "bottom"]);
+    }
+
+    #[test]
+    fn hyphen_merge_joins_broken_words() {
+        use super::postprocess_lines;
+        // "mainten-" + "ance" → "maintenance"；无连字符行不动
+        let lines = vec!["mainten-".into(), "ance done".into(), "hello".into()];
+        assert_eq!(postprocess_lines(lines), vec!["maintenance done", "hello"]);
+        // 行尾连字符但下行大写开头（如专名/句首）不合并
+        let lines = vec!["well-".into(), "Known".into()];
+        assert_eq!(postprocess_lines(lines), vec!["well-", "Known"]);
+    }
+
+    #[test]
+    fn full_width_ascii_normalized_half_width() {
+        use super::postprocess_lines;
+        // 全角数字/字母转半角；中文全角标点保留
+        let lines = vec!["第１期（总第５７７期）ＡＢＣａｂｃ".into()];
+        assert_eq!(postprocess_lines(lines), vec!["第1期（总第577期）ABCabc"]);
     }
 }

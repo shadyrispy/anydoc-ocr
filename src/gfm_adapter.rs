@@ -7,7 +7,7 @@
 //! 表格区域单独用 `html_structure` 输出，并剔除落在表格内的文本区域以防重复。
 //!
 //! 阅读顺序由公共模块 `crate::reading_order` 还原（双列感知），与文字层通路共用。
-use crate::reading_order::order_text_regions;
+use crate::reading_order::{order_text_regions, postprocess_lines};
 use oar_ocr::domain::structure::StructureResult;
 
 /// 多页 StructureResult 转为 GFM 文本。
@@ -49,7 +49,7 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 );
             }
         }
-        for t in order_text_regions(&regions) {
+        for t in postprocess_lines(order_text_regions(&regions)) {
             out.push_str(&t);
             out.push('\n');
         }
