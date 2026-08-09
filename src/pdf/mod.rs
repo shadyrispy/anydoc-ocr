@@ -12,7 +12,10 @@
 //!
 //! T2-A：文字层输出为纯行文本（与 OCR 通路的正文行一致），表格**不会**以 HTML
 //! 形式输出（已知限制）；OCR 通路 / `--pdf-force-ocr` 会输出表格 HTML。
-use std::collections::BTreeMap;
+//!
+//! T2-B：跨页重复的"页面家具/水印"（页眉/页脚/居中/斜向水印）在文字层按
+//! "同文本 + 同归一化位置跨页重复达阈值"剔除，避免污染阅读顺序。
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use crate::{gfm_adapter, reading_order, timing::StageTimer, ConvertOptions, Result};
@@ -88,6 +91,17 @@ fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
     if looks_garbled(&items) {
         return Ok(None);
     }
+
+    // 跨页重复"页面家具/水印"剔除：同文本 + 同归一化位置（x 中心、y 各 1% 箱）
+    // 出现在 >=pages_needed 个不同页 → 页眉/页脚/水印，剔除后再做行分组。
+    // 单页/页数不足时 pages_needed > total_pages → 零剔除（零误杀）。
+    let total_pages = items.iter().map(|i| i.page).max().unwrap_or(0) as usize;
+    let pages_needed = std::cmp::max(3usize, ((total_pages as f32) * 0.6).ceil() as usize);
+    let furniture = is_repeated_furniture(&items, pages_needed, total_pages);
+    let items: Vec<pdf_inspector::TextItem> = items
+        .into_iter()
+        .filter(|i| !furniture.contains(&(i.page, i.x.to_bits(), i.y.to_bits(), i.text.clone())))
+        .collect();
 
     // 按页分组（TextItem.page 1 起始），页序升序
     let mut by_page: BTreeMap<u32, Vec<pdf_inspector::TextItem>> = BTreeMap::new();
@@ -225,6 +239,76 @@ fn looks_garbled(items: &[pdf_inspector::TextItem]) -> bool {
     total > GARBLED_MIN_TOTAL && bad * 100 >= total * GARBLED_BAD_PERCENT
 }
 
+/// 跨页重复"页面家具/水印"检测：返回需剔除的 TextItem 签名集合
+/// `(page, x_bits, y_bits, text)`（x/y 用 `f32::to_bits()` 存——`f32` 不满足
+/// `Eq`/`Hash`，不能直接作为 `HashSet` 元素；位模式保精度、去重精确）。
+///
+/// 判定规则：trim 后文本相同，且在 >= `pages_needed` 个不同页面出现在相似
+/// 归一化位置（x 中心、y 各自 1% 箱内）→ 页眉/页脚/居中/斜向水印等重复家具。
+///
+/// 归一化：每页页宽≈max(x+width)、页高≈max(y+height)（PDF y 原点左下）；
+/// x_norm=(x+width/2)/页宽，y_norm=(y+height/2)/页高，再取 1% 箱
+/// `(x_norm*100) as i32, (y_norm*100) as i32`。
+///
+/// `page_total < pages_needed`（如单页文档）直接返回空集 → 零误杀。
+fn is_repeated_furniture(
+    items: &[pdf_inspector::TextItem],
+    pages_needed: usize,
+    page_total: usize,
+) -> HashSet<(u32, u32, u32, String)> {
+    if items.is_empty() || page_total < pages_needed {
+        return HashSet::new();
+    }
+    // 每页近似页宽/页高
+    let mut page_max_x: BTreeMap<u32, f32> = BTreeMap::new();
+    let mut page_max_y: BTreeMap<u32, f32> = BTreeMap::new();
+    for it in items {
+        let xr = it.x + it.width;
+        let yr = it.y + it.height;
+        page_max_x
+            .entry(it.page)
+            .and_modify(|m| *m = m.max(xr))
+            .or_insert(xr);
+        page_max_y
+            .entry(it.page)
+            .and_modify(|m| *m = m.max(yr))
+            .or_insert(yr);
+    }
+    let bin = |it: &pdf_inspector::TextItem| -> (i32, i32) {
+        let mx = page_max_x.get(&it.page).copied().unwrap_or(1.0).max(1.0);
+        let my = page_max_y.get(&it.page).copied().unwrap_or(1.0).max(1.0);
+        let x_norm = (it.x + it.width / 2.0) / mx;
+        let y_norm = (it.y + it.height / 2.0) / my;
+        ((x_norm * 100.0) as i32, (y_norm * 100.0) as i32)
+    };
+    // key = (trimmed_text, x_bin, y_bin) → 出现过的不同页集合
+    let mut key_pages: BTreeMap<(String, i32, i32), BTreeSet<u32>> = BTreeMap::new();
+    for it in items {
+        let text = it.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let (xb, yb) = bin(it);
+        key_pages
+            .entry((text.to_string(), xb, yb))
+            .or_default()
+            .insert(it.page);
+    }
+    let furniture: HashSet<(String, i32, i32)> = key_pages
+        .into_iter()
+        .filter(|(_, pages)| pages.len() >= pages_needed)
+        .map(|(k, _)| k)
+        .collect();
+    items
+        .iter()
+        .filter(|it| {
+            let (xb, yb) = bin(it);
+            furniture.contains(&(it.text.trim().to_string(), xb, yb))
+        })
+        .map(|it| (it.page, it.x.to_bits(), it.y.to_bits(), it.text.clone()))
+        .collect()
+}
+
 /// 把一段（列内）TextItem 组行并转为 region。复用 pdf-inspector 的文本拼接。
 fn push_line_region(
     seg: &[pdf_inspector::TextItem],
@@ -260,7 +344,7 @@ fn push_line_region(
 
 #[cfg(test)]
 mod tests {
-    use super::{clustered_row_split, looks_garbled};
+    use super::{clustered_row_split, is_repeated_furniture, looks_garbled};
     use pdf_inspector::extractor::TextLine;
     use pdf_inspector::TextItem;
 
@@ -276,6 +360,26 @@ mod tests {
             font: "test".into(),
             font_size: 10.0,
             page: 1,
+            is_bold: false,
+            is_italic: false,
+            is_underline: false,
+            is_strikeout: false,
+            item_type: Default::default(),
+            mcid: None,
+        }
+    }
+
+    /// 带页面/坐标的 TextItem 构造（家具检测测试用）。
+    fn tif(text: &str, x: f32, y: f32, w: f32, h: f32, page: u32) -> TextItem {
+        TextItem {
+            text: text.to_string(),
+            x,
+            y,
+            width: w,
+            height: h,
+            font: "test".into(),
+            font_size: 10.0,
+            page,
             is_bold: false,
             is_italic: false,
             is_underline: false,
@@ -360,5 +464,75 @@ mod tests {
     fn normal_text_is_not_garbled() {
         let items = vec![ti("你好，世界 Hello World, this is a normal sentence.", 0.0, 10.0)];
         assert!(!looks_garbled(&items));
+    }
+
+    /// 同文本 + 同归一化位置出现在 5/6 页（pages_needed=4）→ 判为家具，签名剔除。
+    /// 正文每页不同（真实正文如此），不受影响。
+    #[test]
+    fn same_text_same_position_on_most_pages_is_furniture() {
+        let mut items: Vec<TextItem> = Vec::new();
+        for page in 1..=6u32 {
+            // 正文每页不同，保证各页 page_max 一致
+            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            if page <= 5 {
+                // 页眉：页 1..5 同一位置
+                items.push(tif("上海市人民政府公报 2025·1", 200.0, 800.0, 100.0, 10.0, page));
+            }
+        }
+        let drop = is_repeated_furniture(&items, 4, 6);
+        // 5 个页眉全部命中
+        assert_eq!(drop.len(), 5, "drop={drop:?}");
+        for page in 1..=5u32 {
+            assert!(drop.contains(&(
+                page,
+                200.0f32.to_bits(),
+                800.0f32.to_bits(),
+                "上海市人民政府公报 2025·1".to_string()
+            )));
+        }
+        // 正文不受影响
+        for page in 1..=6u32 {
+            assert!(!drop.contains(&(
+                page,
+                100.0f32.to_bits(),
+                400.0f32.to_bits(),
+                format!("正文内容第{page}页")
+            )));
+        }
+    }
+
+    /// 同文本但每页位置不同（x 超出 1% 箱）→ 每个 key 仅 1 页 → 非家具。
+    #[test]
+    fn same_text_different_position_per_page_not_furniture() {
+        let mut items: Vec<TextItem> = Vec::new();
+        for page in 1..=6u32 {
+            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            items.push(tif(
+                "WATERMARK",
+                50.0 + page as f32 * 100.0,
+                800.0,
+                30.0,
+                10.0,
+                page,
+            ));
+        }
+        let drop = is_repeated_furniture(&items, 4, 6);
+        assert!(drop.is_empty(), "drop={drop:?}");
+    }
+
+    /// 文本仅出现在 2 页 → 2 < pages_needed → 非家具；单页文档 → 恒空集。
+    #[test]
+    fn rare_text_and_single_page_never_filtered() {
+        let mut items: Vec<TextItem> = Vec::new();
+        for page in 1..=6u32 {
+            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            if page <= 2 {
+                items.push(tif("罕见脚注", 200.0, 50.0, 100.0, 10.0, page));
+            }
+        }
+        assert!(is_repeated_furniture(&items, 4, 6).is_empty());
+        // 单页文档：pages_needed=3 > total=1 → 空集
+        let single = vec![tif("标题", 200.0, 800.0, 100.0, 10.0, 1)];
+        assert!(is_repeated_furniture(&single, 3, 1).is_empty());
     }
 }

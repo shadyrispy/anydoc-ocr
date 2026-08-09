@@ -118,10 +118,40 @@ fn collect_text_lines(page: &PageObject) -> Vec<(f64, f64, f64, f64, String)> {
     out
 }
 
+/// 斜向旋转水印/装饰文字过滤：从 CTM 线性部分计算文本旋转角
+/// （`atan2(b, a)`，单位度，归一化到 [0,360)），若偏离 {0,90,180,270}
+/// 超过 ±12° 则视为斜排水印/装饰文字 → 返回 `true`（跳过）。
+///
+/// 保留 0°/180°（横排正文）与 90°/270°（竖排正文，如中文公文竖排）——
+/// 竖排是合法正文，不得误删。CTM 缺省或畸形（非 6 元）一律视为轴对齐，
+/// 返回 `false`（保留），与调用侧默认一致。角度 NaN 时比较均为 false → 保留。
+///
+/// 实现：`deg % 90.0` 到最近轴角度的角距，360↔0 环绕由取模自动处理；
+/// 1e-9 容差吸收 cos/sin↔atan2 往返的浮点误差（如 348° 重构为
+/// 347.99999999999994 的边界抖动），实际角度分辨率不受影响。
+fn ctm_is_watermark_angle(ctm: &[f64]) -> bool {
+    if ctm.len() != 6 {
+        return false;
+    }
+    let deg = ctm[1].atan2(ctm[0]).to_degrees();
+    let deg = (deg % 360.0 + 360.0) % 360.0; // 归一化到 [0,360)
+    const TOL: f64 = 12.0;
+    let r = deg % 90.0;
+    let nearest_axis_dist = r.min(90.0 - r);
+    nearest_axis_dist > TOL + 1e-9
+}
+
 fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<(f64, f64, f64, f64, String)>) {
     for b in blocks {
         match b {
             PageBlock::Text(t) => {
+                // 斜向旋转的 TextObject（如"太原市人民政府公报"对角水印）在抽取前直接跳过；
+                // 竖排（90/270°）与横排（0/180°）正文不受影响。
+                if let Some(m) = t.ctm.as_ref() {
+                    if ctm_is_watermark_angle(m.as_slice()) {
+                        continue;
+                    }
+                }
                 let mut codes: Vec<(f64, &str)> = t
                     .text_codes
                     .iter()
@@ -180,5 +210,39 @@ fn count_image_blocks(blocks: &[PageBlock], n: &mut usize) {
             PageBlock::Block(g) => count_image_blocks(&g.objects, n),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 角度 → CTM 线性矩阵 [cos,sin,-sin,cos,0,0]。
+    fn ctm(deg: f64) -> [f64; 6] {
+        let r = deg.to_radians();
+        [r.cos(), r.sin(), -r.sin(), r.cos(), 0.0, 0.0]
+    }
+
+    #[test]
+    fn ctm_watermark_angle_detection() {
+        // 轴对齐横排：0°（单位矩阵）→ 保留
+        assert!(!ctm_is_watermark_angle(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]));
+        // 竖排正文：90° / 270° → 保留
+        assert!(!ctm_is_watermark_angle(&ctm(90.0)));
+        assert!(!ctm_is_watermark_angle(&ctm(270.0)));
+        // 反向横排：180° → 保留
+        assert!(!ctm_is_watermark_angle(&ctm(180.0)));
+        // 斜排水印：30° / 45° → 跳过
+        assert!(ctm_is_watermark_angle(&ctm(30.0)));
+        assert!(ctm_is_watermark_angle(&ctm(45.0)));
+        // 容差边界：12° 内保留、超过 12° 跳过
+        assert!(!ctm_is_watermark_angle(&ctm(12.0)));
+        assert!(ctm_is_watermark_angle(&ctm(13.0)));
+        // 360↔0 环绕边界：348°(= -12°) 保留、347° 跳过
+        assert!(!ctm_is_watermark_angle(&ctm(348.0)));
+        assert!(ctm_is_watermark_angle(&ctm(347.0)));
+        // 畸形/缺省 CTM → 视为轴对齐保留
+        assert!(!ctm_is_watermark_angle(&[1.0, 0.0]));
+        assert!(!ctm_is_watermark_angle(&[]));
     }
 }
