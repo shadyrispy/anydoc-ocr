@@ -8,9 +8,14 @@ use pdfium_render::prelude::*;
 /// libpdfium.so 定位优先级：`PDFIUM_LIB_DIR` 环境变量 > 可执行文件旁 `lib/`（打包布局）> 开发期相对路径。
 pub fn render_pdf_pages(path: &Path, dpi: f32) -> Result<Vec<image::RgbImage>> {
     let so = locate_pdfium()?;
-    let bindings = Pdfium::bind_to_library(&so)
-        .with_context(|| format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}"))?;
-    let pdfium = Pdfium::new(bindings);
+    // pdfium 绑定是全局单例：文字层预检（pdf-inspector extract_pages_markdown）
+    // 已初始化时，这里 bind 返回 AlreadyInitialized——用 Pdfium::default() 复用
+    // 既有绑定继续（其内部已处理该错误分支）。
+    let pdfium = match Pdfium::bind_to_library(&so) {
+        Ok(bindings) => Pdfium::new(bindings),
+        Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
+        Err(e) => anyhow::bail!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
+    };
 
     let doc = pdfium
         .load_pdf_from_file(path, None)
