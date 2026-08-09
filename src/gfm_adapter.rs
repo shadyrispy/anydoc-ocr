@@ -113,6 +113,20 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
     if imgs.is_empty() {
         return None;
     }
+    // 区分"示意图"与"被误判为表的超大表格"：layout 有 FigureTitle（图题）且无
+    // TableTitle → 是图形（如 ISO 9001 图1 过程方法图）→ 跳过重建；有 TableTitle
+    // → 是真表（layout 误判 Image，如 C.1）→ 重建。
+    let has_figure = page
+        .layout_elements
+        .iter()
+        .any(|el| el.element_type == LayoutElementType::FigureTitle);
+    let has_table_title = page
+        .layout_elements
+        .iter()
+        .any(|el| el.element_type == LayoutElementType::TableTitle);
+    if has_figure && !has_table_title {
+        return None;
+    }
     let mut blocks: Vec<(f32, f32, f32, f32, String)> = Vec::new();
     if let Some(regs) = &page.text_regions {
         for r in regs {
@@ -445,6 +459,54 @@ mod tests {
         let g = reconstruct_image_table(&page, 100.0).expect("grid");
         assert_eq!(g.cols, 2);
         assert_eq!(g.rows.len(), 3);
+    }
+
+    /// Image 块带图题（FigureTitle）无表题 → 示意图 → 跳过重建。
+    #[test]
+    fn image_block_with_figure_title_skipped() {
+        let page = StructureResult {
+            layout_elements: vec![
+                image_el(0.0, 0.0, 50.0, 60.0),
+                LayoutElement::new(
+                    BoundingBox::from_coords(0.0, 0.0, 20.0, 10.0),
+                    LayoutElementType::FigureTitle,
+                    0.9,
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(5.0, 10.0, 15.0, 15.0, "编号"),
+                tr(20.0, 10.0, 40.0, 15.0, "名称"),
+                tr(5.0, 20.0, 15.0, 25.0, "1"),
+                tr(20.0, 20.0, 40.0, 25.0, "甲"),
+            ]),
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        assert!(reconstruct_image_table(&page, 100.0).is_none());
+    }
+
+    /// Image 块带表题（TableTitle）无图题 → 真表误判 → 重建。
+    #[test]
+    fn image_block_with_table_title_rebuilt() {
+        let page = StructureResult {
+            layout_elements: vec![
+                image_el(0.0, 0.0, 50.0, 60.0),
+                LayoutElement::new(
+                    BoundingBox::from_coords(0.0, 0.0, 20.0, 10.0),
+                    LayoutElementType::TableTitle,
+                    0.9,
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(5.0, 10.0, 15.0, 15.0, "编号"),
+                tr(20.0, 10.0, 40.0, 15.0, "名称"),
+                tr(5.0, 20.0, 15.0, 25.0, "1"),
+                tr(20.0, 20.0, 40.0, 25.0, "甲"),
+            ]),
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        assert!(reconstruct_image_table(&page, 100.0).is_some());
     }
 
     /// Image 块内无文本（真图片）→ None。
