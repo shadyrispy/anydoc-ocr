@@ -9,6 +9,9 @@
 //! 关键：pdf-inspector 的 `group_into_lines` 会把同一行的左右两列合并成一行
 //! （先于列检测糊掉列边界），所以这里在检测到双列后**按 gutter 拆行**，把每行
 //! 拆成列内独立行，再交给 `order_text_regions` 做左列全→右列全。
+//!
+//! T2-A：文字层输出为纯行文本（与 OCR 通路的正文行一致），表格**不会**以 HTML
+//! 形式输出（已知限制）；OCR 通路 / `--pdf-force-ocr` 会输出表格 HTML。
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -48,6 +51,30 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
 ///
 /// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
 fn text_layer_markdown(path: &Path) -> Result<Option<String>> {
+    // 坏字体（GID/编码损坏）防护：调用 pdf-inspector 的健壮检测器做一次全文档
+    // markdown 抽取（其内部本就全页抽取），统计被判 `suspected_garbled_text` 的页数。
+    // 系统性坏字体 → 大量页面乱码（占比高）→ 文字层不可信，回退 OCR；健康文档即使
+    // 有少量误报（如目录点线符的私有区字符，上海公报仅 2 页）也不触发。
+    // 仅此信号确认命中才回退，出错则忽略继续。拉丁扩展/符号乱码（本地 looks_garbled
+    // 检不出）由此兜住。开销约 0.3s（全页 markdown 构建），可接受。
+    // 注：原设想"第 1 页 pages_needing_ocr 非空即坏字体"对本样例不成立——封面页
+    // 干净而正文全坏，故改为全文档占比判定。
+    if let Ok(extraction) = pdf_inspector::extract_pages_markdown(path, None) {
+        let total = extraction.pages.len();
+        let garbled = extraction
+            .ocr_reasons_by_page
+            .iter()
+            .filter(|r| {
+                r.reasons
+                    .iter()
+                    .any(|s| s == pdf_inspector::OCR_REASON_SUSPECTED_GARBLED_TEXT)
+            })
+            .count();
+        // 乱码页占比 >=20% 且至少 3 页 → 判定系统性坏字体，回退 OCR。
+        if garbled >= 3 && total > 0 && garbled * 100 >= total * 20 {
+            return Ok(None);
+        }
+    }
     let items = match pdf_inspector::extract_text_with_positions(path) {
         Ok(items) => items,
         Err(_) => return Ok(None),
