@@ -38,6 +38,24 @@ fn empty_cell() -> TableCell {
 ///
 /// `items`: `(x, y, w, h, text)`；`y` 越小越靠上（表头在上）。
 pub fn reconstruct_table_grid(items: &[(f32, f32, f32, f32, String)], page_w: f32) -> Option<TableGrid> {
+    reconstruct_grid(items, page_w, false)
+}
+
+/// 宽松版（Image 块补救用）：列对齐用**中位数 + 离群率**，容忍 OCR 框起始抖动
+/// （扫描件表格如 C.1 条款号列 x 漂移 ~16px，绝对散布判据会误拒）。PDF 文字层
+/// 仍用严格版（绝对散布），防双列正文误判。调用方需自行做 2 列长文本兜底。
+pub fn reconstruct_table_grid_tolerant(
+    items: &[(f32, f32, f32, f32, String)],
+    page_w: f32,
+) -> Option<TableGrid> {
+    reconstruct_grid(items, page_w, true)
+}
+
+fn reconstruct_grid(
+    items: &[(f32, f32, f32, f32, String)],
+    page_w: f32,
+    tolerant: bool,
+) -> Option<TableGrid> {
     if items.len() < 4 {
         return None;
     }
@@ -70,31 +88,81 @@ pub fn reconstruct_table_grid(items: &[(f32, f32, f32, f32, String)], page_w: f3
     for r in &rows {
         *counts.entry(r.len()).or_default() += 1;
     }
-    let (cols, col_rows) = counts.iter().max_by_key(|(_, c)| **c)?;
-    let (cols, col_rows) = (*cols, *col_rows);
+    // 列数选择：**最大且行数>=2** 的列数（非众数）。OCR 常漏检小字段列
+    // （如 C.1 条款号列），众数会偏小（3）而非真实列数（4）；取最大完整行
+    // 的列数，缺列行 resize 补空。孤立多列行（行数<2）跳过，防撑大。
+    let mut cols = 0usize;
+    let mut col_rows = 0usize;
+    for (k, c) in counts.iter().rev() {
+        if *k >= 2 && *c >= 2 {
+            cols = *k;
+            col_rows = *c;
+            break;
+        }
+    }
     if cols < 2 || col_rows < 2 {
         return None;
     }
-    // 对齐到众数列数（不足补空）
+    // 按 x 归列（非顺序补空）：缺列行（OCR 漏检小字段列，如 C.1 条款号）按
+    // 每块 x 归到最近的列模板中心——2 块行归 c0/c3、3 块行归 c0/c2/c3，而非
+    // 顺序填充导致列错位。列模板 = 完整行（len==cols）每列 x0 的中位数。
+    let complete: Vec<&Vec<TableCell>> = rows.iter().filter(|r| r.len() == cols).collect();
+    let mut col_centers = vec![0.0_f32; cols];
+    for c in 0..cols {
+        let mut xs: Vec<f32> = complete.iter().map(|r| r[c].x).collect();
+        xs.sort_by(|a, b| a.total_cmp(b));
+        if xs.is_empty() {
+            return None;
+        }
+        col_centers[c] = xs[xs.len() / 2];
+    }
     let mut aligned: Vec<Vec<TableCell>> = Vec::new();
     for r in &rows {
-        let mut a = r.clone();
-        a.resize(cols, empty_cell());
+        let mut a: Vec<TableCell> = (0..cols).map(|_| empty_cell()).collect();
+        for cell in r {
+            // 归到最近列中心；同列冲突（多块）保留 x 最小的块，其余忽略
+            let mut best = 0usize;
+            let mut best_d = f32::INFINITY;
+            for (ci, cx) in col_centers.iter().enumerate() {
+                let d = (cell.x - cx).abs();
+                if d < best_d {
+                    best_d = d;
+                    best = ci;
+                }
+            }
+            if a[best].text.is_empty() || cell.x < a[best].x {
+                a[best] = cell.clone();
+            }
+        }
         aligned.push(a);
     }
-    // 列 x 对齐检测：同列首格 x 散布 > 容差 → 列参差（双列正文）→ 拒
+    // 列 x 对齐检测：数据行同列首格 x 散布 > 容差 → 列参差（双列正文）→ 拒。
+    // 排除表头行：表头常合并列/居中（如 C.1 合并表头覆盖多列），x 与数据列不对齐。
     let col_tol = (0.02 * page_w).max(10.0);
     for c in 0..cols {
         let xs: Vec<f32> = aligned
             .iter()
+            .skip(1) // 排除表头行：表头常合并列/居中，x 与数据列不对齐是正常的
             .filter(|r| !r[c].text.is_empty())
             .map(|r| r[c].x)
             .collect();
         if xs.len() >= 2 {
-            let mn = xs.iter().copied().fold(f32::INFINITY, f32::min);
-            let mx = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            if mx - mn > col_tol {
-                return None;
+            if tolerant {
+                // 宽松：中位数 ± col_tol 内占比 >=70% 即视为对齐（容忍 OCR 离群）
+                let mut v = xs.clone();
+                v.sort_by(|a, b| a.total_cmp(b));
+                let med = v[v.len() / 2];
+                let outliers = v.iter().filter(|x| (**x - med).abs() > col_tol).count();
+                if outliers * 100 > v.len() * 30 {
+                    return None;
+                }
+            } else {
+                // 严格：绝对散布（双列正文参差 → 拒）
+                let mn = xs.iter().copied().fold(f32::INFINITY, f32::min);
+                let mx = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                if mx - mn > col_tol {
+                    return None;
+                }
             }
         }
     }
@@ -134,13 +202,17 @@ pub fn flush_table(segments: &mut std::collections::BTreeMap<u32, String>, grid:
 }
 
 /// 行内按 x 间隙聚列，返回 (首格 x, y, 高, 文本) 的单元格。
+/// 先按 x 排序：OCR/提取块原始顺序不保证 x 序，乱序会聚出错误列（如倒序）。
 fn cluster_row(items: &[&(f32, f32, f32, f32, String)], gap_thr: f32) -> Vec<TableCell> {
+    let mut items: Vec<&(f32, f32, f32, f32, String)> = items.to_vec();
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut cells: Vec<TableCell> = Vec::new();
     let mut cluster: Vec<&(f32, f32, f32, f32, String)> = Vec::new();
     let mut x0 = 0.0_f32;
     let mut y0 = 0.0_f32;
     let mut hmax = 0.0_f32;
-    for &it in items {
+    for it in &items {
+        let it = *it;
         if let Some(prev) = cluster.last() {
             if it.0 - (prev.0 + prev.2) > gap_thr {
                 cells.push(TableCell {
@@ -336,6 +408,32 @@ mod tests {
             blk("前增加“Ⅱ类”", 58.0, 70.0),
         ];
         assert!(reconstruct_table_grid(&items, 300.0).is_none());
+    }
+
+    /// 合并表头（表头行 x 与数据列不对齐）→ 仍重建（排除表头行的对齐检测）。
+    #[test]
+    fn merged_header_does_not_break_alignment() {
+        // 表头 3 块（末块合并覆盖 c1+c2，x=40 偏离数据列 x=60）；数据行 4 列对齐
+        let items = vec![
+            blk("序号", 10.0, 10.0),
+            blk("条款", 40.0, 10.0),
+            blk("标准号+名称(合并表头)", 90.0, 10.0),
+            blk("1", 10.0, 20.0),
+            blk("3", 60.0, 20.0),
+            blk("GJB1405", 120.0, 20.0),
+            blk("装备质量管理术语", 180.0, 20.0),
+            blk("2", 10.0, 30.0),
+            blk("3", 60.0, 30.0),
+            blk("CJB451", 120.0, 30.0),
+            blk("可靠性术语", 180.0, 30.0),
+            blk("3", 10.0, 40.0),
+            blk("3", 60.0, 40.0),
+            blk("GJB5000", 120.0, 40.0),
+            blk("软件能力", 180.0, 40.0),
+        ];
+        let g = reconstruct_table_grid(&items, 300.0).expect("grid");
+        assert_eq!(g.cols, 4);
+        assert_eq!(g.rows.len(), 3);
     }
 
     #[test]
