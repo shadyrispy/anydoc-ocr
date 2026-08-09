@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
+use crate::table_grid::{self, TableGrid};
 use crate::{gfm_adapter, reading_order, timing::StageTimer, ConvertOptions, Result};
 
 /// garbled 检测常量：最多扫描前 4000 个 TextItem；字符总数须 >50，且
@@ -207,14 +208,18 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         let full_lines = &lines_by_page[page];
 
         // 1) 文字层网格表格（快速、免 OCR）：按页续接合并（B4）
-        if let Some(grid) = reconstruct_table_grid(page_items, page_w) {
+        let blocks: Vec<(f32, f32, f32, f32, String)> = page_items
+            .iter()
+            .map(|i| (i.x, -i.y, i.width, i.height, i.text.clone()))
+            .collect();
+        if let Some(grid) = table_grid::reconstruct_table_grid(&blocks, page_w) {
             match pending.take() {
                 Some((mut p, sp)) if p.cols == grid.cols => {
-                    extend_table_grid(&mut p, grid);
+                    table_grid::extend_table_grid(&mut p, grid);
                     pending = Some((p, sp));
                 }
                 Some((p, sp)) => {
-                    flush_table(&mut segments, p, sp);
+                    table_grid::flush_table(&mut segments, p, sp);
                     pending = Some((grid, *page));
                 }
                 None => pending = Some((grid, *page)),
@@ -225,7 +230,7 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         // 2) 版面 OCR 确认的表格页：直接输出 OCR 通路结果（行 + <table>）
         if let Some(ocr_md) = table_out.get(page) {
             if let Some((p, sp)) = pending.take() {
-                flush_table(&mut segments, p, sp);
+                table_grid::flush_table(&mut segments, p, sp);
             }
             segments.entry(*page).or_default().push_str(ocr_md);
             segments.entry(*page).or_default().push_str("\n\n");
@@ -234,7 +239,7 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
 
         // 3) 普通页：先冲掉挂起的跨页表，再输出文字层行
         if let Some((p, sp)) = pending.take() {
-            flush_table(&mut segments, p, sp);
+            table_grid::flush_table(&mut segments, p, sp);
         }
         let mut seg_out = String::new();
         // 列间隙检测：行级候选间隙聚类。封面/标题的字母间距是单行现象、每行
@@ -276,7 +281,9 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
             push_line_region(&seg, &line, *page, &mut regions);
         }
 
-        for t in reading_order::postprocess_lines(reading_order::order_text_regions(&regions)) {
+        for t in apply_title_prefixes(reading_order::postprocess_lines(
+            reading_order::order_text_regions(&regions),
+        )) {
             seg_out.push_str(&t);
             seg_out.push('\n');
         }
@@ -294,7 +301,7 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         segments.entry(*page).or_default().push_str(&seg_out);
     }
     if let Some((p, sp)) = pending.take() {
-        flush_table(&mut segments, p, sp);
+        table_grid::flush_table(&mut segments, p, sp);
     }
     let mut out = String::new();
     for (_, seg) in segments {
@@ -308,280 +315,26 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     }
 }
 
-/// 文字层表格单元格（文本 + 几何，用于合并单元格 span 推断）。
-#[derive(Clone)]
-struct TableCell {
-    text: String,
-    x: f32,
-    y: f32,
-    h: f32,
-}
 
-/// 文字层表格网格（行×列）。
-struct TableGrid {
-    cols: usize,
-    header: Vec<TableCell>,
-    rows: Vec<Vec<TableCell>>,
-}
-
-fn empty_cell() -> TableCell {
-    TableCell {
-        text: String::new(),
-        x: 0.0,
-        y: 0.0,
-        h: 0.0,
-    }
-}
-
-/// 从一页原始 TextItem 重建表格网格：按 y 组行、行内按 x 间隙聚列。
-/// 要求：列数>=2 且 >=2 行同列数；**列 x 对齐**（同列首格 x 散布小，双列正文参差则拒）。
-/// 长句/散文不再拒表（对齐 MinerU：长文本保留在单元格，判表靠列结构）。
-/// 不使用 `group_into_lines`（其会把单元格拆成独立行）。
-fn reconstruct_table_grid(
-    page_items: &[pdf_inspector::TextItem],
-    page_w: f32,
-) -> Option<TableGrid> {
-    if page_items.len() < 4 {
-        return None;
-    }
-    let mut sorted: Vec<&pdf_inspector::TextItem> = page_items.iter().collect();
-    sorted.sort_by(|a, b| b.y.total_cmp(&a.y)); // PDF 左下原点：y 大=靠上
-    let row_tol = 4.0_f32;
-    let gap_thr = 0.012 * page_w;
-    let mut rows: Vec<Vec<TableCell>> = Vec::new();
-    let mut cur: Vec<&pdf_inspector::TextItem> = Vec::new();
-    let mut cur_y = 0.0_f32;
-    for it in sorted {
-        if !cur.is_empty() && (cur_y - it.y).abs() > row_tol {
-            rows.push(cluster_row(&cur, gap_thr));
-            cur.clear();
-        }
-        if cur.is_empty() {
-            cur_y = it.y;
-        }
-        cur.push(it);
-    }
-    if !cur.is_empty() {
-        rows.push(cluster_row(&cur, gap_thr));
-    }
-    // 只保留列数 >=2 的行（丢弃单格散落文本）
-    let rows: Vec<Vec<TableCell>> = rows.into_iter().filter(|r| r.len() >= 2).collect();
-    if rows.len() < 2 {
-        return None;
-    }
-    let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    for r in &rows {
-        *counts.entry(r.len()).or_default() += 1;
-    }
-    let (cols, col_rows) = counts.iter().max_by_key(|(_, c)| **c)?;
-    let (cols, col_rows) = (*cols, *col_rows);
-    if cols < 2 || col_rows < 2 {
-        return None;
-    }
-    // 对齐到众数列数（不足补空）
-    let mut aligned: Vec<Vec<TableCell>> = Vec::new();
-    for r in &rows {
-        let mut a = r.clone();
-        a.resize(cols, empty_cell());
-        aligned.push(a);
-    }
-    // 列 x 对齐检测：同列首格 x 散布 > 容差 → 列参差（双列正文）→ 拒
-    let col_tol = (0.02 * page_w).max(10.0);
-    for c in 0..cols {
-        let xs: Vec<f32> = aligned
-            .iter()
-            .filter(|r| !r[c].text.is_empty())
-            .map(|r| r[c].x)
-            .collect();
-        if xs.len() >= 2 {
-            let mn = xs.iter().copied().fold(f32::INFINITY, f32::min);
-            let mx = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            if mx - mn > col_tol {
-                return None;
+/// 标题前缀注入（B3-T）：文字层没有布局标题信号，仅用编号启发式
+/// `reading_order::title_level` 判定标题行并加 `#` 前缀（与 OFD 文字层同口径）。
+/// OCR 通路（gfm_adapter）用布局模型确认的标题块输出 `#`，三路输出对齐。
+/// 已以 `#` 开头（trim 后）或字符数 >60 的行保持原样。
+fn apply_title_prefixes(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                return line;
             }
-        }
-    }
-    let header = aligned[0].clone();
-    let rows = aligned[1..].to_vec();
-    Some(TableGrid { cols, header, rows })
-}
-
-fn cell_texts(v: &[TableCell]) -> Vec<String> {
-    v.iter().map(|c| c.text.clone()).collect()
-}
-
-/// 跨页续接：列数一致时合并（若下页首行 == 已有表头 → 去重表头）。
-fn extend_table_grid(acc: &mut TableGrid, next: TableGrid) {
-    if next.cols != acc.cols {
-        return;
-    }
-    let first_matches = next
-        .rows
-        .first()
-        .map(|r| cell_texts(r) == cell_texts(&acc.header))
-        .unwrap_or(false);
-    if first_matches {
-        acc.rows.extend(next.rows.iter().skip(1).cloned());
-    } else {
-        acc.rows.extend(next.rows);
-    }
-}
-
-/// 把已定型的跨页表写入其"首表页"段（保证阅读顺序）。
-fn flush_table(segments: &mut BTreeMap<u32, String>, grid: TableGrid, start_page: u32) {
-    let e = segments.entry(start_page).or_default();
-    e.push_str(&table_grid_to_html(&grid));
-    e.push('\n');
-    e.push('\n');
-}
-
-/// 行内按 x 间隙聚列，返回 (首格 x, y, 高, 文本) 的单元格。
-fn cluster_row(items: &[&pdf_inspector::TextItem], gap_thr: f32) -> Vec<TableCell> {
-    let mut cells: Vec<TableCell> = Vec::new();
-    let mut cluster: Vec<pdf_inspector::TextItem> = Vec::new();
-    let mut x0 = 0.0_f32;
-    let mut y0 = 0.0_f32;
-    let mut hmax = 0.0_f32;
-    for &it in items {
-        if let Some(prev) = cluster.last() {
-            if it.x - (prev.x + prev.width) > gap_thr {
-                cells.push(TableCell {
-                    text: join_cell_items(&cluster),
-                    x: x0,
-                    y: y0,
-                    h: hmax,
-                });
-                cluster.clear();
-            }
-        }
-        if cluster.is_empty() {
-            x0 = it.x;
-            y0 = it.y;
-            hmax = 0.0;
-        }
-        cluster.push(it.clone());
-        hmax = hmax.max(it.height);
-    }
-    if !cluster.is_empty() {
-        cells.push(TableCell {
-            text: join_cell_items(&cluster),
-            x: x0,
-            y: y0,
-            h: hmax,
-        });
-    }
-    cells
-}
-
-/// 单元格内多个 TextItem 拼接：仅 ASCII 字母数字间加空格（CJK 不加）。
-fn join_cell_items(items: &[pdf_inspector::TextItem]) -> String {
-    let mut s = String::new();
-    for (i, it) in items.iter().enumerate() {
-        if i > 0 {
-            let a = s
-                .chars()
-                .last()
-                .map(|c| c.is_ascii_alphanumeric())
-                .unwrap_or(false);
-            let b = it
-                .text
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_alphanumeric())
-                .unwrap_or(false);
-            if a && b {
-                s.push(' ');
-            }
-        }
-        s.push_str(it.text.trim());
-    }
-    s
-}
-
-/// TableGrid → `<table><thead>…</thead><tbody>…</tbody></table>`。
-/// 合并单元格：行内尾空 → colspan；高 cell（h > 1.5×行距）→ rowspan 并吞下方空位。
-fn table_grid_to_html(g: &TableGrid) -> String {
-    // 行距估计 = 相邻行首格 y 差的中位数（跨页边界跳变会拉大中位，抑制误判 rowspan）
-    let mut ys: Vec<f32> = Vec::new();
-    for row in std::iter::once(&g.header).chain(g.rows.iter()) {
-        if let Some(c) = row.iter().find(|c| !c.text.is_empty()) {
-            ys.push(c.y);
-        }
-    }
-    let mut pitch = 12.0_f32;
-    if ys.len() >= 2 {
-        let mut gaps: Vec<f32> = ys.windows(2).map(|w| (w[0] - w[1]).abs()).collect();
-        gaps.sort_by(|a, b| a.total_cmp(b));
-        pitch = gaps[gaps.len() / 2].max(4.0);
-    }
-    let mut s = String::from("<table><thead><tr>");
-    let mut c = 0;
-    while c < g.header.len() {
-        let cell = &g.header[c];
-        let mut colspan = 1;
-        while c + colspan < g.header.len() && g.header[c + colspan].text.is_empty() {
-            colspan += 1;
-        }
-        let attr = span_attr(colspan, 1);
-        s.push_str(&format!("<td{attr}>{}</td>", escape_html(&cell.text)));
-        c += colspan;
-    }
-    s.push_str("</tr></thead><tbody>");
-    let nrows = g.rows.len();
-    let mut skip = vec![vec![false; g.cols]; nrows];
-    for ri in 0..nrows {
-        s.push_str("<tr>");
-        let mut c = 0;
-        while c < g.cols {
-            if skip[ri][c] {
-                c += 1;
-                continue;
-            }
-            let cell = &g.rows[ri][c];
-            let mut colspan = 1;
-            while c + colspan < g.cols
-                && g.rows[ri][c + colspan].text.is_empty()
-                && !skip[ri][c + colspan]
+            if line.chars().count() <= 60
+                && let Some(level) = reading_order::title_level(&line)
             {
-                colspan += 1;
+                return format!("{} {}", "#".repeat(level), line);
             }
-            let mut rowspan = 1;
-            if !cell.text.is_empty() && cell.h > pitch * 1.5 && pitch > 0.0 {
-                let est = (cell.h / pitch).round().max(1.0) as usize;
-                rowspan = est.min(nrows - ri).max(1);
-                if rowspan > 1 {
-                    for k in (ri + 1)..(ri + rowspan).min(nrows) {
-                        if c < g.cols && g.rows[k][c].text.is_empty() {
-                            skip[k][c] = true;
-                        }
-                    }
-                }
-            }
-            let attr = span_attr(colspan, rowspan);
-            s.push_str(&format!("<td{attr}>{}</td>", escape_html(&cell.text)));
-            c += colspan;
-        }
-        s.push_str("</tr>");
-    }
-    s.push_str("</tbody></table>");
-    s
-}
-
-fn span_attr(colspan: usize, rowspan: usize) -> String {
-    let mut a = String::new();
-    if colspan > 1 {
-        a.push_str(&format!(" colspan=\"{colspan}\""));
-    }
-    if rowspan > 1 {
-        a.push_str(&format!(" rowspan=\"{rowspan}\""));
-    }
-    a
-}
-
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+            line
+        })
+        .collect()
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。
@@ -817,10 +570,7 @@ fn push_line_region(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        cell_texts, clustered_row_split, extend_table_grid, is_repeated_furniture,
-        looks_garbled, reconstruct_table_grid, table_grid_to_html, TableGrid,
-    };
+    use super::{apply_title_prefixes, clustered_row_split, is_repeated_furniture, looks_garbled};
     use pdf_inspector::extractor::TextLine;
     use pdf_inspector::TextItem;
 
@@ -1014,110 +764,26 @@ mod tests {
 
     // ── 文字层表格网格重建 + 跨页合并 ──
 
-    fn tcell(t: &str, x: f32, y: f32) -> TextItem {
-        tif(t, x, y, 20.0, 10.0, 1)
-    }
-
-    fn tc(t: &str, x: f32, y: f32, h: f32) -> super::TableCell {
-        super::TableCell {
-            text: t.into(),
-            x,
-            y,
-            h,
-        }
-    }
-
+    /// 编号启发式标题前缀（B3-T）：`一、总则`→`## `，`1.1 适用范围`→`### `；
+    /// 带结束标点的正文不变；`第X章` 不被 `title_level` 识别 → 不变。
     #[test]
-    fn grid_table_reconstructed_from_items() {
-        // 3 行 × 2 列：header + 2 数据行
-        let items = vec![
-            tcell("ID", 10.0, 90.0),
-            tcell("Name", 60.0, 90.0),
-            tcell("1", 10.0, 80.0),
-            tcell("Alice", 60.0, 80.0),
-            tcell("2", 10.0, 70.0),
-            tcell("Bob", 60.0, 70.0),
+    fn title_prefixes_by_numbering_heuristic() {
+        let lines: Vec<String> = vec![
+            "一、总则".into(),
+            "这是正文第一句。".into(),
+            "1.1 适用范围".into(),
+            "第二章 附则".into(),
         ];
-        let g = reconstruct_table_grid(&items, 200.0).expect("grid");
-        assert_eq!(g.cols, 2);
-        assert_eq!(cell_texts(&g.header), vec!["ID", "Name"]);
-        assert_eq!(g.rows.len(), 2);
-        assert_eq!(cell_texts(&g.rows[1]), vec!["2", "Bob"]);
+        let out = apply_title_prefixes(lines);
+        assert_eq!(
+            out,
+            vec![
+                "## 一、总则".to_string(),
+                "这是正文第一句。".to_string(),
+                "### 1.1 适用范围".to_string(),
+                "第二章 附则".to_string(),
+            ]
+        );
     }
 
-    #[test]
-    fn aligned_two_column_prose_kept_as_table() {
-        // 列 x 对齐 + 长句：按 MinerU 保留（长文本在单元格，不因长句拒表）
-        let items = vec![
-            tcell("备注（本栏为长文本说明示例，用于验证长句不被拒表）", 10.0, 90.0),
-            tcell("值1", 160.0, 90.0),
-            tcell("第二条 本条规定了处罚的适用情形，应当严格遵照执行。", 10.0, 80.0),
-            tcell("值2", 160.0, 80.0),
-            tcell("第三条 管理部门应当依法履行职责并接受社会监督。", 10.0, 70.0),
-            tcell("值3", 160.0, 70.0),
-        ];
-        assert!(reconstruct_table_grid(&items, 300.0).is_some());
-    }
-
-    #[test]
-    fn ragged_two_column_body_not_table() {
-        // 双列正文：同列首格 x 参差（段落缩进/对齐不规则）→ 拒
-        let items = vec![
-            tcell("经研究，市人民政府决定，对下列市政府规章予以修改和废止。", 10.0, 90.0),
-            tcell("修改为：", 150.0, 90.0),
-            tcell("一、对下列政府规章的部分条款予以修改，现予公布施行。", 40.0, 80.0),
-            tcell("受市生态环境部门委托，负责放射源销售单位的许可证核发。", 170.0, 80.0),
-            tcell("（一）上海市放射性污染防治若干规定，自2025年1月1日起施行。", 25.0, 70.0),
-            tcell("前增加“Ⅱ类”，并采取有效措施防止放射性污染。", 185.0, 70.0),
-        ];
-        assert!(reconstruct_table_grid(&items, 300.0).is_none());
-    }
-
-    #[test]
-    fn single_column_not_table() {
-        let items = vec![
-            tcell("A", 10.0, 90.0),
-            tcell("B", 10.0, 80.0),
-            tcell("C", 10.0, 70.0),
-        ];
-        assert!(reconstruct_table_grid(&items, 200.0).is_none());
-    }
-
-    #[test]
-    fn cross_page_merge_drops_repeated_header() {
-        let mut acc = TableGrid {
-            cols: 2,
-            header: vec![tc("ID", 10.0, 0.0, 10.0), tc("Name", 60.0, 0.0, 10.0)],
-            rows: vec![vec![tc("1", 10.0, 0.0, 10.0), tc("Alice", 60.0, 0.0, 10.0)]],
-        };
-        // 下页：重复表头 + 续行
-        let next = TableGrid {
-            cols: 2,
-            header: vec![tc("ID", 10.0, 0.0, 10.0), tc("Name", 60.0, 0.0, 10.0)],
-            rows: vec![
-                vec![tc("ID", 10.0, 0.0, 10.0), tc("Name", 60.0, 0.0, 10.0)],
-                vec![tc("2", 10.0, 0.0, 10.0), tc("Bob", 60.0, 0.0, 10.0)],
-            ],
-        };
-        extend_table_grid(&mut acc, next);
-        assert_eq!(acc.rows.len(), 2, "表头去重，仅剩 Alice/Bob");
-        assert_eq!(cell_texts(&acc.rows[1]), vec!["2", "Bob"]);
-    }
-
-    #[test]
-    fn html_emits_span_attributes() {
-        // colspan：行内尾空（备注跨 2 列）；rowspan：高 cell（备注跨 2 行）
-        let g = TableGrid {
-            cols: 3,
-            header: vec![tc("A", 10.0, 100.0, 10.0), tc("B", 60.0, 100.0, 10.0), tc("C", 110.0, 100.0, 10.0)],
-            rows: vec![
-                vec![tc("1", 10.0, 90.0, 10.0), tc("x", 60.0, 90.0, 10.0), tc("", 0.0, 0.0, 0.0)],
-                vec![tc("2", 10.0, 80.0, 10.0), tc("y", 60.0, 80.0, 10.0), tc("z", 110.0, 80.0, 10.0)],
-            ],
-        };
-        let html = table_grid_to_html(&g);
-        // 行 0 的 "x" 因 c=1 后尾空 → colspan=2
-        assert!(html.contains("colspan=\"2\""), "期望 colspan，got: {html}");
-        assert!(!html.contains("rowspan"), "rowspan 不应出现: {html}");
-    }
 }
