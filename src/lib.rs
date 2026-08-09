@@ -9,6 +9,7 @@ pub mod models;
 pub mod ofd;
 pub mod pdf;
 pub mod reading_order;
+pub mod table_grid;
 pub mod timing;
 
 pub use convert::{convert_to_markdown, ConvertOptions};
