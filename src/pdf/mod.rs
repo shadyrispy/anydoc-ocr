@@ -121,6 +121,11 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     for item in items {
         by_page.entry(item.page).or_default().push(item);
     }
+    // 扫描件防护：文字层仅有页眉/页码等零星重复文本时，家具过滤可能删光全部 →
+    // by_page 为空 → 无可用文字层，回落 OCR（而非 panic）。
+    if by_page.is_empty() {
+        return Ok(None);
+    }
 
     // 预构建每页行组（列检测与表格启发式共用一次），并缓存每页近似宽/高。
     let mut lines_by_page: BTreeMap<u32, Vec<pdf_inspector::extractor::TextLine>> = BTreeMap::new();
