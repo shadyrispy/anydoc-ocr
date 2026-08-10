@@ -29,11 +29,11 @@ struct Cli {
     /// PDF 强制走 OCR（文字型 PDF 当图片渲染后 OCR，用于图片型校准）
     #[arg(long)]
     pdf_force_ocr: bool,
-    /// OCR 推理线程数（页级并行）。注意：oar-ocr 内部已用 ORT 线程池 + 跨页
-    /// batching 占满 CPU，外层再加页级并发会过度订阅线程池；小文档 1（或 2）
-    /// 最优，多页大文档 4 更快（实测 52p: threads4 比 1 快 ~10%）。
-    /// 默认 4 面向大文档；内存受限环境（cgroup<8GB）建议改回 1。
-    #[arg(long, default_value_t = 4)]
+    /// OCR 推理线程数（页级并行）。A 改造后：进程级 ORT 线程池按
+    /// `intra = max(1, 核心数/threads)` 提交，使总线程≈核心数、不再超额订阅。
+    /// 默认 0 = 自动取可用并行度（飞腾 D2000 8 核→8），结合 intra=1 全核利用；
+    /// 内存受限环境（cgroup<8GB）可显式调小。
+    #[arg(long, default_value_t = 0)]
     threads: usize,
     /// 渲染 DPI（图片型 PDF/OFD 走 OCR 时的渲染分辨率）。越低像素越少、渲染与
     /// 文本检测(det)越快，但字号过小会漏检；印刷体公文 100 零精度损失且比 200
@@ -45,12 +45,20 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let (path, _tmp) = resolve_input(&cli.input)?;
+    // threads==0 → 自动取可用并行度（A：配合 intra=核心数/threads 全核利用）。
+    let threads = if cli.threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    } else {
+        cli.threads
+    };
     let opts = ConvertOptions {
         ocr_tier: cli.ocr_tier,
         ocr_layout: cli.ocr_layout,
         ofd_force_ocr: cli.ofd_force_ocr,
         pdf_force_ocr: cli.pdf_force_ocr,
-        threads: cli.threads,
+        threads,
         dpi: cli.dpi,
     };
     let md = convert_to_markdown(&path, &opts)?;

@@ -11,10 +11,10 @@
 //! 拆成列内独立行，再交给 `order_text_regions` 做左列全→右列全。
 //!
 //! T2-B/R1/R3：文字层通路对"含表格页"回退 OCR。不再单靠 pdf-inspector 的
-//! `pages_with_tables`（弱：漏首页标题块、偶误报），改为可疑集 = ① 文字层启
-// 发式（>=3 行各自拆成 >=3 个 x 分离段，双列正文每行仅 2 段不误报）；② 首页
-//! 强制入集（公报封面标题块，布局模型可识别为表）；③ R3 末页探针（末页强制
-//! 入集 + pdf-inspector 表格提取兜底）。可疑页整文档懒渲染一次后批量跑版面
+//! `pages_with_tables`（弱：漏首页标题块、偶误报），改为可疑集 = 文字层启发式
+//! （>=3 行各自拆成 >=3 个 x 分离段，双列正文每行仅 2 段不误报）；首/末页
+//! 曾无条件入集，Ticket B 已移除（无证据召回，代价是整页渲染+版面 OCR），末页
+//! 表格改由 `probe_last_page_table` 兜底。可疑页整文档懒渲染一次后批量跑版面
 //! OCR（用 `opts.ocr_layout`，默认 Doc 含 table 类，能识别封面/版权栏等），
 //! 以 `LayoutElementType::Table` 确认后才输出 `<table>` HTML（MinerU 对齐：
 //! 表格只出自识别模型，不来自文字层），未确认页回落文字层；页序混排保序，
@@ -170,13 +170,12 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
         lines_by_page.insert(page, lines);
     }
 
-    // ── T2-B/R1/R3：可疑表格页集合（三信号并集，最终确认靠版面 OCR）──
-    //  信号1：文字层启发式——某页 >=3 行各自被宽间隙拆成 >=3 个 x 分离段。保守：
-    //         双列正文每行仅 2 段（1 条 gutter），不会误报；真表格/目录行多为多列。
-    //  信号2：R3 末页探针——末页（最大页号）强制入集（布局模型易漏小表格，如
-    //         末页版权栏），并另跑 pdf-inspector 表格提取作结构兜底。
-    //  信号3：首页强制入集——公报/刊物封面常有标题块/框线，布局模型可识别为表；
-    //         pdf-inspector `pages_with_tables` 易漏首页，故不依赖之。
+    // ── T2-B/R1：可疑表格页集合（单一信号，最终确认靠版面 OCR）──
+    //  信号1（唯一来源）：文字层启发式——某页 >=3 行各自被宽间隙拆成 >=3 个 x
+    //  分离段。保守：双列正文每行仅 2 段（1 条 gutter），不会误报；真表格/目录
+    //  行多为多列。有证据才渲染，避免为"可能有表"的猜测付整页版面 OCR。
+    // 末页表格不走本集合：由下方 `probe_last_page_table` 独立兜底（pdf-inspector
+    // 表格提取，无渲染开销）。首页不再强制入集。
     // 最终该页是否真出 `<table>`：版面 OCR 检出 `LayoutElementType::Table`
     // 才确认；未确认页回落文字层，防误报（R2 gfm 过滤仍生效）。
     let mut suspicious: BTreeSet<u32> = BTreeSet::new();
@@ -185,10 +184,12 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
             suspicious.insert(page);
         }
     }
-    let first_page = *by_page.keys().next().unwrap();
     let last_page = *by_page.keys().next_back().unwrap();
-    suspicious.insert(first_page);
-    suspicious.insert(last_page);
+    // B（Ticket B）：PDF 与 OFD 两侧均已移除首/末页"强制入可疑集"——那是无证据的
+    // 启发式召回，代价却是每文档 1~2 次整页渲染 + 版面 OCR（文字层 OCR 主要开销源）。
+    //  - 末页表格由 `probe_last_page_table` 独立兜底（下方追加管道表，不依赖
+    //    suspicious 集），末页版权栏等小表格不丢。
+    //  - 首页封面标题块/框线表格仅靠版面 OCR 检出，删强制后的召回由 OCR golden 守。
     // pdf-inspector 末页表格提取探针：命中（非空管道表）→ 布局未确认时兜底输出。
     let last_table_md = probe_last_page_table(path, last_page, &page_w, &page_h);
 
