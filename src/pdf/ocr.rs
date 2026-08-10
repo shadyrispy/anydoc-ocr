@@ -1,7 +1,8 @@
 //! OCR 装配：用 oar-ocr 对渲染图做版面+文本+表格分析。
 //!
 //! 模型构建/缓存已抽到 `crate::ocr_engine::OcrEngine`（按 tier+layout 单例，跨文档复用）。
-//! 本模块仅保留 `ocr_images` 兼容调用面，委托 `OcrEngine::predict`。
+//! 本模块保留 `ocr_images` 兼容调用面（委托 `OcrEngine::predict`），并作为真实 OCR 入口
+//! 负责进程级 ORT 线程池初始化——须在 `OcrEngine::build` 创建 session 之前提交。
 //! 页级并行（rayon）、零拷贝消费、OCR 页序契约断言均在 `OcrEngine` 内统一实现。
 use anyhow::Result;
 use image::RgbImage;
@@ -20,5 +21,8 @@ pub fn ocr_images(
     layout: OcrLayout,
     threads: usize,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
+    // 真实 OCR 入口（Ticket A 生效点）：ORT 全局线程池必须在 build 创建 ONNX session 之前
+    // 按真实 threads 提交，否则消除 intra × rayon 线程超额订阅的配置会被 ORT 忽略。
+    crate::ocr_engine::init_runtime(threads);
     OcrEngine::build(tier, layout)?.predict(images, threads)
 }

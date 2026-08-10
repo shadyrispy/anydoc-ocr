@@ -163,6 +163,7 @@ dependencies = [
  "memmap2",
  "oar-ocr",
  "ofd-core",
+ "ort",
  "pdf-inspector",
  "pdfium-render",
  "rayon",

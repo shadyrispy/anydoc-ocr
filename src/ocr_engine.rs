@@ -9,7 +9,7 @@
 //! 提供释放口，防"优化变泄漏"反噬（仅弃缓存自身的 Arc 引用，外部仍持有的引擎句柄有效）。
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Once};
 
 use anyhow::Result;
 use image::RgbImage;
@@ -17,6 +17,48 @@ use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
 use rayon::prelude::*;
 
 use crate::models::{spec_for, OcrLayout, OcrTier};
+
+/// 进程级 ORT 线程池已提交守卫（仅首次 OCR 触达 ORT 前生效一次）。
+static ORT_INIT: Once = Once::new();
+
+/// 消除 rayon 页级并行 × ORT 默认 intra 的线程超额订阅（Ticket A）。
+///
+/// ORT 默认 `intra_threads` = 全核；而 `predict` 又用 rayon 按 `parallel` 页并行，
+/// 二者相乘在 8 核飞腾上为 4×8=32 线程风暴。这里提交进程级 ORT 线程池，
+/// 令 `intra = max(1, cores / parallel)`，使总线程≈核心数、无超额订阅。
+///
+/// `parallel` 取自 `opts.threads`；`ANYDOC_ORT_INTRA_THREADS` 可强制覆盖（调试用）。
+/// ORT 环境为进程全局、首次初始化者生效；已在别处初始化则本调用被忽略（幂等）。
+///
+/// **必须在 `OcrEngine::build` 之前调用**：ORT 全局线程池只有先于任何 ONNX session
+/// 创建时 commit 才生效，而 session 在 `build` 内的 `build_analyzer` 里创建；放到
+/// session 之后（如 `predict` 内）提交将被 ORT 忽略，本配置形同虚设。
+pub(crate) fn init_runtime(parallel: usize) {
+    ORT_INIT.call_once(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let parallel = parallel.max(1).min(cores);
+        let intra = std::env::var("ANYDOC_ORT_INTRA_THREADS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| (cores / parallel).max(1));
+        // 配置失败不得掀翻宿主进程（本 crate 亦作为库被集成）：告警后回落 ORT 默认线程池。
+        let opts = match ort::environment::GlobalThreadPoolOptions::default()
+            .with_intra_threads(intra)
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!(
+                    "[anydoc-ocr] 警告：ORT intra_threads={intra} 配置失败（{e}），回落 ORT 默认线程池（可能出现线程超额订阅）"
+                );
+                return;
+            }
+        };
+        let _ = ort::init().with_global_thread_pool(opts).commit();
+    });
+}
 
 /// 缓存键：模型档 + 版面模型。热切换 tier/layout 必须用不同 session，故两者都进 key。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,9 +85,11 @@ impl OcrEngine {
         if let Some(e) = cache.get(&key) {
             return Ok(Arc::clone(e));
         }
+        let mut t = crate::timing::StageTimer::new();
         let engine = Arc::new(OcrEngine {
             analyzer: Arc::new(build_analyzer(tier, layout)?),
         });
+        t.stage("model-load");
         // 注意：build_analyzer 返回 OARStructure（predict_images 在其上），非 Builder。
         cache.insert(key, Arc::clone(&engine));
         Ok(engine)
@@ -96,6 +140,29 @@ impl OcrEngine {
     }
 }
 
+/// 模型名 → 加载路径。默认返回裸文件名，交给 oar-ocr 的 auto-download 走
+/// `$OAR_HOME` 缓存（存在且 sha256 匹配则复用，否则从 ModelScope 下载）。
+///
+/// 设了 `ANYDOC_MODEL_DIR` 则拼成该目录下的**绝对路径**：oar-ocr 的
+/// `download::resolve_path` 首条规则是"路径已存在即原样信任"，故可加载任意
+/// 自备模型（如 INT8 量化版）而不触发注册表 hash 校验与重下载。
+/// 目录内缺某个模型时回退裸名（该模型仍走正常下载通路）。
+///
+/// 注意：**不能**把自备模型放进 `$OAR_HOME` 再用裸名——那会命中
+/// "parent 是缓存目录"分支，size/hash 不符即被静默重下载覆盖。
+fn model_path(name: &str) -> String {
+    match std::env::var("ANYDOC_MODEL_DIR") {
+        Ok(dir) if !dir.is_empty() => {
+            let p = std::path::Path::new(&dir).join(name);
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+            name.to_string()
+        }
+        _ => name.to_string(),
+    }
+}
+
 /// 构建 oar-ocr 分析器：版面模型按 `layout` 选（Doc 默认文档结构 / Table 表格专用），
 /// 其余 OCR/表格模型取自 `spec_for(tier)`。返回 `OARStructure`（`predict_images` 在其上）。
 fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
@@ -104,15 +171,19 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         OcrLayout::Doc => (spec.layout, spec.layout_name),
         OcrLayout::Table => ("picodet_layout_1x_table.onnx", "PicoDet-Layout-1x-Table"),
     };
-    OARStructureBuilder::new(layout_model)
+    OARStructureBuilder::new(model_path(layout_model))
         .layout_model_name(layout_name)
-        .with_ocr(spec.det, spec.rec, spec.dict)
+        .with_ocr(
+            model_path(spec.det),
+            model_path(spec.rec),
+            model_path(spec.dict),
+        )
         // 表格结构识别（轻量：slanet_plus + 分类 + 字典）
-        .with_table_classification(spec.table_cls)
+        .with_table_classification(model_path(spec.table_cls))
         // 通用结构适配器：Wired/Wireless/Unknown 三分支无专用 adapter 时均回退到它，
         // 避免 table_cls 分类为 Wired 时因无 wired adapter 触发 config_error 整页失败
-        .with_table_structure_recognition(spec.table_structure, "wireless")
-        .table_structure_dict_path(spec.table_dict)
+        .with_table_structure_recognition(model_path(spec.table_structure), "wireless")
+        .table_structure_dict_path(model_path(spec.table_dict))
         .build()
         .map_err(|e| anyhow::anyhow!("构建 OCR 分析器失败: {e}"))
 }
@@ -125,6 +196,8 @@ pub fn ocr_images(
     layout: OcrLayout,
     threads: usize,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
+    // A：OCR 入口已知页级并行度，提交进程级线程池（消除超额订阅）。
+    init_runtime(threads);
     OcrEngine::build(tier, layout)?.predict(images, threads)
 }
 
@@ -139,5 +212,6 @@ pub fn ocr_pdf_pages(
     page_indices: &[u32],
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
     let images = crate::pdf::render::render_pdf_pages(path, dpi, page_indices)?;
+    init_runtime(threads);
     OcrEngine::build(tier, layout)?.predict(images, threads)
 }
