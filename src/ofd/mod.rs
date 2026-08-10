@@ -6,8 +6,8 @@
 //!
 //! 与 PDF 文字层对齐的增强：
 //! - F1 文字层表格重建 + 跨页合并（`table_grid`），输出段表按首表页落位；
-//! - F2 首/末页"可疑表格页"探针：渲染+OCR，版面确认 Table 才输出 OCR 结果，
-//!   否则回落文字层；OCR 出错永不崩溃；
+//! - F2 首/末页"可疑表格页"探针：Ticket B 已移除（无证据的启发式召回，代价是
+//!   每文档 1~2 次整页渲染+版面 OCR），表格全部由 F1 网格重建承担；
 //! - F3 坏字体乱码页检测：U+FFFD/私有区/控制字符占比超标 → 该页改走整页 OCR；
 //! - F4 标题前缀：编号启发式命中且行 <=60 字符、未带 `#` → 加 `#` 前缀。
 use std::cmp::Ordering;
@@ -43,13 +43,8 @@ const GARBLED_BAD_PERCENT_THRESHOLD: usize = 20;
 enum PageData {
     /// 纯文字层：坐标行 `Region`（`x_min/x_max/y_min/y_max/文本`）。
     Text(Vec<Region>),
-    /// 可疑表格页探针：渲染图 + 文字行（OCR 确认 Table 用 OCR，否则回落文字层）。
+    /// 图片型/坏字体乱码页：整页渲染 + OCR 输出。
     /// img 用 Option 以便第二遍 `take` 转移所有权，避免双持（T04）。
-    Probe {
-        img: Option<RgbImage>,
-        lines: Vec<Region>,
-    },
-    /// 图片型/坏字体乱码页：整页渲染 + OCR 输出。Option 同上（T04）。
     OcrFull(Option<RgbImage>),
 }
 
@@ -61,22 +56,10 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
     let doc_bodies = reader.ofd().doc_bodies.clone();
 
-    // 预扫描总页数：F2"末页强制入可疑集"需要全局末页号（跨 doc body 递增）。
-    let total_pages: u32 = {
-        let mut n = 0u32;
-        for body in &doc_bodies {
-            let doc = reader
-                .load_document(body)
-                .map_err(|e| anyhow::anyhow!("装载 OFD 文档失败: {e}"))?;
-            n += doc.pages().len() as u32;
-        }
-        n
-    };
-    let last_page = total_pages.saturating_sub(1);
-
     // 第一遍：逐页判定类型并收集数据。渲染在循环内完成（需要 per-body `doc`）。
+    // 注：原先为"末页强制入可疑集"预扫描过一遍全局总页数，该强制已移除（见下），
+    // 预扫描随之删除——省掉一轮跨 doc body 的 load_document。
     let mut pages: Vec<PageData> = Vec::new();
-    let mut page_no: u32 = 0;
 
     for body in &doc_bodies {
         let doc = reader
@@ -118,47 +101,28 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // reading_order 的 is_full 判定，提前到正文之前而非按中心 x 落入
                 // 右列；boundary 退化（宽/高非法）时已退回单点区域。
                 let lines = to_regions(texts);
-                // F2：首/末页强制入可疑表格页探针集（廉价信号，对齐 PDF R1/R3）。
-                // 注：OFD 文字层每 TextObject 即一行、无行内 x 段信息，"≥3 行各有
-                // ≥3 x 分离段"启发式与 F1 网格重建等价且更弱，故省略，仅用首/末页。
-                if page_no == 0 || page_no == last_page {
-                    match render_page(&mut reader, &doc, idx, opts) {
-                        Ok(img) => pages.push(PageData::Probe {
-                            img: Some(img),
-                            lines,
-                        }),
-                        Err(_) => pages.push(PageData::Text(lines)),
-                    }
-                } else {
-                    pages.push(PageData::Text(lines));
-                }
+                // Ticket B：移除首/末页"强制入可疑表格页探针集"。OFD 文字层每个
+                // TextObject 就是完整一行、拿不到行内 x 分离段，无法像 PDF 那样用
+                // 证据判定表格，首/末页强制本质是纯启发式的无证据召回，代价却是每
+                // 文档 1~2 次整页渲染 + 版面 OCR。表格改由 F1 网格重建（免 OCR）承
+                // 担，与 PDF 侧取舍对称：PDF 同样已删首/末页强制，只是它另有
+                // `probe_last_page_table` 兜底末页，OFD 无对应探针。
+                pages.push(PageData::Text(lines));
             }
-            page_no += 1;
         }
     }
 
-    // 第二遍：批量 OCR。整页 OCR（图片型/乱码）与探针分开跑：整页失败保持旧行为
-    // 报错（无文字可回落）；探针失败/未确认 Table → 回落文字层，永不崩溃。
+    // 第二遍：批量 OCR。只剩整页 OCR（图片型/乱码）一条路径：失败保持旧行为报错
+    // （无文字可回落）。探针管线随 F2 强制一起移除。
     let mut full_pages: Vec<u32> = Vec::new();
     let mut full_imgs: Vec<RgbImage> = Vec::new();
-    let mut probe_pages: Vec<u32> = Vec::new();
-    let mut probe_imgs: Vec<RgbImage> = Vec::new();
     // T04：第二遍直接 `take` 转移 img 所有权（不 clone），峰值从 2× 降到 1×。
     for (i, d) in pages.iter_mut().enumerate() {
-        match d {
-            PageData::OcrFull(img) => {
-                if let Some(im) = img.take() {
-                    full_pages.push(i as u32);
-                    full_imgs.push(im);
-                }
-            }
-            PageData::Probe { img, .. } => {
-                if let Some(im) = img.take() {
-                    probe_pages.push(i as u32);
-                    probe_imgs.push(im);
-                }
-            }
-            _ => {}
+        if let PageData::OcrFull(img) = d
+            && let Some(im) = img.take()
+        {
+            full_pages.push(i as u32);
+            full_imgs.push(im);
         }
     }
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
@@ -173,28 +137,10 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             );
         }
     }
-    // 探针页：版面模型确认 Table 才采用 OCR 输出（R2 伪表格过滤已在 gfm_adapter 内）。
-    let mut table_out: BTreeMap<u32, String> = BTreeMap::new();
-    if !probe_imgs.is_empty()
-        && let Ok(results) =
-            ocr::ocr_images(probe_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
-    {
-        for (page, res) in probe_pages.into_iter().zip(results) {
-            let has_table = res.layout_elements.iter().any(|e| {
-                e.element_type == oar_ocr::domain::structure::LayoutElementType::Table
-            });
-            if has_table {
-                table_out.insert(
-                    page,
-                    gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
-                );
-            }
-        }
-    }
     t.stage("gfm");
 
     // 第三遍：输出装配。段表 BTreeMap<u32,String> 按页号保序；跨页表格（文字层网格，
-    // 免 OCR）挂起、在首表页 flush；探针确认表/图片型 OCR/普通行各自落段。
+    // 免 OCR）挂起、在首表页 flush；图片型 OCR/普通行各自落段。
     let mut emitter = DocumentEmitter::new(FlushFormat::Text);
     for (page, data) in pages.iter().enumerate() {
         let page = page as u32;
@@ -207,7 +153,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                     emitter.push_segment(page, "\n\n");
                 }
             }
-            PageData::Text(lines) | PageData::Probe { lines, .. } => {
+            PageData::Text(lines) => {
                 // 1) F1：文字层网格表（免 OCR、跨页续接）。`reconstruct_table_grid`
                 //    内部已做列数/行数/列 x 对齐校验，返回 Some 即"有意义"（列>=2、
                 //    行>=2、对齐），单列/参差双列正文自然返回 None 走普通行。
@@ -243,14 +189,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                     emitter.emit_grid(grid, page);
                     continue;
                 }
-                // 2) F2：探针 OCR 确认的表格页 → 直接输出 OCR 通路结果（行 + <table>）。
-                if let Some(ocr_md) = table_out.get(&page) {
-                    emitter.flush_pending();
-                    emitter.push_segment(page, ocr_md);
-                    emitter.push_segment(page, "\n\n");
-                    continue;
-                }
-                // 3) 普通页：冲掉挂起跨页表，输出文字层行（F4 加标题前缀）。
+                // 2) 普通页：冲掉挂起跨页表，输出文字层行（F4 加标题前缀）。
                 emitter.flush_pending();
                 let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
                 let md = apply_title_prefixes(md).join("\n");
