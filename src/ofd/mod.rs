@@ -23,6 +23,8 @@ use ofd_core::{LoadedDocument, OfdReader, RenderOptions};
 use crate::gfm_adapter;
 use crate::pdf::ocr;
 use crate::reading_order;
+use crate::emitter::{DocumentEmitter, FlushFormat};
+use crate::region::Region;
 use crate::table_grid;
 use crate::timing::StageTimer;
 use crate::{ConvertOptions, Result as CResult};
@@ -36,20 +38,19 @@ const GARBLED_MIN_TOTAL_CHARS: usize = 50;
 /// F3 坏字体乱码检测：坏字符（U+FFFD 替换符 / 私有区 U+E000..U+F8FF / 控制字符）
 /// 占比 >=20%（`bad*100 >= total*20`）→ 判乱码 → 该页改走整页 OCR。
 const GARBLED_BAD_PERCENT_THRESHOLD: usize = 20;
-/// F4 标题前缀最大行宽：超过 60 字符视为正文，不加标题前缀。
-const TITLE_MAX_CHARS: usize = 60;
 
 /// 单页数据处理方式（按页序保存，OCR 结果后填）。
 enum PageData {
-    /// 纯文字层：坐标行 `(x_min, x_max, y_min, y_max, 文本)`。
-    Text(Vec<(f32, f32, f32, f32, String)>),
+    /// 纯文字层：坐标行 `Region`（`x_min/x_max/y_min/y_max/文本`）。
+    Text(Vec<Region>),
     /// 可疑表格页探针：渲染图 + 文字行（OCR 确认 Table 用 OCR，否则回落文字层）。
+    /// img 用 Option 以便第二遍 `take` 转移所有权，避免双持（T04）。
     Probe {
-        img: RgbImage,
-        lines: Vec<(f32, f32, f32, f32, String)>,
+        img: Option<RgbImage>,
+        lines: Vec<Region>,
     },
-    /// 图片型/坏字体乱码页：整页渲染 + OCR 输出。
-    OcrFull(RgbImage),
+    /// 图片型/坏字体乱码页：整页渲染 + OCR 输出。Option 同上（T04）。
+    OcrFull(Option<RgbImage>),
 }
 
 /// OFD → Markdown 总入口。
@@ -100,11 +101,13 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
-                pages.push(PageData::OcrFull(render_page(&mut reader, &doc, idx, opts)?));
+                pages.push(PageData::OcrFull(Some(
+                    render_page(&mut reader, &doc, idx, opts)?,
+                )));
             } else if is_garbled_text(&texts) {
                 // F3：坏字体乱码页 → 整页 OCR（渲染失败时回落文字层，不炸文档）
                 match render_page(&mut reader, &doc, idx, opts) {
-                    Ok(img) => pages.push(PageData::OcrFull(img)),
+                    Ok(img) => pages.push(PageData::OcrFull(Some(img))),
                     Err(_) => pages.push(PageData::Text(to_regions(texts))),
                 }
             } else {
@@ -120,7 +123,10 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // ≥3 x 分离段"启发式与 F1 网格重建等价且更弱，故省略，仅用首/末页。
                 if page_no == 0 || page_no == last_page {
                     match render_page(&mut reader, &doc, idx, opts) {
-                        Ok(img) => pages.push(PageData::Probe { img, lines }),
+                        Ok(img) => pages.push(PageData::Probe {
+                            img: Some(img),
+                            lines,
+                        }),
                         Err(_) => pages.push(PageData::Text(lines)),
                     }
                 } else {
@@ -137,15 +143,20 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut full_imgs: Vec<RgbImage> = Vec::new();
     let mut probe_pages: Vec<u32> = Vec::new();
     let mut probe_imgs: Vec<RgbImage> = Vec::new();
-    for (i, d) in pages.iter().enumerate() {
+    // T04：第二遍直接 `take` 转移 img 所有权（不 clone），峰值从 2× 降到 1×。
+    for (i, d) in pages.iter_mut().enumerate() {
         match d {
             PageData::OcrFull(img) => {
-                full_pages.push(i as u32);
-                full_imgs.push(img.clone());
+                if let Some(im) = img.take() {
+                    full_pages.push(i as u32);
+                    full_imgs.push(im);
+                }
             }
             PageData::Probe { img, .. } => {
-                probe_pages.push(i as u32);
-                probe_imgs.push(img.clone());
+                if let Some(im) = img.take() {
+                    probe_pages.push(i as u32);
+                    probe_imgs.push(im);
+                }
             }
             _ => {}
         }
@@ -184,29 +195,34 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
 
     // 第三遍：输出装配。段表 BTreeMap<u32,String> 按页号保序；跨页表格（文字层网格，
     // 免 OCR）挂起、在首表页 flush；探针确认表/图片型 OCR/普通行各自落段。
-    let mut segments: BTreeMap<u32, String> = BTreeMap::new();
-    let mut pending: Option<(table_grid::TableGrid, u32)> = None;
+    let mut emitter = DocumentEmitter::new(FlushFormat::Text);
     for (page, data) in pages.iter().enumerate() {
         let page = page as u32;
         match data {
             PageData::OcrFull(_) => {
                 // 图片型/乱码页：先冲掉挂起的跨页表，再落 OCR 段。
-                if let Some((p, sp)) = pending.take() {
-                    table_grid::flush_table(&mut segments, p, sp);
-                }
+                emitter.flush_pending();
                 if let Some(md) = full_out.remove(&page) {
-                    segments.entry(page).or_default().push_str(&md);
-                    segments.entry(page).or_default().push_str("\n\n");
+                    emitter.push_segment(page, &md);
+                    emitter.push_segment(page, "\n\n");
                 }
             }
             PageData::Text(lines) | PageData::Probe { lines, .. } => {
                 // 1) F1：文字层网格表（免 OCR、跨页续接）。`reconstruct_table_grid`
                 //    内部已做列数/行数/列 x 对齐校验，返回 Some 即"有意义"（列>=2、
                 //    行>=2、对齐），单列/参差双列正文自然返回 None 走普通行。
-                let page_w = lines.iter().map(|l| l.1).fold(0.0_f32, f32::max);
-                let blocks: Vec<(f32, f32, f32, f32, String)> = lines
+                let page_w = lines.iter().map(|l| l.x_max).fold(0.0_f32, f32::max);
+                let blocks: Vec<Region> = lines
                     .iter()
-                    .map(|(x0, x1, y0, y1, s)| (*x0, *y0, x1 - x0, y1 - y0, s.clone()))
+                    .map(|r| {
+                        Region::from_top_left(
+                            r.x_min,
+                            r.y_min,
+                            r.x_max - r.x_min,
+                            r.y_max - r.y_min,
+                            r.text.clone(),
+                        )
+                    })
                     .collect();
                 // 双列正文守卫：OFD 每行 = 左右两个 TextObject（同 y），整行块经
                 // `cluster_row` 会被按列间隙拆成 2 列 → `reconstruct_table_grid` 误判
@@ -214,57 +230,37 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // 这里必须先用列检测拦截：detect_column_split 检出列 gutter（双列/
                 // 多列正文）→ 跳过建表走 reading_order。单列表格页列间隙 <3% 页宽
                 // 不触发检测，正常建表。
-                let regions: Vec<(f32, f32, f32, f32, String)> = lines
+                let regions: Vec<Region> = lines
                     .iter()
-                    .map(|(x0, x1, y0, y1, s)| {
-                        (*x0 as f32, *x1 as f32, *y0 as f32, *y1 as f32, s.clone())
+                    .map(|r| {
+                        Region::new(r.x_min, r.x_max, r.y_min, r.y_max, r.text.clone())
                     })
                     .collect();
                 let has_columns = reading_order::detect_column_split(&regions).is_some();
                 if !has_columns
                     && let Some(grid) = table_grid::reconstruct_table_grid(&blocks, page_w)
                 {
-                    match pending.take() {
-                        Some((mut p, sp)) if p.cols == grid.cols => {
-                            table_grid::extend_table_grid(&mut p, grid);
-                            pending = Some((p, sp));
-                        }
-                        Some((p, sp)) => {
-                            table_grid::flush_table(&mut segments, p, sp);
-                            pending = Some((grid, page));
-                        }
-                        None => pending = Some((grid, page)),
-                    }
+                    emitter.emit_grid(grid, page);
                     continue;
                 }
                 // 2) F2：探针 OCR 确认的表格页 → 直接输出 OCR 通路结果（行 + <table>）。
                 if let Some(ocr_md) = table_out.get(&page) {
-                    if let Some((p, sp)) = pending.take() {
-                        table_grid::flush_table(&mut segments, p, sp);
-                    }
-                    segments.entry(page).or_default().push_str(ocr_md);
-                    segments.entry(page).or_default().push_str("\n\n");
+                    emitter.flush_pending();
+                    emitter.push_segment(page, ocr_md);
+                    emitter.push_segment(page, "\n\n");
                     continue;
                 }
                 // 3) 普通页：冲掉挂起跨页表，输出文字层行（F4 加标题前缀）。
-                if let Some((p, sp)) = pending.take() {
-                    table_grid::flush_table(&mut segments, p, sp);
-                }
+                emitter.flush_pending();
                 let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
                 let md = apply_title_prefixes(md).join("\n");
-                segments.entry(page).or_default().push_str(&md);
-                segments.entry(page).or_default().push_str("\n\n");
+                emitter.push_segment(page, &md);
+                emitter.push_segment(page, "\n\n");
             }
         }
     }
-    if let Some((p, sp)) = pending.take() {
-        table_grid::flush_table(&mut segments, p, sp);
-    }
-    let mut out = String::new();
-    for (_, seg) in segments {
-        out.push_str(&seg);
-    }
-    Ok(out.trim_end().to_string())
+    emitter.flush_pending();
+    Ok(emitter.finish())
 }
 
 /// 渲染一页为 RGB 图（图片型分支同参；`dpi` 控制分辨率）。
@@ -280,48 +276,34 @@ fn render_page(
     Ok(image::DynamicImage::ImageRgba8(img).to_rgb8())
 }
 
-/// `(f64,..)` 文本行 → `(f32,..)` 区域（reading_order / table_grid 共用坐标约定）。
-fn to_regions(texts: Vec<(f64, f64, f64, f64, String)>) -> Vec<(f32, f32, f32, f32, String)> {
+/// `(f64,..)` 文本行 → `Region`（`f32` 区域，reading_order / table_grid 共用）。
+fn to_regions(texts: Vec<(f64, f64, f64, f64, String)>) -> Vec<Region> {
     texts
         .into_iter()
-        .map(|(x0, x1, y0, y1, s)| (x0 as f32, x1 as f32, y0 as f32, y1 as f32, s))
+        .map(|(x0, x1, y0, y1, s)| Region::new(x0 as f32, x1 as f32, y0 as f32, y1 as f32, s))
         .collect()
 }
 
 /// F3 坏字体乱码检测：统计 U+FFFD 替换符 / 私有区（U+E000..U+F8FF）/ 控制字符。
 /// 整页字符数须超过 [`GARBLED_MIN_TOTAL_CHARS`] 且坏字符占比 >=
 /// [`GARBLED_BAD_PERCENT_THRESHOLD`]%（`bad*100 >= total*20`）才判乱码，
-/// 避免少量误报（如目录点线符的私有区字符）触发整页 OCR。
+/// 避免少量误报（如目录点线符的私有区字符）触发整页 OCR。字符分类逻辑收敛于
+/// `text_health`。
 fn is_garbled_text(texts: &[(f64, f64, f64, f64, String)]) -> bool {
-    let mut total = 0usize;
-    let mut bad = 0usize;
-    for (_, _, _, _, s) in texts {
-        for c in s.chars() {
-            let cp = c as u32;
-            if cp == 0xFFFD || (0xE000..=0xF8FF).contains(&cp) || c.is_control() {
-                bad += 1;
-            }
-            total += 1;
-        }
-    }
-    total > GARBLED_MIN_TOTAL_CHARS && bad * 100 >= total * GARBLED_BAD_PERCENT_THRESHOLD
+    let chars = texts.iter().flat_map(|(_, _, _, _, s)| s.chars());
+    crate::text_health::has_garbled_chars(
+        chars,
+        GARBLED_MIN_TOTAL_CHARS,
+        GARBLED_BAD_PERCENT_THRESHOLD,
+    )
 }
 
 /// F4 标题前缀：与 PDF 文字层同启发式——`title_level` 编号启发式命中、行 <=
-/// [`TITLE_MAX_CHARS`] 字符、且未以 `#` 开头 → 加 `"#".repeat(level) + " "`。
+/// 60 字符、且未以 `#` 开头 → 加 `"#".repeat(level) + " "`（上限见
+/// `text_health::TITLE_MAX_CHARS`）。统一于 `text_health::apply_title_prefixes`
+/// （空 hints + numbering=true）。
 fn apply_title_prefixes(lines: Vec<String>) -> Vec<String> {
-    lines
-        .into_iter()
-        .map(|line| {
-            if line.trim_start().starts_with('#') || line.chars().count() > TITLE_MAX_CHARS {
-                return line;
-            }
-            match reading_order::title_level(&line) {
-                Some(lv) => format!("{} {}", "#".repeat(lv), line),
-                None => line,
-            }
-        })
-        .collect()
+    crate::text_health::apply_title_prefixes(&lines, &[], true)
 }
 
 /// 收集一页所有 TextObject 的文本，返回 `(x_min, x_max, y_min, y_max, 行文本)`，

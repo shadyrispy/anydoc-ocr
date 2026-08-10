@@ -1,63 +1,24 @@
-//! OCR 装配：用 oar-ocr 对渲染图做版面+文本+表格分析
+//! OCR 装配：用 oar-ocr 对渲染图做版面+文本+表格分析。
+//!
+//! 模型构建/缓存已抽到 `crate::ocr_engine::OcrEngine`（按 tier+layout 单例，跨文档复用）。
+//! 本模块仅保留 `ocr_images` 兼容调用面，委托 `OcrEngine::predict`。
+//! 页级并行（rayon）、零拷贝消费、OCR 页序契约断言均在 `OcrEngine` 内统一实现。
 use anyhow::Result;
 use image::RgbImage;
-use rayon::prelude::*;
 
-use crate::models::{spec_for, OcrLayout, OcrTier};
-use oar_ocr::oarocr::OARStructureBuilder;
+use crate::models::{OcrLayout, OcrTier};
+use crate::ocr_engine::OcrEngine;
 
 /// 对一组页面图像跑 OCR 管线，返回每页 StructureResult。
 ///
-/// 模型按 `tier` 选择，首次运行经 auto-download 从 ModelScope 拉取（缓存于 $OAR_HOME）。
-/// `layout` 控制版面模型：`Doc` 默认文档结构；`Table` 换表格专用版面
-/// （`picodet_layout_1x_table.onnx`，只标 Table，检出才跑 SLANet，无表页零表格开销）。
-/// `threads` 控制**页级并发**：多页时切成若干 chunk，用 rayon 并行 `predict_images`，
-/// 单页或 `threads<=1` 走原生调用（保留 oar-ocr 内部 batching）。
-/// 注：oar-ocr/ORT 的 intra-op 线程池不可外部调参，本旋钮控制的是"同时推理的页数"。
+/// 模型按 `(tier, layout)` 从 `OcrEngine` 单例取/建（首次下载+构建，后续零重载）。
+/// `threads` 控制页级并发：多页切成 chunk 用 rayon 并行推理，共享 `Sync` 的分析器。
+/// 返回序 = 输入序（页序契约由 `OcrEngine::predict` 断言守恒）。
 pub fn ocr_images(
     images: Vec<RgbImage>,
     tier: OcrTier,
     layout: OcrLayout,
     threads: usize,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
-    if images.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let spec = spec_for(tier);
-    let (layout_model, layout_name) = match layout {
-        OcrLayout::Doc => (spec.layout, spec.layout_name),
-        OcrLayout::Table => ("picodet_layout_1x_table.onnx", "PicoDet-Layout-1x-Table"),
-    };
-    let analyzer = OARStructureBuilder::new(layout_model)
-        .layout_model_name(layout_name)
-        .with_ocr(spec.det, spec.rec, spec.dict)
-        // 表格结构识别（轻量：slanet_plus + 分类 + 字典）
-        .with_table_classification(spec.table_cls)
-        // 通用结构适配器：Wired/Wireless/Unknown 三分支无专用 adapter 时均回退到它，
-        // 避免 table_cls 分类为 Wired 时因无 wired adapter 触发 config_error 整页失败
-        .with_table_structure_recognition(spec.table_structure, "wireless")
-        .table_structure_dict_path(spec.table_dict)
-        .build()
-        .map_err(|e| anyhow::anyhow!("构建 OCR 分析器失败: {e}"))?;
-
-    let threads = threads.max(1);
-    let chunk_size = (images.len() + threads - 1) / threads;
-    let chunks: Vec<Vec<RgbImage>> = images
-        .chunks(chunk_size)
-        .map(|c| c.to_vec())
-        .collect();
-
-    let per_chunk: Vec<Vec<_>> = chunks
-        .into_par_iter()
-        .map(|chunk| analyzer.predict_images(chunk))
-        .collect();
-
-    let mut out = Vec::with_capacity(images.len());
-    for group in per_chunk {
-        for r in group {
-            out.push(r.map_err(|e| anyhow::anyhow!("OCR 推理失败: {e}"))?);
-        }
-    }
-    Ok(out)
+    OcrEngine::build(tier, layout)?.predict(images, threads)
 }

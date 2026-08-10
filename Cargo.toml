@@ -9,6 +9,8 @@ anydoc = "=0.1.7"
 anyhow = "1.0.104"
 clap = { version = "4", features = ["derive"] }
 image = "0.25.10"
+# 末页表探针零拷贝映射（T11）：已由 fontdb 传递引入，提升为直接依赖不增编译单元
+memmap2 = "0.9.11"
 oar-ocr = { version = "=0.9.1", default-features = false, features = ["auto-download", "simd"] }
 ofd-core = "=0.3.0"
 pdf-inspector = "=0.1.7"

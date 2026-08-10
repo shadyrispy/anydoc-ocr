@@ -1,12 +1,18 @@
 //! PDF 渲染：PDFium 逐页渲染为 RGB 图像（供 OCR 管线）
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use pdfium_render::prelude::*;
 
-/// 将 PDF 每页按 `dpi` 渲染为 `RgbImage`。
+/// 将 PDF 指定页按 `dpi` 渲染为 `RgbImage`。
+///
+/// `page_indices` 为 0 基准 pdfium 页号；**空切片 → 渲染全部页**（图片型 PDF 全量路径）。
+/// 仅渲子集（非全量）时峰值内存大降——52p 文档只渲 3 个可疑页，而非 52 页全物化。
+/// 输出顺序 = 升序命中的页号（与调用方 `suspicious` 升序 zip 保持锁步）。
+///
 /// libpdfium.so 定位优先级：`PDFIUM_LIB_DIR` 环境变量 > 可执行文件旁 `lib/`（打包布局）> 开发期相对路径。
-pub fn render_pdf_pages(path: &Path, dpi: f32) -> Result<Vec<image::RgbImage>> {
+pub fn render_pdf_pages(path: &Path, dpi: f32, page_indices: &[u32]) -> Result<Vec<image::RgbImage>> {
     let so = locate_pdfium()?;
     // pdfium 绑定是全局单例：文字层预检（pdf-inspector extract_pages_markdown）
     // 已初始化时，这里 bind 返回 AlreadyInitialized——用 Pdfium::default() 复用
@@ -21,7 +27,13 @@ pub fn render_pdf_pages(path: &Path, dpi: f32) -> Result<Vec<image::RgbImage>> {
         .load_pdf_from_file(path, None)
         .with_context(|| format!("PDFium 加载 PDF 失败: {}", path.display()))?;
 
-    Ok(render_document(&doc, dpi)?)
+    // 空 = 全渲；非空 = 仅渲指定索引（排序去重后集合，O(1) 判定）
+    let target: Option<BTreeSet<u32>> = if page_indices.is_empty() {
+        None
+    } else {
+        Some(page_indices.iter().copied().collect())
+    };
+    render_document(&doc, dpi, &target)
 }
 
 /// 定位 libpdfium.so：env > 可执行文件旁 lib/ > 开发期相对路径。
@@ -47,14 +59,27 @@ fn locate_pdfium() -> Result<String> {
     anyhow::bail!("找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）")
 }
 
-fn render_document(doc: &PdfDocument, dpi: f32) -> Result<Vec<image::RgbImage>> {
+fn render_document(
+    doc: &PdfDocument,
+    dpi: f32,
+    target: &Option<BTreeSet<u32>>,
+) -> Result<Vec<image::RgbImage>> {
     let scale = dpi / 72.0;
     let mut out = Vec::new();
     for (i, page) in doc.pages().iter().enumerate() {
+        // 懒惰渲染：仅 `target` 含本页索引时才渲染，跳过页不物化位图（内存收益在此）
+        if let Some(t) = target {
+            if !t.contains(&(i as u32)) {
+                continue;
+            }
+        }
         let w = (page.width().value * scale) as i32;
         let h = (page.height().value * scale) as i32;
         if w <= 0 || h <= 0 {
-            continue;
+            // 不静默跳过：跳过会使输出图像数 < 请求页数，调用方 `zip(页号)` 错位
+            // （表格归属错页）。0 尺寸页本就无法渲染（PDF 规范页尺寸须 >0），
+            // 显式报错，由调用方容错回退（文字层）而非产出错位结果。
+            anyhow::bail!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}");
         }
         let bitmap = page
             .render(w, h, None)
@@ -63,4 +88,34 @@ fn render_document(doc: &PdfDocument, dpi: f32) -> Result<Vec<image::RgbImage>> 
         out.push(img.to_rgb8());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 懒惰渲染子集 == 全量渲染后取同索引子集（尺寸+像素一致）。
+    /// 用入库小样本（确定性、非 OCR），缺失则跳过。
+    #[test]
+    fn lazy_render_subset_equals_full_indexed() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples/multipage.pdf");
+        if !path.exists() {
+            eprintln!("[render] skip: tests/samples/multipage.pdf missing");
+            return;
+        }
+        let dpi = 100.0_f32;
+        let full = render_pdf_pages(&path, dpi, &[]).expect("full render");
+        assert!(full.len() >= 3, "样本页不足 3 页，无法测子集");
+        // 取第 0、2 页（升序）
+        let subset_idx: Vec<u32> = vec![0, 2];
+        let lazy = render_pdf_pages(&path, dpi, &subset_idx).expect("lazy render");
+
+        assert_eq!(lazy.len(), subset_idx.len(), "输出数须=请求索引数");
+        for (k, &idx) in subset_idx.iter().enumerate() {
+            let a = &full[idx as usize];
+            let b = &lazy[k];
+            assert_eq!(a.dimensions(), b.dimensions(), "页 {idx} 尺寸不一致");
+            assert_eq!(a.as_raw(), b.as_raw(), "页 {idx} 像素不一致");
+        }
+    }
 }

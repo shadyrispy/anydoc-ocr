@@ -1,7 +1,7 @@
 //! OCR 模型档：极速/均衡/高精度三档，CLI 参数切换，无需重编译。
 use clap::ValueEnum;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum OcrTier {
     /// 极速：PP-OCRv6 tiny（det 1.7MB / rec 4.3MB），常见中文文档够用
     #[default]
@@ -13,7 +13,7 @@ pub enum OcrTier {
 }
 
 /// 版面模型选择：默认文档结构 vs 表格专用（检出 Table 才跑 SLANet）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum OcrLayout {
     /// 默认文档版面（PP-DocLayout-S，兼顾文字/标题/表格）
     #[default]

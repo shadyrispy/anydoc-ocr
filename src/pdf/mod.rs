@@ -25,7 +25,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
-use crate::table_grid::{self, TableGrid};
+use crate::emitter::{DocumentEmitter, FlushFormat};
+use crate::region::Region;
+use crate::table_grid::{self};
 use crate::{gfm_adapter, reading_order, timing::StageTimer, ConvertOptions, Result};
 
 /// garbled 检测常量：最多扫描前 4000 个 TextItem；字符总数须 >50，且
@@ -46,10 +48,10 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
             return Ok(md);
         }
     }
-    // 图片型：PDFium 渲染 + oar-ocr OCR
+    // 图片型：PDFium 渲染 + oar-ocr OCR（全量渲：空索引 = 渲所有页）
     // DPI 默认 100（可由 --dpi 调整）。DPI 200→100：像素量降 75%，实测 上海公报52p
     // 148.5s→100.0s(-33%)，内容恢复率零损失(99.83%)；80 起脚注/小字开始漏检。
-    let images = render::render_pdf_pages(path, opts.dpi)?;
+    let images = render::render_pdf_pages(path, opts.dpi, &[])?;
     t.stage("render");
     let pages = ocr::ocr_images(images, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
     t.stage("ocr");
@@ -72,7 +74,15 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     if items.is_empty() {
         return Ok(None);
     }
-    // 坏字体（GID/编码损坏）防护：调用 pdf-inspector 的健壮检测器做一次全文档
+    // ── 坏字体（GID/编码损坏）两级防护：浅检在前、深检兜底（T12）──
+    // 廉价坏字体防护：提取文本若大量出现替换符/私有区/控制符（GID 坏字体常见
+    // 特征），文字层输出是乱码，回退 OCR。正常 PDF 几乎无此类字符，零开销。
+    // 浅检命中即返回，省下深检的 ~0.3s 全页 markdown 构建（健康文档白付的成本）。
+    // 注：拉丁扩展乱码（如某些 GID 字体）此处检不出，由下方深检兜住。
+    if looks_garbled(&items) {
+        return Ok(None);
+    }
+    // 深检兜底：调用 pdf-inspector 的健壮检测器做一次全文档
     // markdown 抽取（其内部本就全页抽取），统计被判 `suspected_garbled_text` 的页数。
     // 系统性坏字体 → 大量页面乱码（占比高）→ 文字层不可信，回退 OCR；健康文档即使
     // 有少量误报（如目录点线符的私有区字符，上海公报仅 2 页）也不触发。
@@ -83,10 +93,14 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     // 注意：pdf-inspector 内部行分组有 bug（layout.rs:1270 空列集 then_some
     // 立即求值 panic），garbled 检查的 extract_pages_markdown 也会触发。
     // 用 catch_unwind 兜底：panic 视为"无法预检"→ 跳过 garbled 检查继续。
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pdf_inspector::extract_pages_markdown(path, None)
-    })) {
-        Ok(Ok(extraction)) => {
+    // T11：path 版内部会 `fs::read` 整读（500MB 文档重复 500MB 堆峰值），
+    // 这里用 mmap 版 `_mem` + 共享零拷贝映射，与末页探针同思路。
+    let pdf_bytes = open_pdf_bytes(path);
+    if let Some(pdf_bytes) = pdf_bytes {
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pdf_inspector::extract_pages_markdown_mem(pdf_bytes.as_slice(), None)
+        }));
+        if let Ok(Ok(extraction)) = caught {
             let total = extraction.pages.len();
             let garbled = extraction
                 .ocr_reasons_by_page
@@ -102,13 +116,6 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
                 return Ok(None);
             }
         }
-        _ => {}
-    }
-    // 廉价坏字体防护：提取文本若大量出现替换符/私有区/控制符（GID 坏字体常见
-    // 特征），文字层输出是乱码，回退 OCR。正常 PDF 几乎无此类字符，零开销。
-    // 注：拉丁扩展乱码（如某些 GID 字体）此处检不出，行为与旧 anydoc 一致。
-    if looks_garbled(&items) {
-        return Ok(None);
     }
 
     // 跨页重复"页面家具/水印"剔除：同文本 + 同归一化位置（x 中心、y 各 1% 箱）
@@ -191,85 +198,73 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
     // 渲染/OCR 任一环节失败 → 该页回落，不炸文档。
     let mut table_out: BTreeMap<u32, String> = BTreeMap::new();
     if !suspicious.is_empty() {
-        if let Ok(images) = render::render_pdf_pages(path, opts.dpi) {
-            // 渲染输出按文档页序（0 起始）；页号升序，防缺页错位。
-            let mut imgs: Vec<image::RgbImage> = Vec::new();
-            let mut ocr_pages: Vec<u32> = Vec::new();
-            for &p in &suspicious {
-                let idx = p as usize - 1;
-                if by_page.contains_key(&p) && idx < images.len() {
-                    imgs.push(images[idx].clone());
-                    ocr_pages.push(p);
-                }
-            }
-            if !imgs.is_empty()
-                && let Ok(results) =
-                    ocr::ocr_images(imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
-            {
-                for (page, res) in ocr_pages.into_iter().zip(results) {
-                    let has_table = res.layout_elements.iter().any(|e| {
-                        e.element_type
-                            == oar_ocr::domain::structure::LayoutElementType::Table
-                    });
-                    if has_table {
-                        table_out.insert(
-                            page,
-                            gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
-                        );
-                    }
+        // T07 懒惰渲染：只渲 `suspicious` 子集（0 基准 pdfium 页号 = p-1），
+        // 避免 52p 文档全量渲 52 页只 OCR 3 页的内存浪费。`suspicious` 是
+        // BTreeSet 升序，to_render 与 ocr_pages 同迭代序/同谓词 → 输出锁步。
+        let to_render: Vec<u32> = suspicious
+            .iter()
+            .filter(|&&p| by_page.contains_key(&p))
+            .map(|&p| p - 1)
+            .collect();
+        let ocr_pages: Vec<u32> = suspicious
+            .iter()
+            .filter(|&&p| by_page.contains_key(&p))
+            .copied()
+            .collect();
+        if !to_render.is_empty()
+            && let Ok(imgs) = render::render_pdf_pages(path, opts.dpi, &to_render)
+            && !imgs.is_empty()
+            && let Ok(results) =
+                ocr::ocr_images(imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
+        {
+            for (page, res) in ocr_pages.into_iter().zip(results) {
+                let has_table = res.layout_elements.iter().any(|e| {
+                    e.element_type
+                        == oar_ocr::domain::structure::LayoutElementType::Table
+                });
+                if has_table {
+                    table_out.insert(
+                        page,
+                        gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
+                    );
                 }
             }
         }
     }
 
     // ── 输出装配：文字层网格表（免 OCR、跨页合并）+ OCR 确认表 + 普通行，页序混排 ──
-    let mut segments: BTreeMap<u32, String> = BTreeMap::new();
-    let mut pending: Option<(TableGrid, u32)> = None;
+    let mut emitter = DocumentEmitter::new(FlushFormat::Text);
     for (page, page_items) in by_page.iter() {
         let page_w = page_w[page];
         let full_lines = &lines_by_page[page];
 
         // 1) 文字层网格表格（快速、免 OCR）：按页续接合并（B4）
-        let blocks: Vec<(f32, f32, f32, f32, String)> = page_items
+        let blocks: Vec<Region> = page_items
             .iter()
-            .map(|i| (i.x, -i.y, i.width, i.height, i.text.clone()))
+            .map(|i| Region::from_top_left(i.x, -i.y, i.width, i.height, i.text.clone()))
             .collect();
         if let Some(grid) = table_grid::reconstruct_table_grid(&blocks, page_w) {
-            match pending.take() {
-                Some((mut p, sp)) if p.cols == grid.cols => {
-                    table_grid::extend_table_grid(&mut p, grid);
-                    pending = Some((p, sp));
-                }
-                Some((p, sp)) => {
-                    table_grid::flush_table(&mut segments, p, sp);
-                    pending = Some((grid, *page));
-                }
-                None => pending = Some((grid, *page)),
-            }
+            emitter.emit_grid(grid, *page);
             continue;
         }
 
         // 2) 版面 OCR 确认的表格页：直接输出 OCR 通路结果（行 + <table>）
         if let Some(ocr_md) = table_out.get(page) {
-            if let Some((p, sp)) = pending.take() {
-                table_grid::flush_table(&mut segments, p, sp);
-            }
-            segments.entry(*page).or_default().push_str(ocr_md);
-            segments.entry(*page).or_default().push_str("\n\n");
+            emitter.flush_pending();
+            emitter.push_segment(*page, ocr_md);
+            emitter.push_segment(*page, "\n\n");
             continue;
         }
 
         // 3) 普通页：先冲掉挂起的跨页表，再输出文字层行
-        if let Some((p, sp)) = pending.take() {
-            table_grid::flush_table(&mut segments, p, sp);
-        }
+        emitter.flush_pending();
         let mut seg_out = String::new();
         // 列间隙检测：行级候选间隙聚类。封面/标题的字母间距是单行现象、每行
         // split_x 各不相同，聚类不到 >=3 行；双列正文的 gutter 在每行同一 x 处
         // 重复出现，聚成主簇 → 只拆这些行，标题行保持整行。
         let split = clustered_row_split(full_lines, page_w);
 
-        let mut regions: Vec<(f32, f32, f32, f32, String)> = Vec::new();
+        let mut regions: Vec<Region> = Vec::new();
         for line in full_lines {
             let mut sorted = line.items.clone();
             sorted.sort_by(|a, b| a.x.total_cmp(&b.x));
@@ -320,16 +315,10 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
             }
         }
         seg_out.push('\n');
-        segments.entry(*page).or_default().push_str(&seg_out);
+        emitter.push_segment(*page, &seg_out);
     }
-    if let Some((p, sp)) = pending.take() {
-        table_grid::flush_table(&mut segments, p, sp);
-    }
-    let mut out = String::new();
-    for (_, seg) in segments {
-        out.push_str(&seg);
-    }
-    let md = out.trim_end().to_string();
+    emitter.flush_pending();
+    let md = emitter.finish();
     if md.is_empty() {
         Ok(None)
     } else {
@@ -341,22 +330,9 @@ fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<Stri
 /// 标题前缀注入（B3-T）：文字层没有布局标题信号，仅用编号启发式
 /// `reading_order::title_level` 判定标题行并加 `#` 前缀（与 OFD 文字层同口径）。
 /// OCR 通路（gfm_adapter）用布局模型确认的标题块输出 `#`，三路输出对齐。
-/// 已以 `#` 开头（trim 后）或字符数 >60 的行保持原样。
+/// 统一于 `text_health::apply_title_prefixes`（空 hints + numbering=true）。
 fn apply_title_prefixes(lines: Vec<String>) -> Vec<String> {
-    lines
-        .into_iter()
-        .map(|line| {
-            if line.trim_start().starts_with('#') {
-                return line;
-            }
-            if line.chars().count() <= 60
-                && let Some(level) = reading_order::title_level(&line)
-            {
-                return format!("{} {}", "#".repeat(level), line);
-            }
-            line
-        })
-        .collect()
+    crate::text_health::apply_title_prefixes(&lines, &[], true)
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。
@@ -445,17 +421,24 @@ fn page_has_tabular_rows(
 /// rect→line→启发式检测兜底，命中返回管道表 markdown。区域坐标为
 /// PDF 点、top-left 原点（`extract_tables_in_regions_mem` 约定），
 /// 宽/高加 40pt 余量防边缘裁剪。任何失败/空结果 → `None`，不影响主流程。
+///
+/// T11：上游只有 `&[u8]` 接口，原实现 `fs::read` 会把整个 PDF 载入堆
+/// （500MB 文件 → 500MB 峰值）。改为 mmap 只读映射，页面按需换入、
+/// 不占堆；映射失败（无 mmap 的文件系统等）回落一次性整读。
 fn probe_last_page_table(
     path: &Path,
     last_page: u32,
     page_w: &BTreeMap<u32, f32>,
     page_h: &BTreeMap<u32, f32>,
 ) -> Option<String> {
-    let buf = std::fs::read(path).ok()?;
+    let pdf_bytes = open_pdf_bytes(path)?;
     let w = page_w.get(&last_page).copied().unwrap_or(595.0);
     let h = page_h.get(&last_page).copied().unwrap_or(842.0);
-    let regions = [(last_page - 1, vec![[0.0, 0.0, w + 40.0, h + 40.0]])];
-    let results = pdf_inspector::extract_tables_in_regions_mem(&buf, &regions).ok()?;
+    let regions = [(
+        last_page.saturating_sub(1),
+        vec![[0.0, 0.0, w + 40.0, h + 40.0]],
+    )];
+    let results = pdf_inspector::extract_tables_in_regions_mem(pdf_bytes.as_slice(), &regions).ok()?;
     let md = results
         .into_iter()
         .next()?
@@ -467,24 +450,44 @@ fn probe_last_page_table(
     (!md.is_empty()).then(|| md.to_string())
 }
 
-/// 坏字体乱码检测：前 4000 个 TextItem 中替换符 `\u{FFFD}`、私有区
-/// (U+E000..=U+F8FF)、控制字符占比达 20% 且字符总数 >50 → 判定乱码，
-/// 文字层应回退 OCR。
-fn looks_garbled(items: &[pdf_inspector::TextItem]) -> bool {
-    let mut total = 0usize;
-    let mut bad = 0usize;
-    for item in items.iter().take(GARBLED_MAX_ITEMS) {
-        for c in item.text.chars() {
-            total += 1;
-            if c == '\u{FFFD}'
-                || ('\u{E000}'..='\u{F8FF}').contains(&c)
-                || c.is_control()
-            {
-                bad += 1;
-            }
+/// 只读打开 PDF 字节的载体：优先 mmap（零堆拷贝，T11），失败回落整读。
+enum PdfBytes {
+    Mapped(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
+impl PdfBytes {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            PdfBytes::Mapped(m) => m.as_ref(),
+            PdfBytes::Owned(v) => v,
         }
     }
-    total > GARBLED_MIN_TOTAL && bad * 100 >= total * GARBLED_BAD_PERCENT
+}
+
+/// 只读打开 PDF 字节：优先 mmap，映射失败（无 mmap 的文件系统等）回落整读。
+/// 返回 `None` 表示文件不可读（调用方据此跳过相应兜底逻辑）。
+fn open_pdf_bytes(path: &Path) -> Option<PdfBytes> {
+    if let Ok(f) = std::fs::File::open(path) {
+        // SAFETY: 只读映射输入 PDF。若外部进程在转换期间截断/改写该文件，对
+        // 已映射页的访问可能触发 SIGBUS（mmap 语义，进程终止）或读到不一致
+        // 字节——这是 mmap 读者的固有风险，非本工具引入；此处仅用于解析，
+        // 文件被并发改写属调用方环境问题。Linux 下映射不依赖 fd 存活。
+        if let Ok(m) = unsafe { memmap2::Mmap::map(&f) } {
+            return Some(PdfBytes::Mapped(m));
+        }
+    }
+    std::fs::read(path).ok().map(PdfBytes::Owned)
+}
+
+/// 坏字体乱码检测：前 4000 个 TextItem 中替换符 `\u{FFFD}`、私有区
+/// (U+E000..=U+F8FF)、控制字符占比达 20% 且字符总数 >50 → 判定乱码，
+/// 文字层应回退 OCR。字符分类逻辑收敛于 `text_health`。
+fn looks_garbled(items: &[pdf_inspector::TextItem]) -> bool {
+    let chars = items
+        .iter()
+        .take(GARBLED_MAX_ITEMS)
+        .flat_map(|it| it.text.chars());
+    crate::text_health::has_garbled_chars(chars, GARBLED_MIN_TOTAL, GARBLED_BAD_PERCENT)
 }
 
 /// 跨页重复"页面家具/水印"检测：返回需剔除的 TextItem 签名集合
@@ -562,7 +565,7 @@ fn push_line_region(
     seg: &[pdf_inspector::TextItem],
     template: &pdf_inspector::extractor::TextLine,
     page: u32,
-    regions: &mut Vec<(f32, f32, f32, f32, String)>,
+    regions: &mut Vec<Region>,
 ) {
     if seg.is_empty() {
         return;
@@ -587,7 +590,13 @@ fn push_line_region(
     }
     // PDF 坐标原点左下（y 大=靠上）。reading_order 约定 y 越小越靠上，翻转：-y。
     let y_flip = -line.y;
-    regions.push((x_min, x_max, y_flip, y_flip + (y_max_pdf - line.y).max(1.0), text));
+    regions.push(Region::new(
+        x_min,
+        x_max,
+        y_flip,
+        y_flip + (y_max_pdf - line.y).max(1.0),
+        text,
+    ));
 }
 
 #[cfg(test)]

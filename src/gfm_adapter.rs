@@ -14,6 +14,8 @@
 //! 补救：收集 Image 块内的 text_regions → 网格重建（复用 `crate::table_grid`），
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
 use crate::reading_order::{order_text_regions, postprocess_lines, title_level};
+use crate::emitter::{DocumentEmitter, FlushFormat};
+use crate::region::Region;
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};
 
@@ -127,7 +129,9 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
     if has_figure && !has_table_title {
         return None;
     }
-    let mut blocks: Vec<(f32, f32, f32, f32, String)> = Vec::new();
+    // T02：page_scale 每函数算 1 次（原在 region 循环内每 region 重算，O(n²)）
+    let scale = page_scale(page);
+    let mut blocks: Vec<Region> = Vec::new();
     if let Some(regs) = &page.text_regions {
         for r in regs {
             let Some(t) = r.text.as_ref() else { continue };
@@ -138,14 +142,13 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
             let b = &r.bounding_box;
             let cx = (b.x_min() + b.x_max()) / 2.0;
             let cy = (b.y_min() + b.y_max()) / 2.0;
-            let scale = page_scale(page);
             let in_img = imgs
                 .iter()
                 .any(|el| norm_membership(cx, cy, scale, &el.bbox));
             if !in_img {
                 continue;
             }
-            blocks.push((
+            blocks.push(Region::from_top_left(
                 b.x_min(),
                 b.y_min(),
                 (b.x_max() - b.x_min()).max(1.0),
@@ -200,9 +203,8 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
 /// （与文字层表格的段式装配一致，保证阅读顺序）。
 pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
     let debug = std::env::var("ANYDOC_DEBUG_GFM").is_ok();
-    let mut page_outs: Vec<String> = vec![String::new(); pages.len()];
-    // 跨页 Image 重建表：挂起 (grid, 首表页 index)，列数一致续接，否则 flush。
-    let mut pending_img: Option<(TableGrid, usize)> = None;
+    // 跨页 Image 重建表：挂起 (grid, 首表页)，列数一致续接，否则 flush。
+    let mut emitter = DocumentEmitter::new(FlushFormat::Gfm);
 
     for (pi, page) in pages.iter().enumerate() {
         // 仅接受通过伪表格过滤的表格：被拒绝的误判表格既不入 HTML，也不
@@ -215,8 +217,10 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         let page_w = page
             .text_regions
             .as_ref()
-            .map(|rs| rs.iter().map(|r| r.bounding_box.x_max()).fold(0.0_f32, f32::max))
-            .unwrap_or(0.0);
+        .map(|rs| rs.iter().map(|r| r.bounding_box.x_max()).fold(0.0_f32, f32::max))
+        .unwrap_or(0.0);
+        // T02：page_scale 每页算 1 次（原在 region 循环内每 region 重算，O(n²)）
+        let scale = page_scale(page);
         // Image 块补救重建（可能跨页续接合并）。重建成功 → Image 内文本从正文
         // 剔除（由跨页表独占，避免表头/单元格正文重复）；失败 → 保留作普通正文。
         let img_grid = reconstruct_image_table(page, page_w);
@@ -233,7 +237,7 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         // 收集文本区域（剔除落在 layout 表格内的，避免与表格 HTML 重复；
         // Image 块文本保留在正文中——重建失败时它应正常输出，重建成功时由
         // 跨页表覆盖首表页段，不再作为正文重复）
-        let mut regions: Vec<(f32, f32, f32, f32, String)> = Vec::new();
+        let mut regions: Vec<Region> = Vec::new();
         if let Some(regs) = &page.text_regions {
             for r in regs {
                 let Some(t) = r.text.as_ref() else { continue };
@@ -244,7 +248,6 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 let b = &r.bounding_box;
                 let cx = (b.x_min() + b.x_max()) / 2.0;
                 let cy = (b.y_min() + b.y_max()) / 2.0;
-                let scale = page_scale(page);
                 let in_table = tables
                     .iter()
                     .any(|tb| norm_membership(cx, cy, scale, &tb.bbox));
@@ -258,17 +261,24 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 if in_img {
                     continue;
                 }
-                regions.push((b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string()));
+                regions.push(Region::new(
+                    b.x_min(),
+                    b.x_max(),
+                    b.y_min(),
+                    b.y_max(),
+                    t.to_string(),
+                ));
             }
         }
         if debug && pi < 7 {
-            let pw = regions.iter().map(|r| r.1).fold(0.0_f32, f32::max);
+            let pw = regions.iter().map(|r| r.x_max).fold(0.0_f32, f32::max);
             eprintln!("[gfm-dbg] page={pi} page_w={pw:.0} n_regions={}", regions.len());
-            for (x0, x1, y0, y1, t) in &regions {
-                let cx = (x0 + x1) / 2.0;
-                let wide = (x1 - x0) > 0.6 * pw;
+            for r in &regions {
+                let cx = (r.x_min + r.x_max) / 2.0;
+                let wide = (r.x_max - r.x_min) > 0.6 * pw;
                 eprintln!(
-                    "[gfm-dbg]   x0={x0:6.0} x1={x1:6.0} cx={cx:6.0} y0={y0:6.0} y1={y1:6.0} wide={wide} | {t}"
+                    "[gfm-dbg]   x0={:6.0} x1={:6.0} cx={cx:6.0} y0={:6.0} y1={:6.0} wide={wide} | {}",
+                    r.x_min, r.x_max, r.y_min, r.y_max, r.text
                 );
             }
         }
@@ -287,43 +297,14 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         }
 
         // Image 跨页表处理：同列续接 / 换表 flush / 表格中断 flush
-        match (pending_img.take(), img_grid) {
-            (Some((mut p, sp)), Some(g)) if p.cols == g.cols => {
-                table_grid::extend_table_grid(&mut p, g);
-                pending_img = Some((p, sp));
-            }
-            (Some((p, sp)), Some(g)) => {
-                flush_grid(&mut page_outs, p, sp);
-                pending_img = Some((g, pi));
-            }
-            (Some((p, sp)), None) => {
-                flush_grid(&mut page_outs, p, sp);
-            }
-            (None, Some(g)) => {
-                pending_img = Some((g, pi));
-            }
-            (None, None) => {}
+        match img_grid {
+            Some(g) => emitter.emit_grid(g, pi as u32),
+            None => emitter.flush_pending(),
         }
-        page_outs[pi] = seg;
+        emitter.push_segment(pi as u32, &seg);
     }
-    if let Some((p, sp)) = pending_img.take() {
-        flush_grid(&mut page_outs, p, sp);
-    }
-    let mut out = String::new();
-    for seg in page_outs {
-        out.push_str(&seg);
-    }
-    out.trim_end().to_string()
-}
-
-/// 把已定型的跨页 Image 表写入其"首表页"段（保证阅读顺序）。
-fn flush_grid(page_outs: &mut [String], grid: TableGrid, start_page: usize) {
-    let e = page_outs
-        .get_mut(start_page)
-        .expect("flush page index in range");
-    e.push_str("\n\n");
-    e.push_str(&table_grid::table_grid_to_html(&grid));
-    e.push('\n');
+    emitter.flush_pending();
+    emitter.finish()
 }
 
 /// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
@@ -352,24 +333,8 @@ fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<Strin
             titles.push((t.to_string(), lv));
         }
     }
-    if titles.is_empty() {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .map(|line| {
-            if line.trim_start().starts_with('#') {
-                return line;
-            }
-            for (tt, lv) in &titles {
-                let lt = line.trim();
-                if lt == tt || lt.contains(tt.as_str()) || tt.contains(lt) {
-                    return format!("{} {}", "#".repeat(*lv), line);
-                }
-            }
-            line
-        })
-        .collect()
+    // 布局驱动：hints 来自版面标题块，numbering=false 不抹平文字层差异。
+    crate::text_health::apply_title_prefixes(&lines, &titles, false)
 }
 
 /// 剥离 oar-ocr 表格 HTML 的 `<html>/<body>` 包裹（若有），仅保留 `<table>…</table>`。

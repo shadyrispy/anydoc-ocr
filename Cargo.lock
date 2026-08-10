@@ -160,6 +160,7 @@ dependencies = [
  "anyhow",
  "clap",
  "image",
+ "memmap2",
  "oar-ocr",
  "ofd-core",
  "pdf-inspector",
