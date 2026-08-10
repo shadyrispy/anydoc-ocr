@@ -14,17 +14,19 @@
 //!
 //! 无清晰间隙（单栏或无法切分）时退化为纯 y 排序，兼容单栏文档与边缘情况。
 //!
-//! `regions`: `(x_min, x_max, y_min, y_max, 文本)`。
+//! `regions`: [`Region`]（`x_min/x_max/y_min/y_max/文本`）。
+
+use crate::region::Region;
 
 /// OCR 文本区域的阅读顺序还原。
 ///
 /// `y` 语义：**越小越靠上**（图像坐标系，原点左上）。PDF 坐标（原点左下）
 /// 需在调用方翻转后传入，否则上下颠倒。
-pub fn order_text_regions(regions: &[(f32, f32, f32, f32, String)]) -> Vec<String> {
+pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
     if regions.is_empty() {
         return Vec::new();
     }
-    let page_w = regions.iter().map(|r| r.1).fold(0.0_f32, f32::max);
+    let page_w = Region::page_w(regions);
     if page_w <= 0.0 {
         return sort_by_y(regions);
     }
@@ -33,18 +35,15 @@ pub fn order_text_regions(regions: &[(f32, f32, f32, f32, String)]) -> Vec<Strin
     };
 
     // 正文区域：(中心x, y, 文本)；跨整页元素：(y, 文本)
-    let is_full = |r: &(f32, f32, f32, f32, String)| {
-        (r.1 - r.0) > 0.92 * page_w && r.0 < 0.08 * page_w
-    };
     let mut left: Vec<(f32, String)> = regions
         .iter()
-        .filter(|r| !is_full(r) && ((r.0 + r.1) / 2.0) < split)
-        .map(|r| (r.2, r.4.clone()))
+        .filter(|r| !r.is_full_width(page_w) && r.center_x() < split)
+        .map(|r| (r.y_min, r.text.clone()))
         .collect();
     let mut right: Vec<(f32, String)> = regions
         .iter()
-        .filter(|r| !is_full(r) && ((r.0 + r.1) / 2.0) >= split)
-        .map(|r| (r.2, r.4.clone()))
+        .filter(|r| !r.is_full_width(page_w) && r.center_x() >= split)
+        .map(|r| (r.y_min, r.text.clone()))
         .collect();
     left.sort_by(ord_y);
     right.sort_by(ord_y);
@@ -52,8 +51,8 @@ pub fn order_text_regions(regions: &[(f32, f32, f32, f32, String)]) -> Vec<Strin
     // 整宽元素按 y 归页眉(y<正文起点)/页脚(y>正文终点)/正文区间(罕见置后)
     let full: Vec<(f32, String)> = regions
         .iter()
-        .filter(|r| is_full(r))
-        .map(|r| (r.2, r.4.clone()))
+        .filter(|r| r.is_full_width(page_w))
+        .map(|r| (r.y_min, r.text.clone()))
         .collect();
     let body_min = left
         .iter()
@@ -100,21 +99,18 @@ pub fn order_text_regions(regions: &[(f32, f32, f32, f32, String)]) -> Vec<Strin
 /// 列检测用**所有**正文区域（含宽条目）的中心 x，取最大间隙切分；要求间隙
 /// >= 3% 页宽且两侧各 >=2 区域，避免把单栏内的大间距误判为分栏。真正跨整页
 /// （x 同时贴近左右边距）的元素（页眉/页脚/通栏标题）先剔除。
-pub fn detect_column_split(regions: &[(f32, f32, f32, f32, String)]) -> Option<f32> {
+pub fn detect_column_split(regions: &[Region]) -> Option<f32> {
     if regions.len() < 4 {
         return None;
     }
-    let page_w = regions.iter().map(|r| r.1).fold(0.0_f32, f32::max);
+    let page_w = Region::page_w(regions);
     if page_w <= 0.0 {
         return None;
     }
-    let is_full = |r: &(f32, f32, f32, f32, String)| {
-        (r.1 - r.0) > 0.92 * page_w && r.0 < 0.08 * page_w
-    };
     let mut body: Vec<f32> = regions
         .iter()
-        .filter(|r| !is_full(r))
-        .map(|r| (r.0 + r.1) / 2.0)
+        .filter(|r| !r.is_full_width(page_w))
+        .map(|r| r.center_x())
         .collect();
     if body.len() < 4 {
         return None;
@@ -139,8 +135,8 @@ fn ord_y(a: &(f32, String), b: &(f32, String)) -> std::cmp::Ordering {
 }
 
 /// 单栏/无可切分列时的退化为纯 y 排序（保持旧行为兼容）
-fn sort_by_y(regions: &[(f32, f32, f32, f32, String)]) -> Vec<String> {
-    let mut v: Vec<(f32, String)> = regions.iter().map(|r| (r.2, r.4.clone())).collect();
+fn sort_by_y(regions: &[Region]) -> Vec<String> {
+    let mut v: Vec<(f32, String)> = regions.iter().map(|r| (r.y_min, r.text.clone())).collect();
     v.sort_by(ord_y);
     v.into_iter().map(|(_, t)| t).collect()
 }
@@ -265,7 +261,7 @@ fn parse_numbering(t: &str) -> Option<(usize, &str)> {
             cnt += 1;
         }
         if cnt > 0 {
-            if j < n && cs[j] == '）' {
+            if j < n && (cs[j] == '）' || cs[j] == ')') {
                 j += 1;
             }
             let k = skip_sep_ws(&cs, j);
@@ -276,7 +272,7 @@ fn parse_numbering(t: &str) -> Option<(usize, &str)> {
         while j < n && is_cn_numeral(cs[j]) {
             j += 1;
         }
-        if j < n && cs[j] == '）' {
+        if j < n && (cs[j] == '）' || cs[j] == ')') {
             j += 1;
         }
         let k = skip_sep_ws(&cs, j);
@@ -322,11 +318,12 @@ fn is_cn_numeral(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::region::Region;
     use super::order_text_regions;
 
     /// 构造区域：(x_min, x_max, y_min, y_max=+10, 文本)
-    fn reg(x0: f32, x1: f32, y0: f32, t: &str) -> (f32, f32, f32, f32, String) {
-        (x0, x1, y0, y0 + 10.0, t.to_string())
+    fn reg(x0: f32, x1: f32, y0: f32, t: &str) -> Region {
+        Region::new(x0, x1, y0, y0 + 10.0, t)
     }
 
     #[test]
@@ -430,6 +427,15 @@ mod tests {
         // 全角数字/字母转半角；中文全角标点保留
         let lines = vec!["第１期（总第５７７期）ＡＢＣａｂｃ".into()];
         assert_eq!(postprocess_lines(lines), vec!["第1期（总第577期）ABCabc"]);
+    }
+
+    #[test]
+    fn cn_numeral_halfwidth_paren_title() {
+        use super::title_level;
+        // 中文数字 + 半角 ) ：一) 小节 → 编号启发式命中 → 级别 2（C3）
+        assert_eq!(title_level("一) 术语和定义"), Some(2));
+        // 全角 ）仍命中（回归）
+        assert_eq!(title_level("一）范围"), Some(2));
     }
 
     #[test]

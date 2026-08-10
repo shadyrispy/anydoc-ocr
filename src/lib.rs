@@ -4,12 +4,16 @@ pub use error::Result;
 
 pub mod convert;
 pub mod detect;
+pub mod emitter;
 pub mod gfm_adapter;
 pub mod models;
+pub mod ocr_engine;
 pub mod ofd;
 pub mod pdf;
 pub mod reading_order;
+pub mod region;
 pub mod table_grid;
+pub mod text_health;
 pub mod timing;
 
 pub use convert::{convert_to_markdown, ConvertOptions};

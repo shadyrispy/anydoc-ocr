@@ -1,11 +1,15 @@
 //! 文字层表格网格重建 + 跨页合并（PDF / OFD 共用）
 //!
-//! 各格式文字层的 TextItem / TextObject 统一映射为**文本块** `(x, y, w, h, text)`，
+//! 各格式文字层的 TextItem / TextObject 统一映射为 `Region`（`x_min/x_max/y_min/
+//! y_max/text`，由调用侧以 `Region::from_top_left(x, y, w, h, text)` 传入块），
 //! 在此完成：按 y 组行 → 行内按 x 间隙聚列 → 列 x 对齐判表（双列正文参差则拒）→
 //! 合并单元格 span 推断 → `<table>` HTML。跨页续接（列数一致 / 表头去重）亦在此。
 //!
 //! 坐标约定：`y` **越小越靠上**（与 `reading_order` 一致）。PDF 左下原点需在调用侧
-//! 翻转（`y_flip = -y`）；OFD 左上原点直接传。`x` 从左到右，`w`/`h` 为块宽高。
+//! 翻转（`y_flip = -y`）；OFD 左上原点直接传。`x` 从左到右，块宽高 = `x_max-x_min`/
+//! `y_max-y_min`。
+
+use crate::region::Region;
 
 /// 文字层表格单元格（文本 + 几何，用于合并单元格 span 推断）。
 #[derive(Clone)]
@@ -21,6 +25,8 @@ pub struct TableGrid {
     pub cols: usize,
     pub header: Vec<TableCell>,
     pub rows: Vec<Vec<TableCell>>,
+    /// 首行是否为真表头（决定跨页合并是否去重；纯数据表为 false，防丢首行）。
+    pub has_header: bool,
 }
 
 fn empty_cell() -> TableCell {
@@ -36,49 +42,29 @@ fn empty_cell() -> TableCell {
 /// 要求：列数>=2 且 >=2 行同列数；**列 x 对齐**（同列首格 x 散布小，双列正文参差则拒）。
 /// 长句/散文不再拒表（对齐 MinerU：长文本保留在单元格，判表靠列结构）。
 ///
-/// `items`: `(x, y, w, h, text)`；`y` 越小越靠上（表头在上）。
-pub fn reconstruct_table_grid(items: &[(f32, f32, f32, f32, String)], page_w: f32) -> Option<TableGrid> {
+/// `items`: `Region`（`x_min/x_max/y_min/y_max/text`）；`y` 越小越靠上（表头在上）。
+pub fn reconstruct_table_grid(items: &[Region], page_w: f32) -> Option<TableGrid> {
     reconstruct_grid(items, page_w, false)
 }
 
 /// 宽松版（Image 块补救用）：列对齐用**中位数 + 离群率**，容忍 OCR 框起始抖动
 /// （扫描件表格如 C.1 条款号列 x 漂移 ~16px，绝对散布判据会误拒）。PDF 文字层
 /// 仍用严格版（绝对散布），防双列正文误判。调用方需自行做 2 列长文本兜底。
-pub fn reconstruct_table_grid_tolerant(
-    items: &[(f32, f32, f32, f32, String)],
-    page_w: f32,
-) -> Option<TableGrid> {
+pub fn reconstruct_table_grid_tolerant(items: &[Region], page_w: f32) -> Option<TableGrid> {
     reconstruct_grid(items, page_w, true)
 }
 
-fn reconstruct_grid(
-    items: &[(f32, f32, f32, f32, String)],
-    page_w: f32,
-    tolerant: bool,
-) -> Option<TableGrid> {
+fn reconstruct_grid(items: &[Region], page_w: f32, tolerant: bool) -> Option<TableGrid> {
     if items.len() < 4 {
         return None;
     }
-    let mut sorted: Vec<&(f32, f32, f32, f32, String)> = items.iter().collect();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1)); // y 升序：小=上（表头在顶部）
-    let row_tol = 4.0_f32;
+    let mut sorted: Vec<&Region> = items.iter().collect();
+    sorted.sort_by(|a, b| a.y_min.total_cmp(&b.y_min)); // y 升序：小=上（表头在顶部）
     let gap_thr = 0.012 * page_w;
-    let mut rows: Vec<Vec<TableCell>> = Vec::new();
-    let mut cur: Vec<&(f32, f32, f32, f32, String)> = Vec::new();
-    let mut cur_y = 0.0_f32;
-    for it in sorted {
-        if !cur.is_empty() && (cur_y - it.1).abs() > row_tol {
-            rows.push(cluster_row(&cur, gap_thr));
-            cur.clear();
-        }
-        if cur.is_empty() {
-            cur_y = it.1;
-        }
-        cur.push(it);
-    }
-    if !cur.is_empty() {
-        rows.push(cluster_row(&cur, gap_thr));
-    }
+    // 行距自适应：row_tol 用相对值（0.5×中位行距），随 dpi/尺度变化，避免
+    // 高 dpi 扫描件同列 y 抖动 > 绝对 4px 时行误分（C2）。
+    let row_tol = relative_row_tol(items, page_w);
+    let rows = group_rows(&sorted, row_tol, gap_thr);
     // 只保留列数 >=2 的行（丢弃单格散落文本）
     let rows: Vec<Vec<TableCell>> = rows.into_iter().filter(|r| r.len() >= 2).collect();
     if rows.len() < 2 {
@@ -167,8 +153,15 @@ fn reconstruct_grid(
         }
     }
     let header = aligned[0].clone();
-    let rows = aligned[1..].to_vec();
-    Some(TableGrid { cols, header, rows })
+    let body = aligned[1..].to_vec();
+    // C1：首行是否真表头？纯数据表首行当数据行，跨页合并不去重（防丢首行）。
+    let has_header = is_header_row(&header, &body);
+    Some(TableGrid {
+        cols,
+        header,
+        rows: body,
+        has_header,
+    })
 }
 
 /// 单元格文本列表（跨页表头去重比较用）。
@@ -176,16 +169,100 @@ pub fn cell_texts(v: &[TableCell]) -> Vec<String> {
     v.iter().map(|c| c.text.clone()).collect()
 }
 
+/// 按 y 组行：同行 cell 的 y 差 <= `row_tol` 归一组，组内按 x 聚列。
+/// `sorted` 须已按 y 升序。
+fn group_rows(sorted: &[&Region], row_tol: f32, gap_thr: f32) -> Vec<Vec<TableCell>> {
+    let mut rows = Vec::new();
+    let mut cur: Vec<&Region> = Vec::new();
+    let mut cur_y = 0.0_f32;
+    for it in sorted {
+        if !cur.is_empty() && (cur_y - it.y_min).abs() > row_tol {
+            rows.push(cluster_row(&cur, gap_thr));
+            cur.clear();
+        }
+        if cur.is_empty() {
+            cur_y = it.y_min;
+        }
+        cur.push(it);
+    }
+    if !cur.is_empty() {
+        rows.push(cluster_row(&cur, gap_thr));
+    }
+    rows
+}
+
+/// 行 y 中心（组内 cell 平均 y）。
+fn row_center_y(r: &[TableCell]) -> f32 {
+    if r.is_empty() {
+        return 0.0;
+    }
+    r.iter().map(|c| c.y).sum::<f32>() / r.len() as f32
+}
+
+/// 自适应行距容差：0.5 × 中位行距，夹在「行高下限」与「0.3×页宽」之间。
+/// 高 dpi 扫描件行距大，避免绝对 4px 把同行拆两行（C2）。
+fn relative_row_tol(items: &[Region], page_w: f32) -> f32 {
+    // 行高估计 = cell h 中位数（单行文本 h≈行高）。
+    let mut hs: Vec<f32> = items.iter().map(|it| it.height()).collect();
+    hs.sort_by(|a, b| a.total_cmp(b));
+    let rh = if hs.is_empty() { 10.0 } else { hs[hs.len() / 2] };
+    // 粗分组（容差 ~1.2×行高）估中位行距。
+    let mut sorted: Vec<&Region> = items.iter().collect();
+    sorted.sort_by(|a, b| a.y_min.total_cmp(&b.y_min));
+    let coarse = group_rows(&sorted, (rh * 0.8).max(2.0), 0.012 * page_w);
+    let ys: Vec<f32> = coarse.iter().map(|r| row_center_y(r)).collect();
+    let mut pitch = 12.0_f32;
+    if ys.len() >= 2 {
+        let mut diffs: Vec<f32> = ys.windows(2).map(|w| (w[0] - w[1]).abs()).collect();
+        diffs.sort_by(|a, b| a.total_cmp(b));
+        pitch = diffs[diffs.len() / 2];
+    }
+    // 下限 4.0（原硬编码，保小尺度 PDF pt 行为）；上限随页宽，防超大容差误合并。
+    // f32::clamp 在 min>max / 任一 NaN 时 panic：页宽极小（<13.33）或 pitch 为
+    // NaN（退化页行距全同）会触发，先夹紧上限并滤 NaN。
+    let upper = (0.3 * page_w).max(4.0);
+    let tol = (0.5 * pitch).clamp(4.0, upper);
+    if tol.is_nan() { 4.0 } else { tol }
+}
+
+/// 首行是否真表头（保守判定）。false-positive（数据行当表头）比 false-negative
+/// 更坏：表头去重会删首数据行。规则：含表头关键词 / 文本显著短于数据行。
+fn is_header_row(row: &[TableCell], body: &[Vec<TableCell>]) -> bool {
+    const KW: &[&str] = &[
+        "编号", "序号", "名称", "单位", "备注", "项目", "内容", "说明", "条款", "标准", "代号",
+        "类别", "类型", "数量",
+    ];
+    let text: String = row.iter().map(|c| c.text.clone()).collect();
+    if KW.iter().any(|k| text.contains(k)) {
+        return true;
+    }
+    if body.is_empty() {
+        return false;
+    }
+    let row_avg = row.iter().map(avg_len).sum::<f32>() / row.len().max(1) as f32;
+    let body_avg = body.iter().flat_map(|r| r.iter()).map(avg_len).sum::<f32>()
+        / body.iter().map(|r| r.len()).sum::<usize>().max(1) as f32;
+    // 表头 cell 都很短（≤5 字）且数据明显更长 → 表头
+    row_avg <= 5.0 && body_avg > row_avg * 1.8
+}
+
+/// cell 文本字符数（含空白）。
+fn avg_len(c: &TableCell) -> f32 {
+    c.text.chars().count() as f32
+}
+
 /// 跨页续接：列数一致时合并（若下页首行 == 已有表头 → 去重表头）。
+/// 仅当 `acc` 首行是真表头才去重，否则纯数据表首行会被误删（C1）。
 pub fn extend_table_grid(acc: &mut TableGrid, next: TableGrid) {
     if next.cols != acc.cols {
         return;
     }
-    let first_matches = next
-        .rows
-        .first()
-        .map(|r| cell_texts(r) == cell_texts(&acc.header))
-        .unwrap_or(false);
+    let first_matches = acc.has_header
+        && next
+            .rows
+            .first()
+            .map(|r| cell_texts(r) == cell_texts(&acc.header))
+            .unwrap_or(false);
     if first_matches {
         acc.rows.extend(next.rows.iter().skip(1).cloned());
     } else {
@@ -193,28 +270,20 @@ pub fn extend_table_grid(acc: &mut TableGrid, next: TableGrid) {
     }
 }
 
-/// 把已定型的跨页表写入其"首表页"段（保证阅读顺序）。
-pub fn flush_table(segments: &mut std::collections::BTreeMap<u32, String>, grid: TableGrid, start_page: u32) {
-    let e = segments.entry(start_page).or_default();
-    e.push_str(&table_grid_to_html(&grid));
-    e.push('\n');
-    e.push('\n');
-}
-
 /// 行内按 x 间隙聚列，返回 (首格 x, y, 高, 文本) 的单元格。
 /// 先按 x 排序：OCR/提取块原始顺序不保证 x 序，乱序会聚出错误列（如倒序）。
-fn cluster_row(items: &[&(f32, f32, f32, f32, String)], gap_thr: f32) -> Vec<TableCell> {
-    let mut items: Vec<&(f32, f32, f32, f32, String)> = items.to_vec();
-    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+fn cluster_row(items: &[&Region], gap_thr: f32) -> Vec<TableCell> {
+    let mut items: Vec<&Region> = items.to_vec();
+    items.sort_by(|a, b| a.x_min.total_cmp(&b.x_min));
     let mut cells: Vec<TableCell> = Vec::new();
-    let mut cluster: Vec<&(f32, f32, f32, f32, String)> = Vec::new();
+    let mut cluster: Vec<&Region> = Vec::new();
     let mut x0 = 0.0_f32;
     let mut y0 = 0.0_f32;
     let mut hmax = 0.0_f32;
     for it in &items {
         let it = *it;
         if let Some(prev) = cluster.last() {
-            if it.0 - (prev.0 + prev.2) > gap_thr {
+            if it.x_min - prev.x_max > gap_thr {
                 cells.push(TableCell {
                     text: join_cell_items(&cluster),
                     x: x0,
@@ -225,12 +294,12 @@ fn cluster_row(items: &[&(f32, f32, f32, f32, String)], gap_thr: f32) -> Vec<Tab
             }
         }
         if cluster.is_empty() {
-            x0 = it.0;
-            y0 = it.1;
+            x0 = it.x_min;
+            y0 = it.y_min;
             hmax = 0.0;
         }
         cluster.push(it);
-        hmax = hmax.max(it.3);
+        hmax = hmax.max(it.height());
     }
     if !cluster.is_empty() {
         cells.push(TableCell {
@@ -244,7 +313,7 @@ fn cluster_row(items: &[&(f32, f32, f32, f32, String)], gap_thr: f32) -> Vec<Tab
 }
 
 /// 单元格内多个文本块拼接：仅 ASCII 字母数字间加空格（CJK 不加）。
-fn join_cell_items(items: &[&(f32, f32, f32, f32, String)]) -> String {
+fn join_cell_items(items: &[&Region]) -> String {
     let mut s = String::new();
     for (i, it) in items.iter().enumerate() {
         if i > 0 {
@@ -254,7 +323,7 @@ fn join_cell_items(items: &[&(f32, f32, f32, f32, String)]) -> String {
                 .map(|c| c.is_ascii_alphanumeric())
                 .unwrap_or(false);
             let b = it
-                .4
+                .text
                 .chars()
                 .next()
                 .map(|c| c.is_ascii_alphanumeric())
@@ -263,7 +332,7 @@ fn join_cell_items(items: &[&(f32, f32, f32, f32, String)]) -> String {
                 s.push(' ');
             }
         }
-        s.push_str(it.4.trim());
+        s.push_str(it.text.trim());
     }
     s
 }
@@ -348,6 +417,9 @@ fn span_attr(colspan: usize, rowspan: usize) -> String {
     a
 }
 
+/// HTML 转义：仅转义 `& < >`（当前调用方 attr 值均为 usize，无注入面）。
+/// 安全约束：若未来把**用户输入文本**拼进属性值（如 `<td title="...">`），
+/// 必须在此补转义 `"` 与 `'`，否则存在属性注入（XSS）风险（S1）。
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -358,9 +430,9 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 文本块构造：(x, y, w, h, text)。
-    fn blk(text: &str, x: f32, y: f32) -> (f32, f32, f32, f32, String) {
-        (x, y, 20.0, 10.0, text.to_string())
+    /// 文本块构造：(x, y, w, h, text) → Region。
+    fn blk(text: &str, x: f32, y: f32) -> Region {
+        Region::from_top_left(x, y, 20.0, 10.0, text)
     }
 
     #[test]
@@ -448,17 +520,18 @@ mod tests {
 
     #[test]
     fn cross_page_merge_drops_repeated_header() {
-        let mut acc = TableGrid {
-            cols: 2,
-            header: vec![
-                TableCell { text: "ID".into(), x: 10.0, y: 10.0, h: 10.0 },
-                TableCell { text: "Name".into(), x: 60.0, y: 10.0, h: 10.0 },
-            ],
-            rows: vec![vec![
-                TableCell { text: "1".into(), x: 10.0, y: 20.0, h: 10.0 },
-                TableCell { text: "Alice".into(), x: 60.0, y: 20.0, h: 10.0 },
-            ]],
-        };
+    let mut acc = TableGrid {
+        cols: 2,
+        header: vec![
+            TableCell { text: "ID".into(), x: 10.0, y: 10.0, h: 10.0 },
+            TableCell { text: "Name".into(), x: 60.0, y: 10.0, h: 10.0 },
+        ],
+        rows: vec![vec![
+            TableCell { text: "1".into(), x: 10.0, y: 20.0, h: 10.0 },
+            TableCell { text: "Alice".into(), x: 60.0, y: 20.0, h: 10.0 },
+        ]],
+        has_header: true,
+    };
         // 下页：重复表头 + 续行
         let next = TableGrid {
             cols: 2,
@@ -476,6 +549,7 @@ mod tests {
                     TableCell { text: "Bob".into(), x: 60.0, y: 20.0, h: 10.0 },
                 ],
             ],
+            has_header: true,
         };
         extend_table_grid(&mut acc, next);
         assert_eq!(acc.rows.len(), 2, "表头去重，仅剩 Alice/Bob");
@@ -485,29 +559,88 @@ mod tests {
     #[test]
     fn html_emits_span_attributes() {
         // 高 cell（h=40 > 1.5×行距 12）→ rowspan；行内尾空 → colspan
-        let g = TableGrid {
-            cols: 3,
-            header: vec![
-                TableCell { text: "A".into(), x: 10.0, y: 10.0, h: 10.0 },
-                TableCell { text: "B".into(), x: 60.0, y: 10.0, h: 10.0 },
-                TableCell { text: "C".into(), x: 110.0, y: 10.0, h: 10.0 },
+    let g = TableGrid {
+        cols: 3,
+        header: vec![
+            TableCell { text: "A".into(), x: 10.0, y: 10.0, h: 10.0 },
+            TableCell { text: "B".into(), x: 60.0, y: 10.0, h: 10.0 },
+            TableCell { text: "C".into(), x: 110.0, y: 10.0, h: 10.0 },
+        ],
+        rows: vec![
+            // 行0: x 高格(h=40) → rowspan 吞行1 c0；c1 空 → x colspan=2
+            vec![
+                TableCell { text: "x".into(), x: 10.0, y: 20.0, h: 40.0 },
+                TableCell { text: "".into(), x: 60.0, y: 20.0, h: 10.0 },
+                TableCell { text: "y".into(), x: 110.0, y: 20.0, h: 10.0 },
             ],
-            rows: vec![
-                // 行0: x 高格(h=40) → rowspan 吞行1 c0；c1 空 → x colspan=2
-                vec![
-                    TableCell { text: "x".into(), x: 10.0, y: 20.0, h: 40.0 },
-                    TableCell { text: "".into(), x: 60.0, y: 20.0, h: 10.0 },
-                    TableCell { text: "y".into(), x: 110.0, y: 20.0, h: 10.0 },
-                ],
-                vec![
-                    TableCell { text: "".into(), x: 10.0, y: 30.0, h: 10.0 },
-                    TableCell { text: "w".into(), x: 60.0, y: 30.0, h: 10.0 },
-                    TableCell { text: "".into(), x: 110.0, y: 30.0, h: 10.0 },
-                ],
+            vec![
+                TableCell { text: "".into(), x: 10.0, y: 30.0, h: 10.0 },
+                TableCell { text: "w".into(), x: 60.0, y: 30.0, h: 10.0 },
+                TableCell { text: "".into(), x: 110.0, y: 30.0, h: 10.0 },
             ],
-        };
+        ],
+        has_header: true,
+    };
         let html = table_grid_to_html(&g);
         assert!(html.contains("colspan=\"2\""), "期望 colspan，got: {html}");
         assert!(html.contains("rowspan=\"2\""), "期望 rowspan，got: {html}");
+    }
+
+    /// C1：纯数据表（无表头关键词、文本长）→ has_header=false；跨页续接
+    /// 即使下页首行 == 表头首行也不去重，防丢首数据行。
+    #[test]
+    fn plain_data_table_preserves_first_row_across_pages() {
+        let mut acc = TableGrid {
+            cols: 2,
+            header: vec![
+                TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
+                TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+            ],
+            rows: vec![vec![
+                TableCell { text: "李四".into(), x: 10.0, y: 20.0, h: 10.0 },
+                TableCell { text: "上海市浦东".into(), x: 60.0, y: 20.0, h: 10.0 },
+            ]],
+            has_header: false,
+        };
+        // 下页首行恰好 == acc 首行（纯数据巧合）——但因 has_header=false 不去重
+        let next = TableGrid {
+            cols: 2,
+            header: vec![
+                TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
+                TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+            ],
+            rows: vec![
+                vec![
+                    TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
+                    TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+                ],
+                vec![
+                    TableCell { text: "王五".into(), x: 10.0, y: 20.0, h: 10.0 },
+                    TableCell { text: "广州市天河".into(), x: 60.0, y: 20.0, h: 10.0 },
+                ],
+            ],
+            has_header: false,
+        };
+        extend_table_grid(&mut acc, next);
+        assert_eq!(acc.rows.len(), 3, "纯数据表跨页不去重首行（防丢行）");
+    }
+
+    /// C2：高 dpi 扫描件（行距 ~60px，同列 y 抖动 ~±8px）→ 旧绝对 4px 会把
+    /// 同行拆两行；相对 row_tol（0.5×行距≈30px）正确分 3 行而非 6 行。
+    #[test]
+    fn high_dpi_jitter_rows_still_grouped() {
+        // 高 dpi OCR：cell 高 ~25（非 blk 默认 10），行距 ~60px，同列 y 抖动 ±8px
+        // （>旧绝对 4px 会误拆行）。相对 row_tol（0.5×行距≈30px）正确分 3 行。
+        let mut items = Vec::new();
+        let rows_y = [10.0_f32, 70.0, 130.0, 190.0];
+        for (i, &y) in rows_y.iter().enumerate() {
+            let jit = if i % 2 == 0 { 8.0 } else { -6.0 };
+            items.push(Region::from_top_left(10.0, y + jit, 20.0, 25.0, format!("r{i}a")));
+            items.push(Region::from_top_left(80.0, y - jit, 20.0, 25.0, format!("r{i}b")));
+            items.push(Region::from_top_left(150.0, y + jit * 0.5, 20.0, 25.0, format!("r{i}c")));
+        }
+        let g = reconstruct_table_grid(&items, 300.0).expect("grid");
+        assert_eq!(g.cols, 3);
+        assert_eq!(g.rows.len(), 3, "抖动行仍正确分 3 行（非 6 行）");
     }
 }
