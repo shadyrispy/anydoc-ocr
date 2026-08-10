@@ -23,3 +23,10 @@ rayon = "1.12.0"
 tempfile = "3.27.0"
 thiserror = "2.0.19"
 zip = "2"
+
+[profile.release]
+# 跨 crate 内联 + 更小代码，hot 路径（OCR 预处理/SIMD）收益明显。
+lto = true
+codegen-units = 1
+# 保留符号便于 perf 火焰图定位热点（可选）。
+# debug = 1

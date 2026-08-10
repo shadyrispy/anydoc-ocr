@@ -11,3 +11,5 @@ third_party/dl/
 /fonts
 # 真实公文样本体积大，不入库；tests/samples 生成样本保留
 /tests/real_samples
+# 一次性实验脚本（INT8 量化探针、压测、加固笔记）；本地存档，不入库
+/.scratch

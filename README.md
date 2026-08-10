@@ -16,7 +16,7 @@
 - **OCR 管线**：版面检测(layout) → 文本检测(det) → 文本识别(rec/CRNN) → 表格结构重建(SLANet)
 - **模型三档**：`tiny`（极速，默认）/ `small`（均衡）/ `medium`（高精度），ModelScope 自动下载
 - **渲染 DPI 可调**：默认 100（印刷体公文零精度损失，比 200 快 33%），`--dpi` 覆盖
-- **线程可调**：默认 4 面向大文档（52 页实测快 ~10%），内存受限环境用 1
+- **线程可调**：`--threads` 默认 0 = 自动（按可用核心数决定页级并行度），大文档实测快 ~10%；内存受限环境用 1
 - **四类通道字节级/结构化双路径**，页级异常跳过不整体失败
 
 ## 构建
@@ -49,11 +49,19 @@ anydoc-ocr 公文.ofd -o out.md
 anydoc-ocr 公文.ofd --ofd-force-ocr
 anydoc-ocr 公文.pdf --pdf-force-ocr   # 文字型当图片渲染 OCR，用于校准
 
-# 模型/参数
+# 模型/参数（--threads 默认 0 = 自动，按核心数定页级并行度）
 anydoc-ocr 扫描件.pdf --ocr-tier small --threads 4 --dpi 100
 ```
 
 stdin 支持：`cat 公文.pdf | anydoc-ocr -`
+
+## 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `OAR_HOME` | 模型缓存/下载根目录 |
+| `ANYDOC_MODEL_DIR` | 本地 ONNX 模型目录（绝对路径）。设置后从该目录加载模型文件，不走 `$OAR_HOME` 缓存/下载；用于离线/内网部署 |
+| `ANYDOC_ORT_INTRA_THREADS` | 强制覆盖 ONNX Runtime 全局线程池的 intra-op 线程数（调试用）。默认自动取 `max(1, 可用核心数 / 页级并行度)`，消除 rayon 页级并行 × ORT intra 线程的超额订阅（8 核机器上默认可达 4×8=32 线程） |
 
 ## 性能参考
 
