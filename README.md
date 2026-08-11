@@ -73,6 +73,31 @@ rustflags = [
 
 （rpath 已并入 `.cargo/config.toml`，CPU 调优与 rpath 同时生效，不再有 RUSTFLAGS 覆盖问题。）
 
+### 单文件分发（arm64 自解压安装器）
+
+`scripts/package-single-aarch64.sh` 产出 **1 个自解压安装器** `dist/anydoc-ocr-linux-arm64.run`，内嵌全部运行资源：
+
+| 资源 | 内容 |
+|------|------|
+| 二进制 | aarch64 release（lto，`cortex-a72+neon`） |
+| 原生库 | `libonnxruntime.so`（16M）+ `libpdfium.so`（7.6M），rpath 自带 |
+| 字体 | `NotoSansCJK-Regular.ttc`（19M，OFD 中文渲染） |
+| 模型 | **tiny 档 8 件**（layout/det/rec/dict/表格结构/表格分类，~32M） |
+| 合计 | ~80-85M |
+
+```bash
+# 构建（需 aarch64 交叉工具链 + third_party/aarch64 预编译库 + 本机已缓存 tiny 模型）
+./scripts/package-single-aarch64.sh
+
+# 目标机（飞腾）使用：首次自动解压到 ~/.anydoc-ocr，之后直跑
+./anydoc-ocr-linux-arm64.run 公文.pdf -o out.md
+./anydoc-ocr-linux-arm64.run --reinstall   # 强制重装
+# 自定义安装目录
+ANYDOC_INSTALL_DIR=/opt/anydoc ./anydoc-ocr-linux-arm64.run 公文.ofd -o out.md
+```
+
+**模型档策略**：单文件内嵌 tiny（默认档，常见公文够用）。small/medium 不内嵌（全档 348M），需要时用 `ANYDOC_MODEL_DIR` 指向外置模型目录（见环境变量表）——注意单文件内 `OAR_HOME` 已指向安装目录 `oar-home/`，外置模型用绝对路径直载、绕开 hash 校验。
+
 ### 运行环境
 
 ```bash
@@ -175,7 +200,7 @@ tests/
   golden.rs + golden/snapshots/   22 个 SHA-256 快照
   samples/         生成的确定性子样本
   real_samples/    gitignored 真实公文样本
-scripts/            build-x64 / build-aarch64 / package-aarch64 / install-font
+scripts/            build-x64 / build-aarch64 / package-aarch64 / package-single / install-font
 .cargo/config.toml aarch64 交叉编译 rustflags
 ```
 
