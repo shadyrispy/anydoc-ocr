@@ -80,13 +80,21 @@ impl DocumentEmitter {
         }
     }
 
-    /// 收尾：按页号升序拼接所有段并 trim 末尾空白。
+    /// 收尾：按页号升序拼接所有段，段间以空行分隔（对齐 GFM 块语义），
+    /// trim 每段末尾空白。
     pub fn finish(self) -> String {
         let mut out = String::new();
         for (_, seg) in self.segments {
-            out.push_str(&seg);
+            let s = seg.trim();
+            if s.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(s);
         }
-        out.trim_end().to_string()
+        out
     }
 }
 
@@ -176,6 +184,7 @@ mod tests {
         e.push_segment(1, "first\n");
         e.push_segment(2, "second\n");
         let out = e.finish();
-        assert_eq!(out, "first\nsecond\nthird");
+        // finish 段间以空行分隔（对齐 GFM 块语义），每段 trim
+        assert_eq!(out, "first\n\nsecond\n\nthird");
     }
 }

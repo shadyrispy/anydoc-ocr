@@ -267,13 +267,21 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
 
         // B3-T：标题前缀注入统一于 `text_health::apply_title_prefixes`
         // （空 hints + numbering=true，纯编号启发式，与 OFD 文字层同口径）。
+        // 对齐 GFM 块语义：标题（# 开头）前后空行，正文行段落内单换行。
         for t in crate::text_health::apply_title_prefixes(
             &reading_order::postprocess_lines(reading_order::order_text_regions(&regions)),
             &[],
             true,
         ) {
+            let is_heading = t.starts_with('#');
+            if is_heading && !seg_out.is_empty() && !seg_out.ends_with("\n\n") {
+                seg_out.push('\n');
+            }
             seg_out.push_str(&t);
             seg_out.push('\n');
+            if is_heading {
+                seg_out.push('\n');
+            }
         }
 
         // R3 兜底：末页布局未确认但 pdf-inspector 探针提取到表格（版权栏等小表格）

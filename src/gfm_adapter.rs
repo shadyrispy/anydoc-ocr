@@ -288,16 +288,26 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 );
             }
         }
-        // 本页正文行 + layout 表格 HTML
+        // 本页正文行 + layout 表格 HTML。对齐 GFM 块语义：标题（# 开头）
+        // 与表格前后空行，正文行段落内单换行。
         let mut seg = String::new();
         let lines = postprocess_lines(order_text_regions(&regions));
         for t in apply_title_prefixes(lines, page) {
+            let is_heading = t.starts_with('#');
+            if is_heading && !seg.is_empty() && !seg.ends_with("\n\n") {
+                seg.push('\n');
+            }
             seg.push_str(&t);
             seg.push('\n');
+            if is_heading {
+                seg.push('\n');
+            }
         }
         for table in &tables {
             if let Some(html) = &table.html_structure {
-                seg.push_str("\n\n");
+                if !seg.ends_with("\n\n") {
+                    seg.push_str("\n\n");
+                }
                 seg.push_str(&simplify_table_html(html));
             }
         }
