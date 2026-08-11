@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use crate::timing::StageTimer;
-use crate::{gfm_adapter, ConvertOptions, Result};
+use crate::{ConvertOptions, Result, gfm_adapter};
 
 pub mod render;
 mod text_layer;
@@ -38,17 +38,18 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     let mut t = StageTimer::new();
     // 文字型：pdf-inspector 提取 + 自建阅读顺序；非文字型/失败回退 OCR。
     // --pdf-force-ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
-    if !opts.pdf_force_ocr {
-        if let Some(md) = text_layer_markdown(path, opts)? {
-            return Ok(md);
-        }
+    if !opts.pdf_force_ocr
+        && let Some(md) = text_layer_markdown(path, opts)?
+    {
+        return Ok(md);
     }
     // 图片型：PDFium 渲染 + oar-ocr OCR（全量渲：空索引 = 渲所有页）
     // DPI 默认 100（可由 --dpi 调整）。DPI 200→100：像素量降 75%，实测 上海公报52p
     // 148.5s→100.0s(-33%)，内容恢复率零损失(99.83%)；80 起脚注/小字开始漏检。
     let images = render::render_pdf_pages(path, opts.dpi, &[])?;
     t.stage("render");
-    let pages = crate::ocr_engine::ocr_images(images, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
+    let pages =
+        crate::ocr_engine::ocr_images(images, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
     t.stage("ocr");
     let md = gfm_adapter::structure_results_to_gfm(&pages);
     t.stage("gfm");

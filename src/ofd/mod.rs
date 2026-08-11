@@ -20,10 +20,10 @@ use ofd_core::model::graphics::PageBlock;
 use ofd_core::model::page::PageObject;
 use ofd_core::{LoadedDocument, OfdReader, RenderOptions};
 
+use crate::emitter::{DocumentEmitter, FlushFormat};
 use crate::gfm_adapter;
 use crate::ocr_engine;
 use crate::reading_order;
-use crate::emitter::{DocumentEmitter, FlushFormat};
 use crate::region::Region;
 use crate::table_grid;
 use crate::timing::StageTimer;
@@ -55,8 +55,7 @@ enum PageData {
 /// OFD → Markdown 总入口。
 pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut t = StageTimer::new();
-    let mut reader =
-        OfdReader::open(path).map_err(|e| anyhow::anyhow!("打开 OFD 失败: {e}"))?;
+    let mut reader = OfdReader::open(path).map_err(|e| anyhow::anyhow!("打开 OFD 失败: {e}"))?;
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
     let doc_bodies = reader.ofd().doc_bodies.clone();
 
@@ -84,13 +83,16 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             let texts = collect_text_lines(&page);
             let text_len: usize = texts.iter().map(|line| line.text.chars().count()).sum();
             let img_count = count_images(&page);
-            let is_image = opts.ofd_force_ocr
-                || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
+            let is_image =
+                opts.ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
-                pages.push(PageData::OcrFull(Some(
-                    render_page(&mut reader, &doc, idx, opts)?,
-                )));
+                pages.push(PageData::OcrFull(Some(render_page(
+                    &mut reader,
+                    &doc,
+                    idx,
+                    opts,
+                )?)));
             } else if is_garbled_text(&texts) {
                 // F3：坏字体乱码页 → 整页 OCR（渲染失败时回落文字层，不炸文档）
                 match render_page(&mut reader, &doc, idx, opts) {
@@ -132,7 +134,8 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
     if !full_imgs.is_empty() {
         t.stage("render");
-        let results = ocr_engine::ocr_images(full_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
+        let results =
+            ocr_engine::ocr_images(full_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
         t.stage("ocr");
         for (page, res) in full_pages.into_iter().zip(results) {
             full_out.insert(
@@ -182,9 +185,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // 不触发检测，正常建表。
                 let regions: Vec<Region> = lines
                     .iter()
-                    .map(|r| {
-                        Region::new(r.x_min, r.x_max, r.y_min, r.y_max, r.text.clone())
-                    })
+                    .map(|r| Region::new(r.x_min, r.x_max, r.y_min, r.y_max, r.text.clone()))
                     .collect();
                 let has_columns = reading_order::detect_column_split(&regions).is_some();
                 if !has_columns
@@ -196,8 +197,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // 2) 普通页：冲掉挂起跨页表，输出文字层行（F4 加标题前缀）。
                 emitter.flush_pending();
                 let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
-                let md =
-                    crate::text_health::apply_title_prefixes(&md, &[], true).join("\n");
+                let md = crate::text_health::apply_title_prefixes(&md, &[], true).join("\n");
                 emitter.push_segment(page, &md);
                 emitter.push_segment(page, "\n\n");
             }
@@ -303,10 +303,10 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>) {
             PageBlock::Text(t) => {
                 // 斜向旋转的 TextObject（如"太原市人民政府公报"对角水印）在抽取前直接跳过；
                 // 竖排（90/270°）与横排（0/180°）正文不受影响。
-                if let Some(m) = t.ctm.as_ref() {
-                    if ctm_is_watermark_angle(m.as_slice()) {
-                        continue;
-                    }
+                if let Some(m) = t.ctm.as_ref()
+                    && ctm_is_watermark_angle(m.as_slice())
+                {
+                    continue;
                 }
                 let mut codes: Vec<(f64, &str)> = t
                     .text_codes
@@ -336,10 +336,22 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>) {
                     let x1 = t.boundary.x + t.boundary.width;
                     let y0 = t.boundary.y;
                     let y1 = t.boundary.y + t.boundary.height;
-                    out.push(OfdTextLine { x0, x1, y0, y1, text: line });
+                    out.push(OfdTextLine {
+                        x0,
+                        x1,
+                        y0,
+                        y1,
+                        text: line,
+                    });
                 } else {
                     // boundary 退化：退回旧单点行为（首字符坐标），不 panic。
-                    out.push(OfdTextLine { x0: x, x1: x, y0: y, y1: y + 1.0, text: line });
+                    out.push(OfdTextLine {
+                        x0: x,
+                        x1: x,
+                        y0: y,
+                        y1: y + 1.0,
+                        text: line,
+                    });
                 }
             }
             PageBlock::Block(g) => collect_text_blocks(&g.objects, out),
@@ -406,23 +418,47 @@ mod tests {
     fn garbled_text_detection() {
         // 正常中文文本 → 不乱码
         let ok = vec![
-            OfdTextLine { x0: 0.0, x1: 10.0, y0: 0.0, y1: 1.0, text: "太原市人民政府公报".to_string() },
-            OfdTextLine { x0: 0.0, x1: 10.0, y0: 1.0, y1: 2.0, text: "二〇二五年第一期".to_string() },
+            OfdTextLine {
+                x0: 0.0,
+                x1: 10.0,
+                y0: 0.0,
+                y1: 1.0,
+                text: "太原市人民政府公报".to_string(),
+            },
+            OfdTextLine {
+                x0: 0.0,
+                x1: 10.0,
+                y0: 1.0,
+                y1: 2.0,
+                text: "二〇二五年第一期".to_string(),
+            },
         ];
         assert!(!is_garbled_text(&ok));
         // 60 个 U+FFFD 替换符（>50 字符且占比 100%）→ 乱码
         let bad: Vec<OfdTextLine> = (0..60)
-            .map(|i| OfdTextLine { x0: 0.0, x1: 10.0, y0: i as f64, y1: i as f64 + 1.0, text: "\u{FFFD}".to_string() })
+            .map(|i| OfdTextLine {
+                x0: 0.0,
+                x1: 10.0,
+                y0: i as f64,
+                y1: i as f64 + 1.0,
+                text: "\u{FFFD}".to_string(),
+            })
             .collect();
         assert!(is_garbled_text(&bad));
         // 仅 10 个替换符（总量不足 50）→ 不判乱码
         assert!(!is_garbled_text(&bad[..10]));
         // 私有区字符（目录点线符常见）占比 <20%（10 坏 / 70 总）→ 不判乱码
         let mut mixed: Vec<OfdTextLine> = (0..60)
-            .map(|i| OfdTextLine { x0: 0.0, x1: 10.0, y0: i as f64, y1: i as f64 + 1.0, text: "正常正文".to_string() })
+            .map(|i| OfdTextLine {
+                x0: 0.0,
+                x1: 10.0,
+                y0: i as f64,
+                y1: i as f64 + 1.0,
+                text: "正常正文".to_string(),
+            })
             .collect();
-        for i in 0..10 {
-            mixed[i].text = "\u{E000}".to_string();
+        for m in mixed.iter_mut().take(10) {
+            m.text = "\u{E000}".to_string();
         }
         assert!(!is_garbled_text(&mixed));
     }

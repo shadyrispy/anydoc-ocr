@@ -1,7 +1,7 @@
 //! 总调度：按格式分流到对应通道
 use std::path::Path;
 
-use crate::{detect::DocKind, models::OcrLayout, models::OcrTier, ofd, pdf, Result};
+use crate::{Result, detect::DocKind, models::OcrLayout, models::OcrTier, ofd, pdf};
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {

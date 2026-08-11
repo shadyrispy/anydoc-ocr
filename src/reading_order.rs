@@ -64,8 +64,16 @@ pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
         .chain(right.iter())
         .map(|(y, _)| *y)
         .fold(f32::NEG_INFINITY, f32::max);
-    let mut head: Vec<_> = full.iter().filter(|(y, _)| *y < body_min).cloned().collect();
-    let mut foot: Vec<_> = full.iter().filter(|(y, _)| *y > body_max).cloned().collect();
+    let mut head: Vec<_> = full
+        .iter()
+        .filter(|(y, _)| *y < body_min)
+        .cloned()
+        .collect();
+    let mut foot: Vec<_> = full
+        .iter()
+        .filter(|(y, _)| *y > body_max)
+        .cloned()
+        .collect();
     let mut mid: Vec<_> = full
         .iter()
         .filter(|(y, _)| *y >= body_min && *y <= body_max)
@@ -98,7 +106,7 @@ pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
 ///
 /// 列检测用**所有**正文区域（含宽条目）的中心 x，取最大间隙切分；要求间隙
 /// >= 3% 页宽且两侧各 >=2 区域，避免把单栏内的大间距误判为分栏。真正跨整页
-/// （x 同时贴近左右边距）的元素（页眉/页脚/通栏标题）先剔除。
+/// > （x 同时贴近左右边距）的元素（页眉/页脚/通栏标题）先剔除。
 pub fn detect_column_split(regions: &[Region]) -> Option<f32> {
     if regions.len() < 4 {
         return None;
@@ -161,7 +169,9 @@ fn merge_hyphenated_lines(lines: Vec<String>) -> Vec<String> {
         loop {
             let Some(next) = iter.peek() else { break };
             let cur_trim = cur.trim_end();
-            let Some(base) = cur_trim.strip_suffix('-') else { break };
+            let Some(base) = cur_trim.strip_suffix('-') else {
+                break;
+            };
             let nxt = next.trim_start();
             let Some(c) = nxt.chars().next() else { break };
             if !c.is_ascii_lowercase() {
@@ -207,7 +217,10 @@ pub fn title_level(text: &str) -> Option<usize> {
     }
     // 无编号固定小节标题
     let up = t.to_uppercase();
-    if matches!(up.as_str(), "ABSTRACT" | "INTRODUCTION" | "REFERENCES" | "REFERENCE") {
+    if matches!(
+        up.as_str(),
+        "ABSTRACT" | "INTRODUCTION" | "REFERENCES" | "REFERENCE"
+    ) {
         return Some(2);
     }
     // 编号前缀；编号后须跟标题文本，纯编号行不算标题
@@ -313,13 +326,16 @@ fn skip_sep_ws(cs: &[char], mut i: usize) -> usize {
 }
 
 fn is_cn_numeral(c: char) -> bool {
-    matches!(c, '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十')
+    matches!(
+        c,
+        '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十'
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::region::Region;
     use super::order_text_regions;
+    use crate::region::Region;
 
     /// 构造区域：(x_min, x_max, y_min, y_max=+10, 文本)
     fn reg(x0: f32, x1: f32, y0: f32, t: &str) -> Region {
@@ -407,7 +423,10 @@ mod tests {
             reg(50.0, 450.0, -100.0, "bottom"),
             reg(50.0, 450.0, -200.0, "middle"),
         ];
-        assert_eq!(order_text_regions(&regions), vec!["top", "middle", "bottom"]);
+        assert_eq!(
+            order_text_regions(&regions),
+            vec!["top", "middle", "bottom"]
+        );
     }
 
     #[test]

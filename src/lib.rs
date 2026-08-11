@@ -7,9 +7,9 @@ pub use error::Result;
 
 pub mod convert;
 pub mod detect;
-pub mod models;
 pub(crate) mod emitter;
 pub(crate) mod gfm_adapter;
+pub mod models;
 pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
 pub(crate) mod ofd;
 pub(crate) mod pdf;
@@ -19,7 +19,7 @@ pub(crate) mod table_grid;
 pub(crate) mod text_health;
 pub(crate) mod timing;
 
-pub use convert::{convert_to_markdown, ConvertOptions};
+pub use convert::{ConvertOptions, convert_to_markdown};
 pub use detect::DocKind;
 pub use models::OcrTier;
 

@@ -22,13 +22,7 @@ pub struct Region {
 }
 
 impl Region {
-    pub fn new(
-        x_min: f32,
-        x_max: f32,
-        y_min: f32,
-        y_max: f32,
-        text: impl Into<String>,
-    ) -> Self {
+    pub fn new(x_min: f32, x_max: f32, y_min: f32, y_max: f32, text: impl Into<String>) -> Self {
         Region {
             x_min,
             x_max,

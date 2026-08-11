@@ -109,11 +109,7 @@ mod tests {
         // 重新构造 70 总 / 10 坏
         let bad: String = "\u{E000}".repeat(10);
         let good: String = "正".repeat(60);
-        assert!(!has_garbled_chars(
-            format!("{good}{bad}").chars(),
-            50,
-            20
-        ));
+        assert!(!has_garbled_chars(format!("{good}{bad}").chars(), 50, 20));
     }
 
     #[test]

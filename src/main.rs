@@ -2,7 +2,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use anydoc_ocr::{convert_to_markdown, models::OcrLayout, models::OcrTier, ConvertOptions};
+use anydoc_ocr::{ConvertOptions, convert_to_markdown, models::OcrLayout, models::OcrTier};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -71,9 +71,7 @@ fn main() -> anyhow::Result<()> {
 
 /// stdin 写入临时文件返回路径（NamedTempFile：随机名 + 用完自动删除）；
 /// 返回 Option 持有临时文件句柄，保证转换期间文件存活。
-fn resolve_input(
-    input: &str,
-) -> anyhow::Result<(PathBuf, Option<tempfile::NamedTempFile>)> {
+fn resolve_input(input: &str) -> anyhow::Result<(PathBuf, Option<tempfile::NamedTempFile>)> {
     if input == "-" {
         let mut buf = Vec::new();
         std::io::stdin().read_to_end(&mut buf)?;

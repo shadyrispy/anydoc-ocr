@@ -15,7 +15,7 @@ use image::RgbImage;
 use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
 use rayon::prelude::*;
 
-use crate::models::{spec_for, OcrLayout, OcrTier};
+use crate::models::{OcrLayout, OcrTier, spec_for};
 
 /// 进程级 ORT 线程池已提交守卫（仅首次 OCR 触达 ORT 前生效一次）。
 static ORT_INIT: Once = Once::new();

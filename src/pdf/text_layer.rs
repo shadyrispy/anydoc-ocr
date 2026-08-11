@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::emitter::{DocumentEmitter, FlushFormat};
 use crate::region::Region;
 use crate::table_grid::{self};
-use crate::{gfm_adapter, reading_order, ConvertOptions, Result};
+use crate::{ConvertOptions, Result, gfm_adapter, reading_order};
 
 /// garbled 检测常量：最多扫描前 4000 个 TextItem；字符总数须 >50，且
 /// 坏字符占比 >=20%（bad * 100 >= total * 20）才判定为乱码
@@ -187,8 +187,7 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
         {
             for (page, res) in ocr_pages.into_iter().zip(results) {
                 let has_table = res.layout_elements.iter().any(|e| {
-                    e.element_type
-                        == oar_ocr::domain::structure::LayoutElementType::Table
+                    e.element_type == oar_ocr::domain::structure::LayoutElementType::Table
                 });
                 if has_table {
                     table_out.insert(
@@ -256,14 +255,14 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
                     for item in sorted.drain(..idx) {
                         seg.push(item);
                     }
-                    push_line_region(&seg, &line, *page, &mut regions);
+                    push_line_region(&seg, line, *page, &mut regions);
                     seg = sorted;
-                    push_line_region(&seg, &line, *page, &mut regions);
+                    push_line_region(&seg, line, *page, &mut regions);
                     continue;
                 }
             }
             seg = sorted;
-            push_line_region(&seg, &line, *page, &mut regions);
+            push_line_region(&seg, line, *page, &mut regions);
         }
 
         // B3-T：标题前缀注入统一于 `text_health::apply_title_prefixes`
@@ -279,12 +278,12 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
 
         // R3 兜底：末页布局未确认但 pdf-inspector 探针提取到表格（版权栏等小表格）
         // → 文字层行后追加管道表，保证表格信息不丢（保留正文行，仅追加结构）。
-        if *page == last_page {
-            if let Some(tbl) = &last_table_md {
-                seg_out.push('\n');
-                seg_out.push_str(tbl);
-                seg_out.push('\n');
-            }
+        if *page == last_page
+            && let Some(tbl) = &last_table_md
+        {
+            seg_out.push('\n');
+            seg_out.push_str(tbl);
+            seg_out.push('\n');
         }
         seg_out.push('\n');
         emitter.push_segment(*page, &seg_out);
@@ -302,10 +301,7 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
 ///
 /// 双列页：每行的 gutter 都在同一 x → 聚成主簇。封面大标题字母间距大但每行
 /// split_x 不同/行数少 → 主簇不足 3 → 返回 None，行保持整行。
-fn clustered_row_split(
-    lines: &[pdf_inspector::extractor::TextLine],
-    page_w: f32,
-) -> Option<f32> {
+fn clustered_row_split(lines: &[pdf_inspector::extractor::TextLine], page_w: f32) -> Option<f32> {
     let min_gap = MIN_GAP_FRACTION * page_w;
     let tol = SPLIT_CLUSTER_TOL_FRACTION * page_w;
     let mut candidates: Vec<f32> = Vec::new();
@@ -352,10 +348,7 @@ fn clustered_row_split(
 /// 永远够不到 3 段；封面/标题的字母间距是单行现象，行数不足 3。真表格行
 /// 多为多列（>=3 段）且跨多行对齐 → 命中。误报也无妨：命中页会走 Table
 /// 版面 OCR，最终以 `LayoutElementType::Table` 确认，未确认即回落文字层。
-fn page_has_tabular_rows(
-    lines: &[pdf_inspector::extractor::TextLine],
-    page_w: f32,
-) -> bool {
+fn page_has_tabular_rows(lines: &[pdf_inspector::extractor::TextLine], page_w: f32) -> bool {
     let min_gap = MIN_GAP_FRACTION * page_w;
     let mut multi_seg_rows = 0usize;
     for line in lines {
@@ -401,14 +394,9 @@ fn probe_last_page_table(
         last_page.saturating_sub(1),
         vec![[0.0, 0.0, w + 40.0, h + 40.0]],
     )];
-    let results = pdf_inspector::extract_tables_in_regions_mem(pdf_bytes.as_slice(), &regions).ok()?;
-    let md = results
-        .into_iter()
-        .next()?
-        .regions
-        .into_iter()
-        .next()?
-        .text;
+    let results =
+        pdf_inspector::extract_tables_in_regions_mem(pdf_bytes.as_slice(), &regions).ok()?;
+    let md = results.into_iter().next()?.regions.into_iter().next()?.text;
     let md = md.trim();
     (!md.is_empty()).then(|| md.to_string())
 }
@@ -569,8 +557,8 @@ fn push_line_region(
 #[cfg(test)]
 mod tests {
     use super::{clustered_row_split, is_repeated_furniture, looks_garbled};
-    use pdf_inspector::extractor::TextLine;
     use pdf_inspector::TextItem;
+    use pdf_inspector::extractor::TextLine;
 
     const PAGE_W: f32 = 595.0; // A4 宽（pt）
 
@@ -679,14 +667,22 @@ mod tests {
     /// 大量替换符 \u{FFFD}（占比 50% > 20%）→ 乱码。
     #[test]
     fn many_replacement_chars_is_garbled() {
-        let items = vec![ti(&format!("{}{}", "a".repeat(30), "\u{FFFD}".repeat(30)), 0.0, 10.0)];
+        let items = vec![ti(
+            &format!("{}{}", "a".repeat(30), "\u{FFFD}".repeat(30)),
+            0.0,
+            10.0,
+        )];
         assert!(looks_garbled(&items));
     }
 
     /// 正常 CJK/Latin 文本 → 非乱码。
     #[test]
     fn normal_text_is_not_garbled() {
-        let items = vec![ti("你好，世界 Hello World, this is a normal sentence.", 0.0, 10.0)];
+        let items = vec![ti(
+            "你好，世界 Hello World, this is a normal sentence.",
+            0.0,
+            10.0,
+        )];
         assert!(!looks_garbled(&items));
     }
 
@@ -697,10 +693,24 @@ mod tests {
         let mut items: Vec<TextItem> = Vec::new();
         for page in 1..=6u32 {
             // 正文每页不同，保证各页 page_max 一致
-            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            items.push(tif(
+                &format!("正文内容第{page}页"),
+                100.0,
+                400.0,
+                200.0,
+                10.0,
+                page,
+            ));
             if page <= 5 {
                 // 页眉：页 1..5 同一位置
-                items.push(tif("上海市人民政府公报 2025·1", 200.0, 800.0, 100.0, 10.0, page));
+                items.push(tif(
+                    "上海市人民政府公报 2025·1",
+                    200.0,
+                    800.0,
+                    100.0,
+                    10.0,
+                    page,
+                ));
             }
         }
         let drop = is_repeated_furniture(&items, 4, 6);
@@ -730,7 +740,14 @@ mod tests {
     fn same_text_different_position_per_page_not_furniture() {
         let mut items: Vec<TextItem> = Vec::new();
         for page in 1..=6u32 {
-            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            items.push(tif(
+                &format!("正文内容第{page}页"),
+                100.0,
+                400.0,
+                200.0,
+                10.0,
+                page,
+            ));
             items.push(tif(
                 "WATERMARK",
                 50.0 + page as f32 * 100.0,
@@ -749,7 +766,14 @@ mod tests {
     fn rare_text_and_single_page_never_filtered() {
         let mut items: Vec<TextItem> = Vec::new();
         for page in 1..=6u32 {
-            items.push(tif(&format!("正文内容第{page}页"), 100.0, 400.0, 200.0, 10.0, page));
+            items.push(tif(
+                &format!("正文内容第{page}页"),
+                100.0,
+                400.0,
+                200.0,
+                10.0,
+                page,
+            ));
             if page <= 2 {
                 items.push(tif("罕见脚注", 200.0, 50.0, 100.0, 10.0, page));
             }
@@ -783,5 +807,4 @@ mod tests {
             ]
         );
     }
-
 }
