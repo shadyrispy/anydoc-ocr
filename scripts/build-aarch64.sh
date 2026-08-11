@@ -20,8 +20,8 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 # cc crate 可能编译少量 C（保险起见指向交叉编译器）
 export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
-# 运行时相对自身 lib/ 目录加载原生库
-export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN/lib"
+# 运行时 rpath（$ORIGIN/lib）已并入 .cargo/config.toml 的 target rustflags；
+# 严禁在此 export RUSTFLAGS——会整体覆盖 config，导致 cortex-a72/+neon 调优静默丢失。
 
 cargo build --release --target "$TARGET" "$@"
 

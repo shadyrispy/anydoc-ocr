@@ -54,11 +54,16 @@ cargo build --release
 
 ```toml
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=cortex-a72", "-C", "target-feature=+neon"]
+rustflags = [
+  "-C", "target-cpu=cortex-a72",
+  "-C", "target-feature=+neon",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/lib",
+]
 ```
 
 - 飞腾 D2000（FTC663）≈ Cortex-A72 微架构，`cortex-a72` 改善调度/指令选择。
 - 飞腾是 **ARMv8.0-A**，NEON 默认开启；**勿加 `+dotprod`/`+fp16`**（v8.2 才支持，会崩/错码）。
+- rpath（`$ORIGIN/lib`）一并放 config：若改由 `RUSTFLAGS` 环境变量传会**整体覆盖** config 的 rustflags（实测确认），导致 `cortex-a72+neon` 静默丢失。构建脚本不设 `RUSTFLAGS`。
 
 完整交叉构建 + 离线打包走 `scripts/build-aarch64.sh`（含链接器、rpath、打包逻辑）：
 
@@ -66,7 +71,7 @@ rustflags = ["-C", "target-cpu=cortex-a72", "-C", "target-feature=+neon"]
 ./scripts/build-aarch64.sh
 ```
 
-> **已知矛盾**：`scripts/build-aarch64.sh` 内 `export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN/lib"` 会**覆盖** `.cargo/config.toml` 的 target rustflags（实测设了 `RUSTFLAGS` 后 `cortex-a72+neon` 不再传给 rustc）。该脚本产物因此丢失 CPU 调优；如需保留，应在脚本内追加而非覆盖（如 `RUSTFLAGS="-C target-cpu=cortex-a72 -C target-feature=+neon -C link-arg=..."`）。
+（rpath 已并入 `.cargo/config.toml`，CPU 调优与 rpath 同时生效，不再有 RUSTFLAGS 覆盖问题。）
 
 ### 运行环境
 
@@ -182,7 +187,6 @@ scripts/            build-x64 / build-aarch64 / package-aarch64 / install-font
 - **ORT 全局线程池仅首次生效**：若宿主已先初始化 ORT，`init_runtime` 的配置被忽略（幂等）；配置失败时告警并回落 ORT 默认线程池（可能线程超额订阅）。
 - **模型加载失败不自动重试下载**：`ANYDOC_MODEL_DIR` 下缺文件时该模型回退裸名下载；但自备模型不能放 `$OAR_HOME`（见环境变量表）。
 - **OFD 中文渲染依赖 CJK 字体**：目标机需安装 `fonts/NotoSansCJK-Regular.ttc`（`scripts/install-font.sh`）。
-- **交叉构建脚本丢失 CPU 调优**：`build-aarch64.sh` 的 `RUSTFLAGS` 覆盖 `.cargo/config.toml` rustflags（见构建节）。
 
 ## 许可
 
