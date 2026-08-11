@@ -73,27 +73,33 @@ rustflags = [
 
 （rpath 已并入 `.cargo/config.toml`，CPU 调优与 rpath 同时生效，不再有 RUSTFLAGS 覆盖问题。）
 
-### 单文件分发（arm64 自解压安装器）
+### 单文件分发（自解压安装器，一键部署）
 
-`scripts/package-single-aarch64.sh` 产出 **1 个自解压安装器** `dist/anydoc-ocr-linux-arm64.run`，内嵌全部运行资源：
+`scripts/package-single.sh [aarch64|x86_64]` 产出 **1 个自解压安装器**，内嵌全部运行资源，新机器直接运行即部署完成：
+
+| 架构 | 命令 | 产物 |
+|------|------|------|
+| aarch64（飞腾） | `./scripts/package-single.sh aarch64` | `dist/anydoc-ocr-linux-arm64.run` |
+| x86_64 | `./scripts/package-single.sh x86_64` | `dist/anydoc-ocr-linux-x86_64.run` |
+
+内嵌资源：
 
 | 资源 | 内容 |
 |------|------|
-| 二进制 | aarch64 release（lto，`cortex-a72+neon`） |
-| 原生库 | `libonnxruntime.so`（16M）+ `libpdfium.so`（7.6M），rpath 自带 |
+| 二进制 | release（lto，aarch64 含 `cortex-a72+neon`） |
+| 原生库 | `libonnxruntime.so*`（16M）+ `libpdfium.so`（7.6M），rpath 自带 |
 | 字体 | `NotoSansCJK-Regular.ttc`（19M，OFD 中文渲染） |
 | 模型 | **tiny 档 8 件**（layout/det/rec/dict/表格结构/表格分类，~32M） |
-| 合计 | ~80-85M |
+| 合计 | x86_64 约 72M |
+
+**一键部署**：首次运行自动完成全部装配——解压到 `~/.anydoc-ocr`、CJK 字体装入用户字体目录（`$XDG_DATA_HOME/fonts`，fontdb `load_system_fonts` 即生效，免 root）、`OAR_HOME`/`LD_LIBRARY_PATH` 指向包内；之后直跑免解压。
 
 ```bash
-# 构建（需 aarch64 交叉工具链 + third_party/aarch64 预编译库 + 本机已缓存 tiny 模型）
-./scripts/package-single-aarch64.sh
-
-# 目标机（飞腾）使用：首次自动解压到 ~/.anydoc-ocr，之后直跑
+# 目标机：首次即部署，之后即用
 ./anydoc-ocr-linux-arm64.run 公文.pdf -o out.md
-./anydoc-ocr-linux-arm64.run --reinstall   # 强制重装
-# 自定义安装目录
-ANYDOC_INSTALL_DIR=/opt/anydoc ./anydoc-ocr-linux-arm64.run 公文.ofd -o out.md
+./anydoc-ocr-linux-x86_64.run 公文.ofd -o out.md
+./anydoc-ocr-linux-arm64.run --reinstall        # 强制重装
+ANYDOC_INSTALL_DIR=/opt/anydoc ./anydoc-ocr-linux-x86_64.run 公文.ofd -o out.md  # 自定义安装目录
 ```
 
 **模型档策略**：单文件内嵌 tiny（默认档，常见公文够用）。small/medium 不内嵌（全档 348M），需要时用 `ANYDOC_MODEL_DIR` 指向外置模型目录（见环境变量表）——注意单文件内 `OAR_HOME` 已指向安装目录 `oar-home/`，外置模型用绝对路径直载、绕开 hash 校验。
@@ -200,7 +206,7 @@ tests/
   golden.rs + golden/snapshots/   22 个 SHA-256 快照
   samples/         生成的确定性子样本
   real_samples/    gitignored 真实公文样本
-scripts/            build-x64 / build-aarch64 / package-aarch64 / package-single / install-font
+scripts/            build-x64 / build-aarch64 / package-aarch64 / package-single(arm64|x86_64) / install-font
 .cargo/config.toml aarch64 交叉编译 rustflags
 ```
 
