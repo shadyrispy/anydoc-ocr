@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::table_grid::{extend_table_grid, table_grid_to_html, TableGrid};
+use crate::table_grid::{TableGrid, extend_table_grid, table_grid_to_html};
 
 /// flush 写入段时的前后缀格式（两通路历史差异，必须保留）。
 #[derive(Clone, Copy)]
@@ -96,7 +96,12 @@ mod tests {
     use crate::table_grid::{TableCell, TableGrid};
 
     fn cell(t: &str) -> TableCell {
-        TableCell { text: t.into(), x: 0.0, y: 0.0, h: 10.0 }
+        TableCell {
+            text: t.into(),
+            x: 0.0,
+            y: 0.0,
+            h: 10.0,
+        }
     }
 
     fn grid(cols: usize, texts: &[&str]) -> TableGrid {
@@ -104,7 +109,12 @@ mod tests {
             .chunks(cols)
             .map(|c| c.iter().map(|s| cell(s)).collect())
             .collect();
-        TableGrid { cols, header: vec![], rows, has_header: false }
+        TableGrid {
+            cols,
+            header: vec![],
+            rows,
+            has_header: false,
+        }
     }
 
     #[test]
@@ -152,7 +162,10 @@ mod tests {
         let out = e.finish();
         let idx = out.find("body").unwrap();
         let after = &out[idx..];
-        assert!(after.starts_with("body\n\n"), "gfm 段应为 body\\n\\n+html，got: {after}");
+        assert!(
+            after.starts_with("body\n\n"),
+            "gfm 段应为 body\\n\\n+html，got: {after}"
+        );
         assert!(after.trim_end().ends_with('>'), "gfm 段以 </table> 结尾");
     }
 
@@ -166,4 +179,3 @@ mod tests {
         assert_eq!(out, "first\nsecond\nthird");
     }
 }
-

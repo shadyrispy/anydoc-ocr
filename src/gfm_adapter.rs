@@ -13,11 +13,26 @@
 //! `Image`（figure）而非 `Table`，导致 `page.tables` 为空、不出 `<table>`。
 //! 补救：收集 Image 块内的 text_regions → 网格重建（复用 `crate::table_grid`），
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
-use crate::reading_order::{order_text_regions, postprocess_lines, title_level};
 use crate::emitter::{DocumentEmitter, FlushFormat};
+use crate::reading_order::{order_text_regions, postprocess_lines, title_level};
 use crate::region::Region;
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};
+
+/// 双栏长文本判伪表启发式核心：恰为 2 列、且非空文本中"长文本"占比超过 60%。
+///
+/// 长文本定义：≥15 字符，或以 。，；： 结尾（真表格单元格通常为短字段/数字）。
+/// `texts` 须为 trim 后的非空文本；命中即视为双栏散文而非真表格。
+fn is_two_col_prose_like(cols: usize, texts: &[&str]) -> bool {
+    if cols != 2 || texts.is_empty() {
+        return false;
+    }
+    let long = texts
+        .iter()
+        .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
+        .count();
+    long as f32 / texts.len() as f32 > 0.6
+}
 
 /// 判断表格是否为版面模型误判的"伪表格"（典型：双栏正文被识别成 2 列表格）。
 ///
@@ -39,21 +54,13 @@ fn is_false_positive_table(table: &TableResult) -> bool {
     if n_rows < 2 || n_cols < 2 {
         return true;
     }
-    if n_cols == 2 {
-        let non_empty: Vec<&str> = table
-            .cells
-            .iter()
-            .filter_map(|c| c.text.as_ref().map(|t| t.trim()).filter(|t| !t.is_empty()))
-            .collect();
-        if !non_empty.is_empty() {
-            let long = non_empty
-                .iter()
-                .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
-                .count();
-            if long as f32 / non_empty.len() as f32 > 0.6 {
-                return true;
-            }
-        }
+    let non_empty: Vec<&str> = table
+        .cells
+        .iter()
+        .filter_map(|c| c.text.as_ref().map(|t| t.trim()).filter(|t| !t.is_empty()))
+        .collect();
+    if is_two_col_prose_like(n_cols, &non_empty) {
+        return true;
     }
     false
 }
@@ -174,25 +181,17 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
         return None;
     }
     // 2 列长文本（对齐双列正文）→ 拒，与 is_false_positive_table 语义一致。
-    if grid.cols == 2 {
-        let cells: Vec<&str> = grid
-            .header
-            .iter()
-            .chain(grid.rows.iter().flatten())
-            .filter_map(|c| {
-                let t = c.text.trim();
-                (!t.is_empty()).then_some(t)
-            })
-            .collect();
-        if !cells.is_empty() {
-            let long = cells
-                .iter()
-                .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
-                .count();
-            if long * 100 > cells.len() * 60 {
-                return None;
-            }
-        }
+    let cells: Vec<&str> = grid
+        .header
+        .iter()
+        .chain(grid.rows.iter().flatten())
+        .filter_map(|c| {
+            let t = c.text.trim();
+            (!t.is_empty()).then_some(t)
+        })
+        .collect();
+    if is_two_col_prose_like(grid.cols, &cells) {
+        return None;
     }
     Some(grid)
 }
@@ -217,8 +216,12 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         let page_w = page
             .text_regions
             .as_ref()
-        .map(|rs| rs.iter().map(|r| r.bounding_box.x_max()).fold(0.0_f32, f32::max))
-        .unwrap_or(0.0);
+            .map(|rs| {
+                rs.iter()
+                    .map(|r| r.bounding_box.x_max())
+                    .fold(0.0_f32, f32::max)
+            })
+            .unwrap_or(0.0);
         // T02：page_scale 每页算 1 次（原在 region 循环内每 region 重算，O(n²)）
         let scale = page_scale(page);
         // Image 块补救重建（可能跨页续接合并）。重建成功 → Image 内文本从正文
@@ -272,7 +275,10 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
         }
         if debug && pi < 7 {
             let pw = regions.iter().map(|r| r.x_max).fold(0.0_f32, f32::max);
-            eprintln!("[gfm-dbg] page={pi} page_w={pw:.0} n_regions={}", regions.len());
+            eprintln!(
+                "[gfm-dbg] page={pi} page_w={pw:.0} n_regions={}",
+                regions.len()
+            );
             for r in &regions {
                 let cx = (r.x_min + r.x_max) / 2.0;
                 let wide = (r.x_max - r.x_min) > 0.6 * pw;
@@ -345,18 +351,18 @@ fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<Strin
 /// 截取到闭合标签末尾并补齐缺失的 `>`；表格后的正文由 lines 路径输出，此处丢弃。
 fn simplify_table_html(html: &str) -> String {
     let h = html.trim();
-    if let Some(s) = h.find("<table") {
-        if let Some(rel) = h[s..].rfind("</table") {
-            let mut end = s + rel + "</table".len();
-            if h.as_bytes().get(end) == Some(&b'>') {
-                end += 1;
-            }
-            let mut out = h[s..end].to_string();
-            if !out.ends_with('>') {
-                out.push('>');
-            }
-            return out;
+    if let Some(s) = h.find("<table")
+        && let Some(rel) = h[s..].rfind("</table")
+    {
+        let mut end = s + rel + "</table".len();
+        if h.as_bytes().get(end) == Some(&b'>') {
+            end += 1;
         }
+        let mut out = h[s..end].to_string();
+        if !out.ends_with('>') {
+            out.push('>');
+        }
+        return out;
     }
     h.to_string()
 }
@@ -364,8 +370,8 @@ fn simplify_table_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oar_ocr::domain::structure::{LayoutElement, TableCell, TableType};
     use oar_ocr::domain::TextRegion;
+    use oar_ocr::domain::structure::{LayoutElement, TableCell, TableType};
     use oar_ocr::processors::BoundingBox;
 
     fn cell(row: usize, col: usize, text: &str) -> TableCell {
@@ -375,8 +381,11 @@ mod tests {
     }
 
     fn table(cells: Vec<TableCell>) -> TableResult {
-        TableResult::new(BoundingBox::from_coords(0.0, 0.0, 100.0, 100.0), TableType::Wireless)
-            .with_cells(cells)
+        TableResult::new(
+            BoundingBox::from_coords(0.0, 0.0, 100.0, 100.0),
+            TableType::Wireless,
+        )
+        .with_cells(cells)
     }
 
     fn tr(x0: f32, y0: f32, x1: f32, y1: f32, text: &str) -> TextRegion {
@@ -420,7 +429,10 @@ mod tests {
     /// Image 块内多列对齐短字段网格 → 重建成功。
     #[test]
     fn image_block_grid_reconstructed() {
-        let page = page_with_image_grid(&[("1", "甲"), ("2", "乙"), ("3", "丙")], (0.0, 0.0, 50.0, 60.0));
+        let page = page_with_image_grid(
+            &[("1", "甲"), ("2", "乙"), ("3", "丙")],
+            (0.0, 0.0, 50.0, 60.0),
+        );
         let g = reconstruct_image_table(&page, 100.0).expect("grid");
         assert_eq!(g.cols, 2);
         assert_eq!(g.rows.len(), 3);
@@ -492,10 +504,34 @@ mod tests {
         let page = StructureResult {
             layout_elements: vec![image_el(0.0, 0.0, 60.0, 60.0)],
             text_regions: Some(vec![
-                tr(5.0, 10.0, 25.0, 15.0, "经研究，市人民政府决定对下列规章予以修改和废止。"),
-                tr(30.0, 10.0, 55.0, 15.0, "受市生态环境部门委托，负责放射源销售单位许可。"),
-                tr(5.0, 20.0, 25.0, 25.0, "一、对下列政府规章的部分条款予以修改，现予公布。"),
-                tr(30.0, 20.0, 55.0, 25.0, "修改为：市生态环境部门对本市范围内放射性同位素监管。"),
+                tr(
+                    5.0,
+                    10.0,
+                    25.0,
+                    15.0,
+                    "经研究，市人民政府决定对下列规章予以修改和废止。",
+                ),
+                tr(
+                    30.0,
+                    10.0,
+                    55.0,
+                    15.0,
+                    "受市生态环境部门委托，负责放射源销售单位许可。",
+                ),
+                tr(
+                    5.0,
+                    20.0,
+                    25.0,
+                    25.0,
+                    "一、对下列政府规章的部分条款予以修改，现予公布。",
+                ),
+                tr(
+                    30.0,
+                    20.0,
+                    55.0,
+                    25.0,
+                    "修改为：市生态环境部门对本市范围内放射性同位素监管。",
+                ),
             ]),
             tables: Vec::new(),
             ..StructureResult::new("t", 0)
@@ -557,8 +593,12 @@ mod tests {
     #[test]
     fn three_col_table_accepted() {
         let t = table(vec![
-            cell(0, 0, "a"), cell(0, 1, "b"), cell(0, 2, "c"),
-            cell(1, 0, "1"), cell(1, 1, "2"), cell(1, 2, "3"),
+            cell(0, 0, "a"),
+            cell(0, 1, "b"),
+            cell(0, 2, "c"),
+            cell(1, 0, "1"),
+            cell(1, 1, "2"),
+            cell(1, 2, "3"),
         ]);
         assert!(!is_false_positive_table(&t));
     }

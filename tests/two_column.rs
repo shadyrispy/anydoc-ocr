@@ -20,16 +20,16 @@
 
 use std::path::Path;
 
-use anydoc_ocr::convert_to_markdown;
 use anydoc_ocr::ConvertOptions;
+use anydoc_ocr::convert_to_markdown;
 
 const SAMPLE: &str = "tests/real_samples/上海公报2025第1期.pdf";
 
 #[test]
 #[ignore]
 fn two_column_left_then_right_order() {
-    let md = convert_to_markdown(Path::new(SAMPLE), &ConvertOptions::default())
-        .expect("转换应成功");
+    let md =
+        convert_to_markdown(Path::new(SAMPLE), &ConvertOptions::default()).expect("转换应成功");
 
     // 左栏锚点
     let left_head = "经研究";

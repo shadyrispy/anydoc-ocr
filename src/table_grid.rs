@@ -205,7 +205,11 @@ fn relative_row_tol(items: &[Region], page_w: f32) -> f32 {
     // 行高估计 = cell h 中位数（单行文本 h≈行高）。
     let mut hs: Vec<f32> = items.iter().map(|it| it.height()).collect();
     hs.sort_by(|a, b| a.total_cmp(b));
-    let rh = if hs.is_empty() { 10.0 } else { hs[hs.len() / 2] };
+    let rh = if hs.is_empty() {
+        10.0
+    } else {
+        hs[hs.len() / 2]
+    };
     // 粗分组（容差 ~1.2×行高）估中位行距。
     let mut sorted: Vec<&Region> = items.iter().collect();
     sorted.sort_by(|a, b| a.y_min.total_cmp(&b.y_min));
@@ -282,16 +286,16 @@ fn cluster_row(items: &[&Region], gap_thr: f32) -> Vec<TableCell> {
     let mut hmax = 0.0_f32;
     for it in &items {
         let it = *it;
-        if let Some(prev) = cluster.last() {
-            if it.x_min - prev.x_max > gap_thr {
-                cells.push(TableCell {
-                    text: join_cell_items(&cluster),
-                    x: x0,
-                    y: y0,
-                    h: hmax,
-                });
-                cluster.clear();
-            }
+        if let Some(prev) = cluster.last()
+            && it.x_min - prev.x_max > gap_thr
+        {
+            cells.push(TableCell {
+                text: join_cell_items(&cluster),
+                x: x0,
+                y: y0,
+                h: hmax,
+            });
+            cluster.clear();
         }
         if cluster.is_empty() {
             x0 = it.x_min;
@@ -520,33 +524,83 @@ mod tests {
 
     #[test]
     fn cross_page_merge_drops_repeated_header() {
-    let mut acc = TableGrid {
-        cols: 2,
-        header: vec![
-            TableCell { text: "ID".into(), x: 10.0, y: 10.0, h: 10.0 },
-            TableCell { text: "Name".into(), x: 60.0, y: 10.0, h: 10.0 },
-        ],
-        rows: vec![vec![
-            TableCell { text: "1".into(), x: 10.0, y: 20.0, h: 10.0 },
-            TableCell { text: "Alice".into(), x: 60.0, y: 20.0, h: 10.0 },
-        ]],
-        has_header: true,
-    };
+        let mut acc = TableGrid {
+            cols: 2,
+            header: vec![
+                TableCell {
+                    text: "ID".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "Name".into(),
+                    x: 60.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+            ],
+            rows: vec![vec![
+                TableCell {
+                    text: "1".into(),
+                    x: 10.0,
+                    y: 20.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "Alice".into(),
+                    x: 60.0,
+                    y: 20.0,
+                    h: 10.0,
+                },
+            ]],
+            has_header: true,
+        };
         // 下页：重复表头 + 续行
         let next = TableGrid {
             cols: 2,
             header: vec![
-                TableCell { text: "ID".into(), x: 10.0, y: 10.0, h: 10.0 },
-                TableCell { text: "Name".into(), x: 60.0, y: 10.0, h: 10.0 },
+                TableCell {
+                    text: "ID".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "Name".into(),
+                    x: 60.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
             ],
             rows: vec![
                 vec![
-                    TableCell { text: "ID".into(), x: 10.0, y: 10.0, h: 10.0 },
-                    TableCell { text: "Name".into(), x: 60.0, y: 10.0, h: 10.0 },
+                    TableCell {
+                        text: "ID".into(),
+                        x: 10.0,
+                        y: 10.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "Name".into(),
+                        x: 60.0,
+                        y: 10.0,
+                        h: 10.0,
+                    },
                 ],
                 vec![
-                    TableCell { text: "2".into(), x: 10.0, y: 20.0, h: 10.0 },
-                    TableCell { text: "Bob".into(), x: 60.0, y: 20.0, h: 10.0 },
+                    TableCell {
+                        text: "2".into(),
+                        x: 10.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "Bob".into(),
+                        x: 60.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
                 ],
             ],
             has_header: true,
@@ -559,28 +613,73 @@ mod tests {
     #[test]
     fn html_emits_span_attributes() {
         // 高 cell（h=40 > 1.5×行距 12）→ rowspan；行内尾空 → colspan
-    let g = TableGrid {
-        cols: 3,
-        header: vec![
-            TableCell { text: "A".into(), x: 10.0, y: 10.0, h: 10.0 },
-            TableCell { text: "B".into(), x: 60.0, y: 10.0, h: 10.0 },
-            TableCell { text: "C".into(), x: 110.0, y: 10.0, h: 10.0 },
-        ],
-        rows: vec![
-            // 行0: x 高格(h=40) → rowspan 吞行1 c0；c1 空 → x colspan=2
-            vec![
-                TableCell { text: "x".into(), x: 10.0, y: 20.0, h: 40.0 },
-                TableCell { text: "".into(), x: 60.0, y: 20.0, h: 10.0 },
-                TableCell { text: "y".into(), x: 110.0, y: 20.0, h: 10.0 },
+        let g = TableGrid {
+            cols: 3,
+            header: vec![
+                TableCell {
+                    text: "A".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "B".into(),
+                    x: 60.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "C".into(),
+                    x: 110.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
             ],
-            vec![
-                TableCell { text: "".into(), x: 10.0, y: 30.0, h: 10.0 },
-                TableCell { text: "w".into(), x: 60.0, y: 30.0, h: 10.0 },
-                TableCell { text: "".into(), x: 110.0, y: 30.0, h: 10.0 },
+            rows: vec![
+                // 行0: x 高格(h=40) → rowspan 吞行1 c0；c1 空 → x colspan=2
+                vec![
+                    TableCell {
+                        text: "x".into(),
+                        x: 10.0,
+                        y: 20.0,
+                        h: 40.0,
+                    },
+                    TableCell {
+                        text: "".into(),
+                        x: 60.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "y".into(),
+                        x: 110.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
+                ],
+                vec![
+                    TableCell {
+                        text: "".into(),
+                        x: 10.0,
+                        y: 30.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "w".into(),
+                        x: 60.0,
+                        y: 30.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "".into(),
+                        x: 110.0,
+                        y: 30.0,
+                        h: 10.0,
+                    },
+                ],
             ],
-        ],
-        has_header: true,
-    };
+            has_header: true,
+        };
         let html = table_grid_to_html(&g);
         assert!(html.contains("colspan=\"2\""), "期望 colspan，got: {html}");
         assert!(html.contains("rowspan=\"2\""), "期望 rowspan，got: {html}");
@@ -593,12 +692,32 @@ mod tests {
         let mut acc = TableGrid {
             cols: 2,
             header: vec![
-                TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
-                TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+                TableCell {
+                    text: "张三".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "北京市海淀区".into(),
+                    x: 60.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
             ],
             rows: vec![vec![
-                TableCell { text: "李四".into(), x: 10.0, y: 20.0, h: 10.0 },
-                TableCell { text: "上海市浦东".into(), x: 60.0, y: 20.0, h: 10.0 },
+                TableCell {
+                    text: "李四".into(),
+                    x: 10.0,
+                    y: 20.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "上海市浦东".into(),
+                    x: 60.0,
+                    y: 20.0,
+                    h: 10.0,
+                },
             ]],
             has_header: false,
         };
@@ -606,17 +725,47 @@ mod tests {
         let next = TableGrid {
             cols: 2,
             header: vec![
-                TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
-                TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+                TableCell {
+                    text: "张三".into(),
+                    x: 10.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
+                TableCell {
+                    text: "北京市海淀区".into(),
+                    x: 60.0,
+                    y: 10.0,
+                    h: 10.0,
+                },
             ],
             rows: vec![
                 vec![
-                    TableCell { text: "张三".into(), x: 10.0, y: 10.0, h: 10.0 },
-                    TableCell { text: "北京市海淀区".into(), x: 60.0, y: 10.0, h: 10.0 },
+                    TableCell {
+                        text: "张三".into(),
+                        x: 10.0,
+                        y: 10.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "北京市海淀区".into(),
+                        x: 60.0,
+                        y: 10.0,
+                        h: 10.0,
+                    },
                 ],
                 vec![
-                    TableCell { text: "王五".into(), x: 10.0, y: 20.0, h: 10.0 },
-                    TableCell { text: "广州市天河".into(), x: 60.0, y: 20.0, h: 10.0 },
+                    TableCell {
+                        text: "王五".into(),
+                        x: 10.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
+                    TableCell {
+                        text: "广州市天河".into(),
+                        x: 60.0,
+                        y: 20.0,
+                        h: 10.0,
+                    },
                 ],
             ],
             has_header: false,
@@ -635,9 +784,27 @@ mod tests {
         let rows_y = [10.0_f32, 70.0, 130.0, 190.0];
         for (i, &y) in rows_y.iter().enumerate() {
             let jit = if i % 2 == 0 { 8.0 } else { -6.0 };
-            items.push(Region::from_top_left(10.0, y + jit, 20.0, 25.0, format!("r{i}a")));
-            items.push(Region::from_top_left(80.0, y - jit, 20.0, 25.0, format!("r{i}b")));
-            items.push(Region::from_top_left(150.0, y + jit * 0.5, 20.0, 25.0, format!("r{i}c")));
+            items.push(Region::from_top_left(
+                10.0,
+                y + jit,
+                20.0,
+                25.0,
+                format!("r{i}a"),
+            ));
+            items.push(Region::from_top_left(
+                80.0,
+                y - jit,
+                20.0,
+                25.0,
+                format!("r{i}b"),
+            ));
+            items.push(Region::from_top_left(
+                150.0,
+                y + jit * 0.5,
+                20.0,
+                25.0,
+                format!("r{i}c"),
+            ));
         }
         let g = reconstruct_table_grid(&items, 300.0).expect("grid");
         assert_eq!(g.cols, 3);
