@@ -73,6 +73,36 @@ rustflags = [
 
 （rpath 已并入 `.cargo/config.toml`，CPU 调优与 rpath 同时生效，不再有 RUSTFLAGS 覆盖问题。）
 
+### 单文件分发（自解压安装器，一键部署）
+
+`scripts/package-single.sh [auto|aarch64|x86_64]` 产出 **1 个自解压安装器**，目标机**自动检测架构**，新机器运行一次即部署完成：
+
+| 模式 | 命令 | 产物 |
+|------|------|------|
+| `auto`（默认） | `./scripts/package-single.sh` | `dist/anydoc-ocr-linux.run`（内嵌双架构，自动检测） |
+| aarch64（飞腾） | `./scripts/package-single.sh aarch64` | `dist/anydoc-ocr-linux-arm64.run` |
+| x86_64 | `./scripts/package-single.sh x86_64` | `dist/anydoc-ocr-linux-x86_64.run` |
+
+内嵌资源（每架构）：二进制（lto，aarch64 含 `cortex-a72+neon`）+ `libonnxruntime.so*`（16M）+ `libpdfium.so`（7.6M）+ `NotoSansCJK-Regular.ttc`（19M）+ **tiny 档模型 8 件**（~32M）。体积：x86_64 约 72M，auto 双架构约 141M。
+
+**一键部署**：首次运行自动完成全部装配——
+1. `uname -m` 检测架构，只解压对应架构到 `~/.anydoc-ocr`
+2. CJK 字体装入用户字体目录（`$XDG_DATA_HOME/fonts`，fontdb `load_system_fonts` 即生效，免 root）
+3. 在 `~/.local/bin` 安装 **`anydoc` 命令**（启动器，设 `OAR_HOME`/`LD_LIBRARY_PATH` 指向包内），并把 `~/.local/bin` 加入 PATH（追加 shell rc）
+
+之后直接敲 `anydoc` 即可：
+
+```bash
+# 目标机：首次运行即部署（自动检测架构 + 装 anydoc 命令）
+./anydoc-ocr-linux.run 公文.pdf -o out.md
+# 之后新终端直接
+anydoc 公文.ofd -o out.md
+./anydoc-ocr-linux.run --reinstall        # 强制重装
+ANYDOC_INSTALL_DIR=/opt/anydoc ./anydoc-ocr-linux.run 公文.ofd -o out.md  # 自定义安装目录
+```
+
+**模型档策略**：单文件内嵌 tiny（默认档，常见公文够用）。small/medium 不内嵌（全档 348M），需要时用 `ANYDOC_MODEL_DIR` 指向外置模型目录（见环境变量表）——注意单文件内 `OAR_HOME` 已指向安装目录 `oar-home/`，外置模型用绝对路径直载、绕开 hash 校验。
+
 ### 运行环境
 
 ```bash
@@ -175,7 +205,7 @@ tests/
   golden.rs + golden/snapshots/   22 个 SHA-256 快照
   samples/         生成的确定性子样本
   real_samples/    gitignored 真实公文样本
-scripts/            build-x64 / build-aarch64 / package-aarch64 / install-font
+scripts/            build-x64 / build-aarch64 / package-aarch64 / package-single(auto双架构) / install-font
 .cargo/config.toml aarch64 交叉编译 rustflags
 ```
 
