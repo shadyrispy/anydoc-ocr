@@ -21,7 +21,7 @@ use ofd_core::model::page::PageObject;
 use ofd_core::{LoadedDocument, OfdReader, RenderOptions};
 
 use crate::gfm_adapter;
-use crate::pdf::ocr;
+use crate::ocr_engine;
 use crate::reading_order;
 use crate::emitter::{DocumentEmitter, FlushFormat};
 use crate::region::Region;
@@ -29,15 +29,19 @@ use crate::table_grid;
 use crate::timing::StageTimer;
 use crate::{ConvertOptions, Result as CResult};
 
+/// OFD 文字层提取的文本行：x0, x1, y0, y1（左、右、上、下，文档坐标），text。
+#[derive(Debug, Clone)]
+pub(crate) struct OfdTextLine {
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
+    pub text: String,
+}
+
 /// 页型判定阈值：文字总量（字符数）低于该值且存在图像对象时视为图片型页，
 /// 走渲染+OCR；否则按坐标提取文字层（与 `--ofd-force-ocr` 无关的默认判定）。
 const IMAGE_PAGE_MIN_TEXT_CHARS: usize = 5;
-
-/// F3 坏字体乱码检测：整页字符数须**超过**该值才判乱码（防小页/空页误伤）。
-const GARBLED_MIN_TOTAL_CHARS: usize = 50;
-/// F3 坏字体乱码检测：坏字符（U+FFFD 替换符 / 私有区 U+E000..U+F8FF / 控制字符）
-/// 占比 >=20%（`bad*100 >= total*20`）→ 判乱码 → 该页改走整页 OCR。
-const GARBLED_BAD_PERCENT_THRESHOLD: usize = 20;
 
 /// 单页数据处理方式（按页序保存，OCR 结果后填）。
 enum PageData {
@@ -78,7 +82,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             };
 
             let texts = collect_text_lines(&page);
-            let text_len: usize = texts.iter().map(|(_, _, _, _, s)| s.chars().count()).sum();
+            let text_len: usize = texts.iter().map(|line| line.text.chars().count()).sum();
             let img_count = count_images(&page);
             let is_image = opts.ofd_force_ocr
                 || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
@@ -128,7 +132,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
     if !full_imgs.is_empty() {
         t.stage("render");
-        let results = ocr::ocr_images(full_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
+        let results = ocr_engine::ocr_images(full_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
         t.stage("ocr");
         for (page, res) in full_pages.into_iter().zip(results) {
             full_out.insert(
@@ -192,7 +196,8 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 // 2) 普通页：冲掉挂起跨页表，输出文字层行（F4 加标题前缀）。
                 emitter.flush_pending();
                 let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
-                let md = apply_title_prefixes(md).join("\n");
+                let md =
+                    crate::text_health::apply_title_prefixes(&md, &[], true).join("\n");
                 emitter.push_segment(page, &md);
                 emitter.push_segment(page, "\n\n");
             }
@@ -215,37 +220,37 @@ fn render_page(
     Ok(image::DynamicImage::ImageRgba8(img).to_rgb8())
 }
 
-/// `(f64,..)` 文本行 → `Region`（`f32` 区域，reading_order / table_grid 共用）。
-fn to_regions(texts: Vec<(f64, f64, f64, f64, String)>) -> Vec<Region> {
+/// `OfdTextLine` 文本行 → `Region`（`f32` 区域，reading_order / table_grid 共用）。
+fn to_regions(texts: Vec<OfdTextLine>) -> Vec<Region> {
     texts
         .into_iter()
-        .map(|(x0, x1, y0, y1, s)| Region::new(x0 as f32, x1 as f32, y0 as f32, y1 as f32, s))
+        .map(|line| {
+            Region::new(
+                line.x0 as f32,
+                line.x1 as f32,
+                line.y0 as f32,
+                line.y1 as f32,
+                line.text,
+            )
+        })
         .collect()
 }
 
 /// F3 坏字体乱码检测：统计 U+FFFD 替换符 / 私有区（U+E000..U+F8FF）/ 控制字符。
-/// 整页字符数须超过 [`GARBLED_MIN_TOTAL_CHARS`] 且坏字符占比 >=
-/// [`GARBLED_BAD_PERCENT_THRESHOLD`]%（`bad*100 >= total*20`）才判乱码，
-/// 避免少量误报（如目录点线符的私有区字符）触发整页 OCR。字符分类逻辑收敛于
-/// `text_health`。
-fn is_garbled_text(texts: &[(f64, f64, f64, f64, String)]) -> bool {
-    let chars = texts.iter().flat_map(|(_, _, _, _, s)| s.chars());
+/// 整页字符数须超过 [`crate::text_health::GARBLED_MIN_TOTAL_CHARS`] 且坏字符占比 >=
+/// [`crate::text_health::GARBLED_BAD_PERCENT_THRESHOLD`]%（`bad*100 >= total*20`）才判乱码，
+/// 避免少量误报（如目录点线符的私有区字符）触发整页 OCR。字符分类与阈值常量均收敛于
+/// `text_health`（PDF/OFD 共用）。
+fn is_garbled_text(texts: &[OfdTextLine]) -> bool {
+    let chars = texts.iter().flat_map(|line| line.text.chars());
     crate::text_health::has_garbled_chars(
         chars,
-        GARBLED_MIN_TOTAL_CHARS,
-        GARBLED_BAD_PERCENT_THRESHOLD,
+        crate::text_health::GARBLED_MIN_TOTAL_CHARS,
+        crate::text_health::GARBLED_BAD_PERCENT_THRESHOLD,
     )
 }
 
-/// F4 标题前缀：与 PDF 文字层同启发式——`title_level` 编号启发式命中、行 <=
-/// 60 字符、且未以 `#` 开头 → 加 `"#".repeat(level) + " "`（上限见
-/// `text_health::TITLE_MAX_CHARS`）。统一于 `text_health::apply_title_prefixes`
-/// （空 hints + numbering=true）。
-fn apply_title_prefixes(lines: Vec<String>) -> Vec<String> {
-    crate::text_health::apply_title_prefixes(&lines, &[], true)
-}
-
-/// 收集一页所有 TextObject 的文本，返回 `(x_min, x_max, y_min, y_max, 行文本)`，
+/// 收集一页所有 TextObject 的文本，返回 `OfdTextLine`（`x0/x1/y0/y1/行文本`），
 /// 坐标为**页面坐标**（原点左上、y 向下，与 `reading_order` "小=上" 约定一致）。
 ///
 /// 区域优先取对象真实页面包围盒（`boundary`）：x_min=boundary.x，
@@ -259,7 +264,7 @@ fn apply_title_prefixes(lines: Vec<String>) -> Vec<String> {
 /// 对象边界平移 + CTM 变换得出：`page = boundary + CTM(code)`。OFD 页面坐标系
 /// 原点在左上、y 轴向下（`render` 的 `page_to_device` 直接把物理区左上角映射到
 /// 设备原点），故返回的 y 已是"越小越靠上"，与 `reading_order` 约定一致。
-fn collect_text_lines(page: &PageObject) -> Vec<(f64, f64, f64, f64, String)> {
+fn collect_text_lines(page: &PageObject) -> Vec<OfdTextLine> {
     let mut out = Vec::new();
     if let Some(content) = &page.content {
         for layer in &content.layers {
@@ -292,7 +297,7 @@ fn ctm_is_watermark_angle(ctm: &[f64]) -> bool {
     nearest_axis_dist > TOL + 1e-9
 }
 
-fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<(f64, f64, f64, f64, String)>) {
+fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>) {
     for b in blocks {
         match b {
             PageBlock::Text(t) => {
@@ -331,10 +336,10 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<(f64, f64, f64, f64, 
                     let x1 = t.boundary.x + t.boundary.width;
                     let y0 = t.boundary.y;
                     let y1 = t.boundary.y + t.boundary.height;
-                    out.push((x0, x1, y0, y1, line));
+                    out.push(OfdTextLine { x0, x1, y0, y1, text: line });
                 } else {
                     // boundary 退化：退回旧单点行为（首字符坐标），不 panic。
-                    out.push((x, x, y, y + 1.0, line));
+                    out.push(OfdTextLine { x0: x, x1: x, y0: y, y1: y + 1.0, text: line });
                 }
             }
             PageBlock::Block(g) => collect_text_blocks(&g.objects, out),
@@ -401,23 +406,23 @@ mod tests {
     fn garbled_text_detection() {
         // 正常中文文本 → 不乱码
         let ok = vec![
-            (0.0, 10.0, 0.0, 1.0, "太原市人民政府公报".to_string()),
-            (0.0, 10.0, 1.0, 2.0, "二〇二五年第一期".to_string()),
+            OfdTextLine { x0: 0.0, x1: 10.0, y0: 0.0, y1: 1.0, text: "太原市人民政府公报".to_string() },
+            OfdTextLine { x0: 0.0, x1: 10.0, y0: 1.0, y1: 2.0, text: "二〇二五年第一期".to_string() },
         ];
         assert!(!is_garbled_text(&ok));
         // 60 个 U+FFFD 替换符（>50 字符且占比 100%）→ 乱码
-        let bad: Vec<(f64, f64, f64, f64, String)> = (0..60)
-            .map(|i| (0.0, 10.0, i as f64, i as f64 + 1.0, "\u{FFFD}".to_string()))
+        let bad: Vec<OfdTextLine> = (0..60)
+            .map(|i| OfdTextLine { x0: 0.0, x1: 10.0, y0: i as f64, y1: i as f64 + 1.0, text: "\u{FFFD}".to_string() })
             .collect();
         assert!(is_garbled_text(&bad));
         // 仅 10 个替换符（总量不足 50）→ 不判乱码
         assert!(!is_garbled_text(&bad[..10]));
         // 私有区字符（目录点线符常见）占比 <20%（10 坏 / 70 总）→ 不判乱码
-        let mut mixed: Vec<(f64, f64, f64, f64, String)> = (0..60)
-            .map(|i| (0.0, 10.0, i as f64, i as f64 + 1.0, "正常正文".to_string()))
+        let mut mixed: Vec<OfdTextLine> = (0..60)
+            .map(|i| OfdTextLine { x0: 0.0, x1: 10.0, y0: i as f64, y1: i as f64 + 1.0, text: "正常正文".to_string() })
             .collect();
         for i in 0..10 {
-            mixed[i].4 = "\u{E000}".to_string();
+            mixed[i].text = "\u{E000}".to_string();
         }
         assert!(!is_garbled_text(&mixed));
     }
@@ -429,7 +434,7 @@ mod tests {
             "这是正文句子。".to_string(),
             "# 已带前缀的标题".to_string(),
         ];
-        let out = apply_title_prefixes(lines);
+        let out = crate::text_health::apply_title_prefixes(&lines, &[], true);
         assert_eq!(out[0], "## 一、总则");
         assert_eq!(out[1], "这是正文句子。");
         assert_eq!(out[2], "# 已带前缀的标题");

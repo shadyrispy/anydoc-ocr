@@ -19,6 +19,21 @@ use crate::region::Region;
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};
 
+/// 双栏长文本判伪表启发式核心：恰为 2 列、且非空文本中"长文本"占比超过 60%。
+///
+/// 长文本定义：≥15 字符，或以 。，；： 结尾（真表格单元格通常为短字段/数字）。
+/// `texts` 须为 trim 后的非空文本；命中即视为双栏散文而非真表格。
+fn is_two_col_prose_like(cols: usize, texts: &[&str]) -> bool {
+    if cols != 2 || texts.is_empty() {
+        return false;
+    }
+    let long = texts
+        .iter()
+        .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
+        .count();
+    long as f32 / texts.len() as f32 > 0.6
+}
+
 /// 判断表格是否为版面模型误判的"伪表格"（典型：双栏正文被识别成 2 列表格）。
 ///
 /// 确定性规则，任一命中即拒绝（返回 true）：
@@ -39,21 +54,13 @@ fn is_false_positive_table(table: &TableResult) -> bool {
     if n_rows < 2 || n_cols < 2 {
         return true;
     }
-    if n_cols == 2 {
-        let non_empty: Vec<&str> = table
-            .cells
-            .iter()
-            .filter_map(|c| c.text.as_ref().map(|t| t.trim()).filter(|t| !t.is_empty()))
-            .collect();
-        if !non_empty.is_empty() {
-            let long = non_empty
-                .iter()
-                .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
-                .count();
-            if long as f32 / non_empty.len() as f32 > 0.6 {
-                return true;
-            }
-        }
+    let non_empty: Vec<&str> = table
+        .cells
+        .iter()
+        .filter_map(|c| c.text.as_ref().map(|t| t.trim()).filter(|t| !t.is_empty()))
+        .collect();
+    if is_two_col_prose_like(n_cols, &non_empty) {
+        return true;
     }
     false
 }
@@ -174,25 +181,17 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
         return None;
     }
     // 2 列长文本（对齐双列正文）→ 拒，与 is_false_positive_table 语义一致。
-    if grid.cols == 2 {
-        let cells: Vec<&str> = grid
-            .header
-            .iter()
-            .chain(grid.rows.iter().flatten())
-            .filter_map(|c| {
-                let t = c.text.trim();
-                (!t.is_empty()).then_some(t)
-            })
-            .collect();
-        if !cells.is_empty() {
-            let long = cells
-                .iter()
-                .filter(|t| t.chars().count() >= 15 || t.ends_with(['。', '，', '；', '：']))
-                .count();
-            if long * 100 > cells.len() * 60 {
-                return None;
-            }
-        }
+    let cells: Vec<&str> = grid
+        .header
+        .iter()
+        .chain(grid.rows.iter().flatten())
+        .filter_map(|c| {
+            let t = c.text.trim();
+            (!t.is_empty()).then_some(t)
+        })
+        .collect();
+    if is_two_col_prose_like(grid.cols, &cells) {
+        return None;
     }
     Some(grid)
 }

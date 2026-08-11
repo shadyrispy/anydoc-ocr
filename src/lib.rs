@@ -1,20 +1,23 @@
 //! anydoc-ocr：办公文档（含图片型 PDF/OFD）转 Markdown 的库与 CLI。
+//!
+//! 公开 API 面：入口 [`convert_to_markdown`]、配置 [`ConvertOptions`]、文档类型 [`DocKind`]、
+//! OCR 档位 [`OcrTier`]、版面类型 [`models::OcrLayout`]，以及 [`VERSION`]。
 mod error;
 pub use error::Result;
 
 pub mod convert;
 pub mod detect;
-pub mod emitter;
-pub mod gfm_adapter;
 pub mod models;
-pub mod ocr_engine;
-pub mod ofd;
-pub mod pdf;
-pub mod reading_order;
-pub mod region;
-pub mod table_grid;
-pub mod text_health;
-pub mod timing;
+pub(crate) mod emitter;
+pub(crate) mod gfm_adapter;
+pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
+pub(crate) mod ofd;
+pub(crate) mod pdf;
+pub(crate) mod reading_order;
+pub(crate) mod region;
+pub(crate) mod table_grid;
+pub(crate) mod text_health;
+pub(crate) mod timing;
 
 pub use convert::{convert_to_markdown, ConvertOptions};
 pub use detect::DocKind;

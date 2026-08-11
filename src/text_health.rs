@@ -1,13 +1,18 @@
 //! 文本健康检查：乱码字符检测（PDF / OFD 共用）+ 标题前缀注入（三通路统一）。
 //!
 //! 坏字符三类：U+FFFD 替换符、私有区 U+E000..=U+F8FF、控制字符。判定阈值
-//! （`min_total` / `bad_percent`）由调用方各自保留——PDF 与 OFD 的常量略有差异，
-//! 但字符分类逻辑完全一致，在此收敛为单一实现，避免两处漂移。
+//! （`min_total` / `bad_percent`）由本模块的
+//! [`GARBLED_MIN_TOTAL_CHARS`] / [`GARBLED_BAD_PERCENT_THRESHOLD`] 统一提供，
+//! PDF 与 OFD 共用同一阈值（50 字符 / 20% 占比），常量集中于此，防异名漂移。
 
 use crate::reading_order;
 
 /// 标题前缀最大行宽：超过此字符数视为正文，不加标题前缀（编号启发式分支）。
 pub const TITLE_MAX_CHARS: usize = 60;
+
+/// 整页坏字符占比与总量阈值（GARBLED 判乱码，PDF/OFD 共用，防异名漂移）。
+pub const GARBLED_MIN_TOTAL_CHARS: usize = 50;
+pub const GARBLED_BAD_PERCENT_THRESHOLD: usize = 20;
 
 /// 单字符是否为"坏字体"特征字符。
 pub fn is_garbled_char(c: char) -> bool {

@@ -8,7 +8,6 @@
 //! 缓存即**有意常驻**：大文档后不释放模型内存是预期行为（省重载耗时）。`clear_cache()`
 //! 提供释放口，防"优化变泄漏"反噬（仅弃缓存自身的 Arc 引用，外部仍持有的引擎句柄有效）。
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, Once};
 
 use anyhow::Result;
@@ -81,7 +80,9 @@ impl OcrEngine {
     /// 后续同 key 零重载——OFD 双 OCR 调用、库模式重复 convert 均复用同实例。
     pub fn build(tier: OcrTier, layout: OcrLayout) -> Result<Arc<OcrEngine>> {
         let key = EngineKey { tier, layout };
-        let mut cache = CACHE.lock().expect("ocr engine cache poisoned");
+        let mut cache = CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(e) = cache.get(&key) {
             return Ok(Arc::clone(e));
         }
@@ -135,7 +136,9 @@ impl OcrEngine {
     /// 释放全部缓存的引擎（仅弃缓存自身 Arc 引用；外部仍持有的句柄继续有效）。
     /// 长驻服务需要周期性回收模型内存时调用。
     pub fn clear_cache() {
-        let mut cache = CACHE.lock().expect("ocr engine cache poisoned");
+        let mut cache = CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.clear();
     }
 }
@@ -188,8 +191,12 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         .map_err(|e| anyhow::anyhow!("构建 OCR 分析器失败: {e}"))
 }
 
-/// 兼容旧调用面：等价 `OcrEngine::build(tier, layout)?.predict(images, threads)`。
-/// PDF/OFD 两通路继续用此签名，零改动接入单例缓存。
+/// 全库唯一 OCR 入口（PDF/OFD 两通路共用）：用 oar-ocr 对渲染图做版面+文本+表格分析。
+///
+/// 等价 `OcrEngine::build(tier, layout)?.predict(images, threads)`——模型按 `(tier, layout)`
+/// 单例缓存，跨文档/跨调用复用，免重复加载。本函数兼负进程级 ORT 线程池初始化：须在
+/// `OcrEngine::build` 创建 ONNX session 之前提交（Ticket A 生效点）。页级并行（rayon）、
+/// 零拷贝消费、OCR 页序契约断言均在 `OcrEngine` 内统一实现。
 pub fn ocr_images(
     images: Vec<RgbImage>,
     tier: OcrTier,
@@ -197,21 +204,6 @@ pub fn ocr_images(
     threads: usize,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
     // A：OCR 入口已知页级并行度，提交进程级线程池（消除超额订阅）。
-    init_runtime(threads);
-    OcrEngine::build(tier, layout)?.predict(images, threads)
-}
-
-/// 便捷：对磁盘 PDF 渲染指定页并跑 OCR（库/CLI 共用的"渲染+OCR"一站式入口）。
-/// `page_indices` 为 0 基准 pdfium 页号；空 → 全页。接 T07 懒惰渲染。
-pub fn ocr_pdf_pages(
-    path: &Path,
-    dpi: f32,
-    tier: OcrTier,
-    layout: OcrLayout,
-    threads: usize,
-    page_indices: &[u32],
-) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
-    let images = crate::pdf::render::render_pdf_pages(path, dpi, page_indices)?;
     init_runtime(threads);
     OcrEngine::build(tier, layout)?.predict(images, threads)
 }
