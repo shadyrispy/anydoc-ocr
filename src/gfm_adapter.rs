@@ -59,9 +59,46 @@ fn simplify_table_html(html: &str) -> String {
     if let (Some(s), Some(e)) = (h.find("<table"), h.rfind("</table>")) {
         // 防御畸形结构（</table> 先于 <table> 出现），避免切片越界 panic
         if s <= e {
-            let end = (e + 7).min(h.len());
+            // `</table>` 长 8 字节，e 是其起始位置，end 为含尾 `>` 的开区间上界
+            let end = (e + 8).min(h.len());
             return h[s..end].to_string();
         }
     }
     h.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simplify_normal_wrapped() {
+        let html = "<html><body><table><tr><td>a</td></tr></table></body></html>";
+        assert_eq!(simplify_table_html(html), "<table><tr><td>a</td></tr></table>");
+    }
+
+    #[test]
+    fn simplify_bare_table() {
+        let html = "<table><tr><td>b</td></tr></table>";
+        assert_eq!(simplify_table_html(html), html);
+    }
+
+    #[test]
+    fn simplify_empty_string() {
+        assert_eq!(simplify_table_html(""), "");
+        assert_eq!(simplify_table_html("   "), "");
+    }
+
+    #[test]
+    fn simplify_malformed_close_before_open() {
+        // </table> 先于 <table> 出现：不应截断，返回 trim 后原文
+        let html = "</table><table>oops";
+        assert_eq!(simplify_table_html(html), "</table><table>oops");
+    }
+
+    #[test]
+    fn simplify_no_table_tags() {
+        let html = "<p>no table here</p>";
+        assert_eq!(simplify_table_html(html), "<p>no table here</p>");
+    }
 }

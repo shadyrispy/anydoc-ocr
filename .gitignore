@@ -11,3 +11,7 @@ third_party/dl/
 /fonts
 # 真实公文样本体积大，不入库；tests/samples 生成样本保留
 /tests/real_samples
+# 本地分析用的 anydoc 上游源码副本（非项目代码）
+/anydoc-src
+# dev-skills 产物目录（计划/spec/fix artifact）
+/.claude

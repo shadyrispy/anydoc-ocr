@@ -1,9 +1,8 @@
-//! PDF 通道：文字型走 anydoc（字节级一致）；图片型走 OCR 管线（M1）
+//! PDF 通道：文字型走 anydoc（字节级一致）；图片型走 OCR 管线
 use std::path::Path;
 
-use crate::{gfm_adapter, timing::StageTimer, ConvertOptions, Result};
+use crate::{gfm_adapter, ocr, timing::StageTimer, ConvertOptions, Result};
 
-pub mod ocr;
 pub mod render;
 
 pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {

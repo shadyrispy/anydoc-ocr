@@ -73,3 +73,53 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_non_empty(spec: &ModelSpec) {
+        assert!(!spec.layout.is_empty());
+        assert!(!spec.layout_name.is_empty());
+        assert!(!spec.det.is_empty());
+        assert!(!spec.rec.is_empty());
+        assert!(!spec.dict.is_empty());
+        assert!(!spec.table_structure.is_empty());
+        assert!(!spec.table_cls.is_empty());
+        assert!(!spec.table_dict.is_empty());
+        assert!(!spec.doc_ori.is_empty());
+    }
+
+    #[test]
+    fn spec_for_tiny_non_empty() {
+        let s = spec_for(OcrTier::Tiny);
+        assert_non_empty(&s);
+        assert!(s.det.contains("tiny"));
+        assert!(s.rec.contains("tiny"));
+    }
+
+    #[test]
+    fn spec_for_small_non_empty() {
+        let s = spec_for(OcrTier::Small);
+        assert_non_empty(&s);
+        assert!(s.det.contains("small"));
+    }
+
+    #[test]
+    fn spec_for_medium_non_empty() {
+        let s = spec_for(OcrTier::Medium);
+        assert_non_empty(&s);
+        assert!(s.det.contains("medium"));
+        assert_eq!(s.layout_name, "PP-DocLayoutV3");
+    }
+
+    #[test]
+    fn spec_for_tiers_distinct() {
+        let tiny = spec_for(OcrTier::Tiny);
+        let small = spec_for(OcrTier::Small);
+        let medium = spec_for(OcrTier::Medium);
+        assert_ne!(tiny.det, small.det);
+        assert_ne!(small.det, medium.det);
+        assert_ne!(tiny.det, medium.det);
+    }
+}

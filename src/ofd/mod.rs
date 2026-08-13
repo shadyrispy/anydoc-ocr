@@ -12,7 +12,7 @@ use ofd_core::model::page::PageObject;
 use ofd_core::{OfdReader, RenderOptions};
 
 use crate::gfm_adapter;
-use crate::pdf::ocr;
+use crate::ocr;
 use crate::timing::StageTimer;
 use crate::{ConvertOptions, Result as CResult};
 

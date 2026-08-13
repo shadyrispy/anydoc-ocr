@@ -3,13 +3,17 @@ name = "anydoc-ocr"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# NCNN OCR 后端（飞腾 ARM 加速）：预留接口，启用后由用户对接 NcnnEngine 实现
+ncnn = []
+
 [dependencies]
 # 版本按 spec 风险 #13 精确锁定（上游 API 变动风险）
 anydoc = "=0.1.7"
 anyhow = "1.0.104"
 clap = { version = "4", features = ["derive"] }
 image = "0.25.10"
-oar-ocr = { version = "=0.9.1", default-features = false, features = ["auto-download", "simd"] }
+oar-ocr = { version = "=0.9.1", default-features = false, features = ["auto-download", "simd", "download-binaries"] }
 ofd-core = "=0.3.0"
 pdf-inspector = "=0.1.7"
 pdfium-render = "0.9.3"

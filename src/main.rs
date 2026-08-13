@@ -2,7 +2,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use anydoc_ocr::{convert_to_markdown, models::OcrLayout, models::OcrTier, ConvertOptions};
+use anydoc_ocr::{convert_to_markdown, models::OcrLayout, models::OcrTier, ConvertOptions, Error};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -42,7 +42,7 @@ struct Cli {
     dpi: f32,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     let (path, _tmp) = resolve_input(&cli.input)?;
     let opts = ConvertOptions {
@@ -53,12 +53,19 @@ fn main() -> anyhow::Result<()> {
         threads: cli.threads,
         dpi: cli.dpi,
     };
-    let md = convert_to_markdown(&path, &opts)?;
-    match cli.output {
-        Some(o) => std::fs::write(&o, md)?,
-        None => print!("{md}"),
+    match convert_to_markdown(&path, &opts) {
+        Ok(md) => {
+            match cli.output {
+                Some(o) => std::fs::write(&o, md)?,
+                None => print!("{md}"),
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(e.exit_code());
+        }
     }
-    Ok(())
 }
 
 /// stdin 写入临时文件返回路径（NamedTempFile：随机名 + 用完自动删除）；
