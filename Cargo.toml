@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # 版本按 spec 风险 #13 精确锁定（上游 API 变动风险）
-anydoc = "=0.1.8"
+anydoc = "=0.1.9"
 anyhow = "1.0.104"
 clap = { version = "4", features = ["derive"] }
 image = "0.25.10"
@@ -17,7 +17,7 @@ oar-ocr = { version = "=0.9.1", default-features = false, features = ["auto-down
 # Cargo 自动合一、不引入第二份、不改链接行为（仍走 ORT_LIB_PATH）。
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "copy-dylibs"] }
 ofd-core = "=0.3.0"
-pdf-inspector = "=0.1.7"
+pdf-inspector = "^0.1.8"
 pdfium-render = "0.9.3"
 rayon = "1.12.0"
 tempfile = "3.27.0"
