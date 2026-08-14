@@ -47,9 +47,13 @@ const IMAGE_PAGE_MIN_TEXT_CHARS: usize = 5;
 enum PageData {
     /// 纯文字层：坐标行 `Region`（`x_min/x_max/y_min/y_max/文本`）。
     Text(Vec<Region>),
-    /// 图片型/坏字体乱码页：整页渲染 + OCR 输出。
+    /// F3 坏字体乱码页：第一遍已立即渲染（少量，需保留 fallback 文字层）。
     /// img 用 Option 以便第二遍 `take` 转移所有权，避免双持（T04）。
     OcrFull(Option<RgbImage>),
+    /// 图片型页（text_len < 阈值且 img_count > 0）：第一遍**不渲染**，
+    /// 记录 (body_idx, page_idx) 待第二遍 P3 流水线渲染+OCR（ADR-0002）。
+    /// 全图片型文档的渲染被 OCR 掩盖，峰值内存从 N×页图降到 ~2×页图。
+    OcrPendingImage { body_idx: usize, page_idx: usize },
 }
 
 /// OFD → Markdown 总入口。
@@ -64,7 +68,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     // 预扫描随之删除——省掉一轮跨 doc body 的 load_document。
     let mut pages: Vec<PageData> = Vec::new();
 
-    for body in &doc_bodies {
+    for (body_idx, body) in doc_bodies.iter().enumerate() {
         let doc = reader
             .load_document(body)
             .map_err(|e| anyhow::anyhow!("装载 OFD 文档失败: {e}"))?;
@@ -87,12 +91,12 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 opts.ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
-                pages.push(PageData::OcrFull(Some(render_page(
-                    &mut reader,
-                    &doc,
-                    idx,
-                    opts,
-                )?)));
+                // P3：图片型页延迟渲染——记录 (body_idx, page_idx) 待第二遍流水线，
+                // 不在第一遍立即渲染（避免全图片型文档的 N 次串行渲染不被 OCR 掩盖）。
+                pages.push(PageData::OcrPendingImage {
+                    body_idx,
+                    page_idx: idx,
+                });
             } else if is_garbled_text(&texts) {
                 // F3：坏字体乱码页 → 整页 OCR（渲染失败时回落文字层，不炸文档）
                 match render_page(&mut reader, &doc, idx, opts) {
@@ -118,8 +122,8 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
         }
     }
 
-    // 第二遍：批量 OCR。只剩整页 OCR（图片型/乱码）一条路径：失败保持旧行为报错
-    // （无文字可回落）。探针管线随 F2 强制一起移除。
+    // 第二遍：OCR。两路——F3 乱码页（已渲染 img）批量 OCR + 图片型页（待渲染）P3 流水线。
+    // F3 通常少量；图片型页走 render↔OCR 流水线（ADR-0002），渲染被 OCR 掩盖。
     let mut full_pages: Vec<u32> = Vec::new();
     let mut full_imgs: Vec<RgbImage> = Vec::new();
     // T04：第二遍直接 `take` 转移 img 所有权（不 clone），峰值从 2× 降到 1×。
@@ -132,8 +136,9 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
         }
     }
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+
+    // 路径 A：F3 乱码页批量 OCR（少量，已渲染）
     if !full_imgs.is_empty() {
-        t.stage("render");
         let timings = crate::timing::PageTimings::new();
         let results = ocr_engine::ocr_images(
             full_imgs,
@@ -142,9 +147,71 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             opts.threads,
             if timings.enabled() { Some(&timings) } else { None },
         )?;
-        t.stage("ocr");
         timings.report();
         for (page, res) in full_pages.into_iter().zip(results) {
+            full_out.insert(
+                page,
+                gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
+            );
+        }
+    }
+
+    // 路径 B：图片型页 P3 流水线——render_fn 闭包内重新 open reader + load + 逐页渲染，
+    // 与 rayon OCR 池并发。OfdReader 非 Send → 渲染在专属线程（闭包内 open，不跨线程）。
+    let pending: Vec<(usize, usize, usize)> = pages
+        .iter()
+        .enumerate()
+        .filter_map(|(gi, d)| match d {
+            PageData::OcrPendingImage { body_idx, page_idx } => Some((gi, *body_idx, *page_idx)),
+            _ => None,
+        })
+        .collect();
+    if !pending.is_empty() {
+        t.stage("render");
+        let engine = crate::ocr_engine::OcrEngine::build(opts.ocr_tier, opts.ocr_layout)?;
+        let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
+        let path = path.to_path_buf();
+        let dpi = opts.dpi;
+        let render_fn = move |tx: std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>| -> anyhow::Result<()> {
+            let mut reader = OfdReader::open(&path)
+                .map_err(|e| anyhow::anyhow!("流水线内重新打开 OFD 失败: {e}"))?;
+            let bodies = reader.ofd().doc_bodies.clone();
+            for (gi, body_idx, page_idx) in &pending {
+                let body = &bodies[*body_idx];
+                let doc = reader
+                    .load_document(body)
+                    .map_err(|e| anyhow::anyhow!("流水线内装载文档失败: {e}"))?;
+                // 内联 render_page 逻辑（opts 非 'static，闭包用捕获的 dpi）
+                match reader.render_page_to_image(&doc, *page_idx, &RenderOptions::with_dpi(dpi.into())) {
+                    Ok(rgba) => {
+                        let img = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
+                        if tx.send(Ok((*gi, img))).is_err() {
+                            break; // OCR 端退出，停止渲染
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err((
+                            *gi,
+                            anyhow::anyhow!("渲染 OFD 页 {gi} 失败: {e}"),
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        };
+        let results = crate::pipeline::PagePipeline::new(
+            render_fn,
+            engine,
+            opts.threads,
+            if timings.enabled() { Some(timings.clone()) } else { None },
+        )
+        .run()?;
+        t.stage("ocr");
+        timings.report();
+        // pipeline 返回 Vec<(gi, res)> 按 gi 升序——直接用 gi 映射 full_out，
+        // 渲染失败页 gi 缺失 → full_out 无该页 → 第三遍装配跳过（容错）
+        for (gi, res) in results {
+            let page = gi as u32;
             full_out.insert(
                 page,
                 gfm_adapter::structure_results_to_gfm(std::slice::from_ref(&res)),
@@ -159,7 +226,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     for (page, data) in pages.iter().enumerate() {
         let page = page as u32;
         match data {
-            PageData::OcrFull(_) => {
+            PageData::OcrFull(_) | PageData::OcrPendingImage { .. } => {
                 // 图片型/乱码页：先冲掉挂起的跨页表，再落 OCR 段。
                 emitter.flush_pending();
                 if let Some(md) = full_out.remove(&page) {

@@ -49,13 +49,16 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     let engine = crate::ocr_engine::OcrEngine::build(opts.ocr_tier, opts.ocr_layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_all_pages_fn(path, opts.dpi);
-    let pages = crate::pipeline::PagePipeline::new(
+    let pages: Vec<_> = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.threads,
         if timings.enabled() { Some(timings.clone()) } else { None },
     )
-    .run()?;
+    .run()?
+    .into_iter()
+    .map(|(_, r)| r)
+    .collect();
     t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
     timings.report();
     let md = gfm_adapter::structure_results_to_gfm(&pages);

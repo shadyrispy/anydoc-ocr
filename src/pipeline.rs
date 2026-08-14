@@ -76,16 +76,19 @@ impl<F: RenderFn> PagePipeline<F> {
         }
     }
 
-    /// 启动流水线，返回按页序的结果。
+    /// 启动流水线，返回按页序的 (idx, result)。
     ///
     /// 渲染线程执行 `render_fn`，逐页产出图入有界 channel；
     /// rayon scope 并发消费 channel，每页一个任务，结果按 idx 回填到 BTreeMap。
     ///
+    /// 返回 `Vec<(idx, StructureResult)>` 按 idx 升序——保留 idx 以便调用方处理
+    /// 渲染失败页（失败页 idx 缺失，调用方按 idx 容错）。
+    ///
     /// 错误传播：
-    /// - 渲染失败页 → 该 idx 跳过（BTreeMap 无该 key → 输出缺该页，调用方容错）
+    /// - 渲染失败页 → 该 idx 缺失（调用方容错）
     /// - OCR 失败页 → run() 返回 Err（调用方按页回退文字层/报错）
     /// - 渲染线程 panic/致命错误 → channel 关闭，run() 返回 Err
-    pub fn run(self) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
+    pub fn run(self) -> Result<Vec<(usize, oar_ocr::domain::structure::StructureResult)>> {
         let bound = self.threads * Self::BOUND_MULT;
         let (tx, rx) = mpsc::sync_channel(bound);
 
@@ -148,12 +151,12 @@ impl<F: RenderFn> PagePipeline<F> {
             Err(e) => return Err(anyhow::anyhow!("渲染线程 panic: {e:?}")),
         }
 
-        // 收集按页序结果
+        // 收集按页序结果（保留 idx）
         let map = results.into_inner().unwrap();
         let mut out = Vec::with_capacity(map.len());
-        for (_idx, res) in map {
+        for (idx, res) in map {
             match res {
-                Ok(r) => out.push(r),
+                Ok(r) => out.push((idx, r)),
                 Err(e) => return Err(e),
             }
         }

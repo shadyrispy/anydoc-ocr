@@ -30,8 +30,13 @@ OCR 编排有两个候选：
 - PDFium `PdfDocument` 非 Send → 渲染在专属线程；OFD `&mut OfdReader` 同理。
 - 有界 mpsc::sync_channel 背压（容量 = threads×2），峰值内存从 N×页图降到 ~2×页图。
 - rayon scope 并发消费，BTreeMap 按 idx 回填（page_count 不预知，避免调用方提前 open doc 取 count）。
-- **落地范围**：PDF 全量 OCR 通路接入（`convert_pdf` 图片型分支）。OFD 未接入——其 OcrFull 页
-  在第一遍分类时已内联渲染，第二遍 OCR 无 render 可掩盖，流水收益不足；待 OFD 全图片型场景出现再评估。
+- **落地范围**：PDF 全量 OCR 通路 + OFD 图片型页通路均接入。
+  - PDF：`convert_pdf` 图片型分支，`render_all_pages_fn` 闭包在专属线程 open doc + 逐页渲染。
+  - OFD：第一遍图片型页**不立即渲染**（记录 body_idx+page_idx 到 `OcrPendingImage`），第二遍
+    `render_fn` 闭包内重新 open reader + load + 逐页渲染，与 OCR 并发。F3 乱码页保持立即渲染
+    （少量，需保留 fallback 文字层，走批量 OCR）。
+  - `PagePipeline::run` 返回 `Vec<(idx, StructureResult)>` 保留页 idx，渲染失败页 idx 缺失由
+    调用方容错（OFD 第三遍装配跳过，PDF 全量渲染假设无失败否则 Err）。
 - 单页 `predict_images(vec![img])` vs 批量 `predict_images(chunk)` 存在数值级差异（oar-ocr batch
   padding/resize 影响），multipage.pdf golden 已 UPDATE 重基线（P3 编排模型变更，预期）。
 
