@@ -13,6 +13,7 @@ pub mod models;
 pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
 pub(crate) mod ofd;
 pub(crate) mod pdf;
+pub(crate) mod pipeline;
 pub(crate) mod reading_order;
 pub(crate) mod region;
 pub(crate) mod table_grid;

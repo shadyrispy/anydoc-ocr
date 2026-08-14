@@ -9,6 +9,7 @@
 //! 提供释放口，防"优化变泄漏"反噬（仅弃缓存自身的 Arc 引用，外部仍持有的引擎句柄有效）。
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Once};
+use std::time::Instant;
 
 use anyhow::Result;
 use image::RgbImage;
@@ -72,7 +73,7 @@ static CACHE: LazyLock<Mutex<HashMap<EngineKey, Arc<OcrEngine>>>> =
 
 /// 已构建的 OCR 分析器句柄（内部 `Arc` 共享，跨线程安全）。
 pub struct OcrEngine {
-    analyzer: Arc<OARStructure>,
+    pub(crate) analyzer: Arc<OARStructure>,
 }
 
 impl OcrEngine {
@@ -99,10 +100,15 @@ impl OcrEngine {
     /// 对一组页面图跑 OCR，返回每页 `StructureResult`（页序保序，契约由断言守恒）。
     /// `threads` 控制**页级并发**：多页切成 chunk 用 rayon 并行 `predict_images`，
     /// 共享 `&self.analyzer`（已证 `Sync`）。
+    ///
+    /// P7：`timings` 非空时按 chunk 记录 OCR 耗时（key = chunk 起始页 idx，
+    /// 粒度 = chunk_size 页）。P3 流水线落地后改为单页 key（届时单页喂 OCR，
+    /// per-page 自然可得）。chunk 粒度定位拖尾区间已足够。
     pub fn predict(
         &self,
         images: Vec<RgbImage>,
         threads: usize,
+        timings: Option<&crate::timing::PageTimings>,
     ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
         if images.is_empty() {
             return Ok(Vec::new());
@@ -110,10 +116,23 @@ impl OcrEngine {
         let n = images.len();
         let threads = threads.max(1);
         let chunk_size = n.div_ceil(threads);
+        // chunk 起始页 idx（计时 key）：0, chunk_size, 2*chunk_size, ...
         let per_chunk: Vec<Vec<_>> = images
             .into_par_iter()
             .chunks(chunk_size)
-            .map(|chunk| self.analyzer.predict_images(chunk))
+            .enumerate()
+            .map(|(ci, chunk)| {
+                let start = Instant::now();
+                let r = self.analyzer.predict_images(chunk);
+                if let Some(t) = timings {
+                    t.record(
+                        ci * chunk_size,
+                        crate::timing::PageStage::Ocr,
+                        start.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
+                r
+            })
             .collect();
 
         let mut out = Vec::with_capacity(n);
@@ -187,23 +206,30 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // 避免 table_cls 分类为 Wired 时因无 wired adapter 触发 config_error 整页失败
         .with_table_structure_recognition(model_path(spec.table_structure), "wireless")
         .table_structure_dict_path(model_path(spec.table_dict))
+        // P1：文档方向矫正（0°/90°/180°/270°）——扫描件旋转/歪斜时 det/rec 召回关键。
+        // 模型三档已定义（pp-lcnet_x1_0_doc_ori），此前未接入。在版面前自动矫正，
+        // 改变 OCR 行为（旋转页结果变正），golden 需 UPDATE=1 重基线（预期召回提升）。
+        .with_document_orientation(model_path(spec.doc_ori))
         .build()
         .map_err(|e| anyhow::anyhow!("构建 OCR 分析器失败: {e}"))
 }
 
 /// 全库唯一 OCR 入口（PDF/OFD 两通路共用）：用 oar-ocr 对渲染图做版面+文本+表格分析。
 ///
-/// 等价 `OcrEngine::build(tier, layout)?.predict(images, threads)`——模型按 `(tier, layout)`
+/// 等价 `OcrEngine::build(tier, layout)?.predict(images, threads, timings)`——模型按 `(tier, layout)`
 /// 单例缓存，跨文档/跨调用复用，免重复加载。本函数兼负进程级 ORT 线程池初始化：须在
 /// `OcrEngine::build` 创建 ONNX session 之前提交（Ticket A 生效点）。页级并行（rayon）、
 /// 零拷贝消费、OCR 页序契约断言均在 `OcrEngine` 内统一实现。
+///
+/// P7：`timings` 非空时按 chunk 记录 OCR 耗时，调用方负责 `report()`。
 pub fn ocr_images(
     images: Vec<RgbImage>,
     tier: OcrTier,
     layout: OcrLayout,
     threads: usize,
+    timings: Option<&crate::timing::PageTimings>,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
     // A：OCR 入口已知页级并行度，提交进程级线程池（消除超额订阅）。
     init_runtime(threads);
-    OcrEngine::build(tier, layout)?.predict(images, threads)
+    OcrEngine::build(tier, layout)?.predict(images, threads, timings)
 }

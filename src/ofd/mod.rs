@@ -134,9 +134,16 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
     if !full_imgs.is_empty() {
         t.stage("render");
-        let results =
-            ocr_engine::ocr_images(full_imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
+        let timings = crate::timing::PageTimings::new();
+        let results = ocr_engine::ocr_images(
+            full_imgs,
+            opts.ocr_tier,
+            opts.ocr_layout,
+            opts.threads,
+            if timings.enabled() { Some(&timings) } else { None },
+        )?;
         t.stage("ocr");
+        timings.report();
         for (page, res) in full_pages.into_iter().zip(results) {
             full_out.insert(
                 page,

@@ -182,8 +182,13 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
         if !to_render.is_empty()
             && let Ok(imgs) = super::render::render_pdf_pages(path, opts.dpi, &to_render)
             && !imgs.is_empty()
-            && let Ok(results) =
-                crate::ocr_engine::ocr_images(imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
+            && let Ok(results) = crate::ocr_engine::ocr_images(
+                imgs,
+                opts.ocr_tier,
+                opts.ocr_layout,
+                opts.threads,
+                None,
+            )
         {
             for (page, res) in ocr_pages.into_iter().zip(results) {
                 let has_table = res.layout_elements.iter().any(|e| {

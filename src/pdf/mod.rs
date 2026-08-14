@@ -43,14 +43,21 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     {
         return Ok(md);
     }
-    // 图片型：PDFium 渲染 + oar-ocr OCR（全量渲：空索引 = 渲所有页）
+    // 图片型：P3 流水线——渲染线程逐页产出 + rayon 并发 OCR（ADR-0002）。
     // DPI 默认 100（可由 --dpi 调整）。DPI 200→100：像素量降 75%，实测 上海公报52p
     // 148.5s→100.0s(-33%)，内容恢复率零损失(99.83%)；80 起脚注/小字开始漏检。
-    let images = render::render_pdf_pages(path, opts.dpi, &[])?;
-    t.stage("render");
-    let pages =
-        crate::ocr_engine::ocr_images(images, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
-    t.stage("ocr");
+    let engine = crate::ocr_engine::OcrEngine::build(opts.ocr_tier, opts.ocr_layout)?;
+    let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
+    let render_fn = render::render_all_pages_fn(path, opts.dpi);
+    let pages = crate::pipeline::PagePipeline::new(
+        render_fn,
+        engine,
+        opts.threads,
+        if timings.enabled() { Some(timings.clone()) } else { None },
+    )
+    .run()?;
+    t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
+    timings.report();
     let md = gfm_adapter::structure_results_to_gfm(&pages);
     t.stage("gfm");
     Ok(md)
