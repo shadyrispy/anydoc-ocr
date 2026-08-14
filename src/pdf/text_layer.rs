@@ -38,6 +38,13 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
         Ok(items) => items,
         Err(_) => return Ok(None),
     };
+    // pdf-inspector 1.14+ 对图片对象返回 `[Image: ...]` 占位 TextItem（FormXob 引用等），
+    // 非真实文字。过滤后判空——纯图片型 PDF（image.pdf/image_table.pdf）过滤后为空，
+    // 回退 OCR，避免误判"有文字层"输出占位符。
+    let items: Vec<pdf_inspector::TextItem> = items
+        .into_iter()
+        .filter(|i| !i.text.trim_start().starts_with("[Image:"))
+        .collect();
     if items.is_empty() {
         return Ok(None);
     }
