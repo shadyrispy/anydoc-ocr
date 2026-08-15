@@ -38,9 +38,14 @@ const SPLIT_CLUSTER_TOL_FRACTION: f32 = 0.02;
 pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
     // 先做廉价文本提取：图片型/扫描件（items 空）直接回落 OCR，跳过开销大且
     // pdf-inspector 有行分组 bug（layout.rs:1270 panic）的 garbled 预检。
+    //
+    // ADR-0006：错误不再吞 `Ok(None)`——加密 PDF（Encrypted）、损坏 PDF
+    // （InvalidStructure/Parse/NotAPdf）按 `PdfError` 分类返 `Err`，
+    // batch 预分流阶段据此直接标错、不送 OCR（避免绕一大圈丢失分类）。
+    // Io 错误（文件读不到等）同样返 Err，由调用方处理。
     let items = match pdf_inspector::extract_text_with_positions(path) {
         Ok(items) => items,
-        Err(_) => return Ok(None),
+        Err(e) => return Err(crate::error::from_pdf_error(e)),
     };
     // pdf-inspector 1.14+ 对图片对象返回 `[Image: ...]` 占位 TextItem（FormXob 引用等），
     // 非真实文字。过滤后判空——纯图片型 PDF（image.pdf/image_table.pdf）过滤后为空，
