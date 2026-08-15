@@ -2,8 +2,12 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use anydoc_ocr::{ConvertOptions, convert_to_markdown, models::OcrLayout, models::OcrTier};
+use anydoc_ocr::ConvertError;
+use anydoc_ocr::convert_to_markdown;
+use anydoc_ocr::models::{OcrLayout, OcrTier};
 use clap::Parser;
+
+use crate::error::Result;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -42,7 +46,11 @@ struct Cli {
     dpi: f32,
 }
 
-fn main() -> anyhow::Result<()> {
+mod error {
+    pub type Result<T> = std::result::Result<T, anydoc_ocr::ConvertError>;
+}
+
+fn main() -> Result<()> {
     let cli = Cli::parse();
     let threads = if cli.threads == 0 {
         std::thread::available_parallelism()
@@ -51,7 +59,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         cli.threads
     };
-    let opts = ConvertOptions {
+    let opts = anydoc_ocr::ConvertOptions {
         ocr_tier: cli.ocr_tier,
         ocr_layout: cli.ocr_layout,
         ofd_force_ocr: cli.ofd_force_ocr,
@@ -80,16 +88,19 @@ fn main() -> anyhow::Result<()> {
 /// 目录批处理：递归收集文档 → BatchConverter 转换 → 逐文件写出。
 fn run_batch(
     input_dir: &PathBuf,
-    opts: &ConvertOptions,
+    opts: &anydoc_ocr::ConvertOptions,
     output: &Option<PathBuf>,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let paths = anydoc_ocr::batch::collect_documents(input_dir);
     if paths.is_empty() {
         eprintln!("[batch] 目录 {} 下无受支持文档", input_dir.display());
         return Ok(());
     }
     let output_dir = output.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("目录输入需要 --output 指定输出目录")
+        anydoc_ocr::ConvertError::Malformed {
+            part: None,
+            detail: "目录输入需要 --output 指定输出目录".to_string(),
+        }
     })?;
     std::fs::create_dir_all(output_dir)?;
 
@@ -111,13 +122,30 @@ fn run_batch(
                 ok += 1;
             }
             Err(e) => {
-                eprintln!("{prefix} {} 失败: {e}", path.display());
+                // ADR-0006 §7：按 e.code() 精准提示（ConvertError 直接有 code() 方法，
+                // 无需 downcast）。code() 返稳定字符串，main 据此给"下一步建议"。
+                let hint = error_hint(&e);
+                eprintln!("{prefix} {} 失败: {e}\n  提示: {hint}", path.display());
                 fail += 1;
             }
         }
     }
     eprintln!("[batch] 完成：{ok} 成功，{fail} 失败");
     Ok(())
+}
+
+/// 按 `ConvertError::code()` 给用户精准提示（ADR-0006 §7）。
+/// code() 返稳定字符串（encrypted/malformed/missingPart/...），main 据此给下一步建议。
+fn error_hint(e: &ConvertError) -> &'static str {
+    match e.code() {
+        "encrypted" => "文档已加密，需提供密码或解密后重试",
+        "malformed" => "文档损坏或格式错误，检查文件是否完整或被截断",
+        "missingPart" => "文档结构不完整（缺必需部件），可能源文件生成不完整",
+        "resourceLimit" => "超出安全限制（可能解压炸弹或文档过大）",
+        "unsupported" => "格式不支持或需 OCR 但 ORT/pdfium 环境未配置",
+        "io" => "文件读写错误（路径不存在/权限不足/磁盘满）",
+        _ => "未知错误，详见错误详情",
+    }
 }
 
 /// 生成输出路径：保持输入目录的相对结构，扩展名换 .md。
@@ -132,7 +160,7 @@ fn output_stem(input_dir: &Path, file: &Path) -> PathBuf {
     }
 }
 
-fn write_single(md: &str, output: &Option<PathBuf>) -> anyhow::Result<()> {
+fn write_single(md: &str, output: &Option<PathBuf>) -> Result<()> {
     match output {
         Some(o) => std::fs::write(o, md)?,
         None => print!("{md}"),
@@ -142,7 +170,7 @@ fn write_single(md: &str, output: &Option<PathBuf>) -> anyhow::Result<()> {
 
 /// stdin 写入临时文件返回路径（NamedTempFile：随机名 + 用完自动删除）；
 /// 返回 Option 持有临时文件句柄，保证转换期间文件存活。
-fn resolve_stdin() -> anyhow::Result<(PathBuf, Option<tempfile::NamedTempFile>)> {
+fn resolve_stdin() -> Result<(PathBuf, Option<tempfile::NamedTempFile>)> {
     let mut buf = Vec::new();
     std::io::stdin().read_to_end(&mut buf)?;
     let mut tmp = tempfile::NamedTempFile::new()?;

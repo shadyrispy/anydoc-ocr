@@ -249,10 +249,16 @@ fn batch_isolates_corrupt_pdf_as_err() {
         "[batch_fail] 损坏 PDF 必须走 Err 通道，got Ok(len={})",
         results[1].as_ref().unwrap().len()
     );
-    let err_msg = format!("{}", results[1].as_ref().err().unwrap());
-    assert!(
-        err_msg.contains("OCR 缺失") || err_msg.contains("失败"),
-        "[batch_fail] Err 消息应说明失败原因，got: {err_msg}"
+    // ADR-0006 §3：损坏 PDF 走 `code()=="malformed"` 分类。
+    // force_ocr 路径下 text_layer_markdown 仍做加密预检 → 返 `Err(Malformed)`
+    // （pdf-inspector 对 `%PDF`+垃圾返 InvalidStructure）→ batch.rs §5 直接标错。
+    // 非 force_ocr 路径下走同一 text_layer 入口，错误码一致。
+    let e = results[1].as_ref().err().unwrap();
+    assert_eq!(
+        e.code(),
+        "malformed",
+        "[batch_fail] 损坏 PDF 应 code()==malformed，实际 {}（{e}）",
+        e.code()
     );
 
     // 清理临时文件

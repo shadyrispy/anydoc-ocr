@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Once};
 use std::time::Instant;
 
-use anyhow::Result;
+use crate::error::{Result, runtime};
 use image::RgbImage;
 use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
 use rayon::prelude::*;
@@ -138,15 +138,14 @@ impl OcrEngine {
         let mut out = Vec::with_capacity(n);
         for group in per_chunk {
             for r in group {
-                out.push(r.map_err(|e| anyhow::anyhow!("OCR 推理失败: {e}"))?);
+                out.push(r.map_err(|e| runtime(None, format!("OCR 推理失败: {e}")))?);
             }
         }
         if out.len() != n {
             // 库模式不 panic 宿主：页序契约破坏改为显式 Err（CLI 会打印退出，库调用方可捕获）。
-            return Err(anyhow::anyhow!(
-                "OCR 输出页数 {} != 输入 {}（页序契约破坏）",
-                out.len(),
-                n
+            return Err(runtime(
+                None,
+                format!("OCR 输出页数 {} != 输入 {}（页序契约破坏）", out.len(), n),
             ));
         }
         Ok(out)
@@ -211,7 +210,7 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // 改变 OCR 行为（旋转页结果变正），golden 需 UPDATE=1 重基线（预期召回提升）。
         .with_document_orientation(model_path(spec.doc_ori))
         .build()
-        .map_err(|e| anyhow::anyhow!("构建 OCR 分析器失败: {e}"))
+        .map_err(|e| runtime(None, format!("构建 OCR 分析器失败: {e}")))
 }
 
 /// 全库唯一 OCR 入口（PDF/OFD 两通路共用）：用 oar-ocr 对渲染图做版面+文本+表格分析。

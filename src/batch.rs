@@ -15,8 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::convert_to_markdown;
 use crate::detect::DocKind;
-use crate::{ConvertOptions, Result, convert_to_markdown};
+use crate::error::{Result, runtime};
+use crate::ConvertOptions;
 
 /// 批处理转换器：跨文档复用 OCR 引擎（ADR-0005）。
 pub struct BatchConverter {
@@ -30,31 +32,45 @@ impl BatchConverter {
 
     /// 批量转换：每文档独立 Result（错误隔离），OCR 引擎跨文档复用。
     ///
-    /// 预分流策略（ADR-0005 候选 2）：
-    /// 1. PDF + 非 force_ocr：试文字层，命中出结果，未命中入 `ocr_paths`
-    /// 2. PDF + force_ocr：直接入 `ocr_paths`（强制图片型路径）
+    /// 预分流策略（ADR-0005 候选 2 + ADR-0006 错误分类）：
+    /// 1. PDF：调 `text_layer_markdown`——`Ok(Some)` 出结果，`Ok(None)` 入 `ocr_paths`，
+    ///    `Err`（Encrypted/Malformed）直接标错不送 OCR（ADR-0006 §5：加密/损坏 PDF
+    ///    送 OCR 也读不了，且会丢失错误分类）
+    /// 2. PDF + force_ocr：仍调 `text_layer_markdown` 做加密预检——`Ok`（含 None）
+    ///    送 OCR，`Err` 直接标错（ADR-0006 §6：force_ocr 不绕过加密检查）
     /// 3. 非 PDF：委托 `convert_to_markdown`（OFD 内部仍 per-doc 流水线）
     /// 4. `ocr_paths` 一次性送入 `convert_pdf_ocr` 跨文档 pipeline
     pub fn convert_many(&self, paths: &[PathBuf]) -> Vec<Result<String>> {
         // 每文档槽位：None = 待填充，Some(r) = 已完成。
-        // `vec![None; n]` 需 `Option<Result<String>>: Clone`，而 `anyhow::Error` 非 Clone，
-        // 故用 `(0..n).map(|_| None).collect()` 避开 Clone 约束。
+        // `ConvertError` 非 Clone，故用 `(0..n).map(|_| None).collect()` 避开 Clone 约束。
         let mut slots: Vec<Option<Result<String>>> = (0..paths.len()).map(|_| None).collect();
 
-        // 1) PDF 预分流：文字型快速路径 + 收集图片型 paths
+        // 1) PDF 预分流：文字型快速路径 + 收集图片型 paths + 加密/损坏 Err 直接标错
         let mut ocr_paths: Vec<(usize, PathBuf)> = Vec::new();
         for (i, path) in paths.iter().enumerate() {
             if crate::detect::detect(path) != DocKind::Pdf {
                 continue;
             }
-            if self.opts.pdf_force_ocr {
-                ocr_paths.push((i, path.clone()));
-                continue;
-            }
             match crate::pdf::text_layer_markdown(path, &self.opts) {
-                Ok(Some(md)) => slots[i] = Some(Ok(md)),
-                Ok(None) => ocr_paths.push((i, path.clone())),
-                Err(e) => slots[i] = Some(Err(e)),
+                Ok(Some(md)) => {
+                    // 命中文字层：force_ocr 时忽略文字层结果送 OCR，否则出结果
+                    if self.opts.pdf_force_ocr {
+                        ocr_paths.push((i, path.clone()));
+                    } else {
+                        slots[i] = Some(Ok(md));
+                    }
+                }
+                Ok(None) => {
+                    // 图片型 PDF：送 OCR pipeline
+                    ocr_paths.push((i, path.clone()));
+                }
+                Err(e) => {
+                    // ADR-0006 §5：加密/损坏 PDF 直接标错，不送 ocr_paths
+                    // （加密 PDF 送 OCR 也读不了，损坏 PDF 浪费 OCR 资源，
+                    //   且绕一大圈会丢失 Encrypted/Malformed 分类）。
+                    // force_ocr 同样不绕过（ADR-0006 §6）。
+                    slots[i] = Some(Err(e));
+                }
             }
         }
 
@@ -74,10 +90,12 @@ impl BatchConverter {
                     // 渲染失败被 pipeline.rs 过滤。ADR-0005 错误隔离：每文档独立 Result，
                     // 失败必须走 Err 通道（不能伪装成 Ok(空串) 导致 main.rs 计入成功 +
                     // 写出空 .md 文件，造成静默数据丢失）。
+                    // ADR-0006：错误类型 ConvertError，归 Malformed（运行时错误）。
                     for (orig_idx, _) in &ocr_paths {
                         if slots[*orig_idx].is_none() {
-                            slots[*orig_idx] = Some(Err(anyhow::anyhow!(
-                                "文档 OCR 缺失：所有页渲染失败或文档无法打开（详见 stderr）"
+                            slots[*orig_idx] = Some(Err(runtime(
+                                None,
+                                "文档 OCR 缺失：所有页渲染失败或文档无法打开（详见 stderr）",
                             )));
                         }
                     }
@@ -85,7 +103,10 @@ impl BatchConverter {
                 Err(e) => {
                     // pipeline 整体失败（绑定/ORT 致命错误）→ 该批 ocr_paths 全标 Err
                     for (orig_idx, _) in &ocr_paths {
-                        slots[*orig_idx] = Some(Err(anyhow::anyhow!("跨文档 OCR 失败: {e}")));
+                        slots[*orig_idx] = Some(Err(runtime(
+                            None,
+                            format!("跨文档 OCR 失败: {e}"),
+                        )));
                     }
                 }
             }

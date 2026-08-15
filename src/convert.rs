@@ -1,7 +1,9 @@
 //! 总调度：按格式分流到对应通道
 use std::path::Path;
 
-use crate::{Result, detect::DocKind, models::OcrLayout, models::OcrTier, ofd, pdf};
+use crate::Result;
+use crate::detect::DocKind;
+use crate::{models::OcrLayout, models::OcrTier, ofd, pdf};
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
@@ -23,6 +25,8 @@ pub fn convert_to_markdown(path: &Path, opts: &ConvertOptions) -> Result<String>
     match crate::detect::detect(path) {
         DocKind::Pdf => pdf::convert_pdf(path, opts),
         DocKind::Ofd => ofd::convert_ofd(path, opts),
-        DocKind::Other => anydoc::to_markdown(path).map_err(|e| anyhow::anyhow!("{e}")),
+        // ADR-0006：anydoc 的 ConvertError 直接透传（移除 `map_err(|e| anyhow!("{e}"))`
+        // 降级——保留 code() 稳定字符串，调用方可按 code() 精准提示）。
+        DocKind::Other => anydoc::to_markdown(path),
     }
 }

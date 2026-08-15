@@ -7,8 +7,6 @@
 pub use anydoc::ConvertError;
 pub type Result<T> = std::result::Result<T, ConvertError>;
 
-use std::io;
-
 /// PDF `PdfError` → `ConvertError`（ADR-0006 映射表）。
 ///
 /// 与 anydoc `formats/pdf.rs:40-48` 的 map_error 对齐：
@@ -80,7 +78,3 @@ pub fn runtime(part: Option<&str>, detail: impl Into<String>) -> ConvertError {
     }
 }
 
-/// `io::Error` 便利构造（anydoc 已 impl `From<io::Error>`，这里仅转发）。
-pub fn from_io(e: io::Error) -> ConvertError {
-    ConvertError::Io(e)
-}

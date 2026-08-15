@@ -24,16 +24,19 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
-use anyhow::Result;
-use image::RgbImage;
-
+use crate::error::{ConvertError, Result, runtime};
 use crate::ocr_engine::OcrEngine;
 use crate::timing::{PageStage, PageTimings};
+use image::RgbImage;
 
 /// 渲染项：((doc_idx, page_idx), 渲染结果)。渲染失败时 idx 仍须已知（调用方按页容错）。
 /// 跨文档流水线（ADR-0005 候选 2）：doc_idx 区分文档，page_idx 为文档内页号。
 /// 单文档调用方传 doc_idx=0。
-pub(crate) type RenderItem = Result<((usize, usize), RgbImage), ((usize, usize), anyhow::Error)>;
+///
+/// ADR-0006：错误类型从 `anyhow::Error` 升级为 `ConvertError`，渲染失败归
+/// `Malformed { part: "page N", detail }`（运行时错误，非文档本身问题）。
+pub(crate) type RenderItem =
+    std::result::Result<((usize, usize), RgbImage), ((usize, usize), ConvertError)>;
 
 /// 渲染器闭包：在专属线程内 open doc + 逐页渲染，产出 (idx, img) 入 channel。
 /// 闭包返回 Ok(()) 表示渲染完毕，Err 表示致命错误（doc 打开失败等）。
@@ -99,7 +102,7 @@ impl<F: RenderFn> PagePipeline<F> {
         let render_handle = thread::Builder::new()
             .name("anydoc-render".into())
             .spawn(move || render_fn(tx))
-            .map_err(|e| anyhow::anyhow!("启动渲染线程失败: {e}"))?;
+            .map_err(|e| runtime(None, format!("启动渲染线程失败: {e}")))?;
 
         // OCR 消费：rayon scope 并发，按 (doc_idx, page_idx) 回填到 BTreeMap
         let results: std::sync::Mutex<
@@ -129,8 +132,14 @@ impl<F: RenderFn> PagePipeline<F> {
                     }
                     let res = match r.into_iter().next() {
                         Some(Ok(s)) => Ok(s),
-                        Some(Err(e)) => Err(anyhow::anyhow!("OCR 推理失败（页 {:?}）: {e}", idx)),
-                        None => Err(anyhow::anyhow!("OCR 返回空结果（页 {:?}）", idx)),
+                        Some(Err(e)) => Err(runtime(
+                            Some(&format!("page {:?}", idx)),
+                            format!("OCR 推理失败: {e}"),
+                        )),
+                        None => Err(runtime(
+                            Some(&format!("page {:?}", idx)),
+                            "OCR 返回空结果".to_string(),
+                        )),
                     };
                     results_ref.lock().unwrap().insert(idx, res);
                 });
@@ -141,7 +150,7 @@ impl<F: RenderFn> PagePipeline<F> {
         match render_handle.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e), // render_fn 返回致命错误
-            Err(e) => return Err(anyhow::anyhow!("渲染线程 panic: {e:?}")),
+            Err(e) => return Err(runtime(None, format!("渲染线程 panic: {e:?}"))),
         }
 
         // 收集按 (doc_idx, page_idx) 升序结果

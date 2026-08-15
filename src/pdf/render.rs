@@ -2,7 +2,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use crate::error::{Result, runtime};
 use pdfium_render::prelude::*;
 
 /// 将 PDF 指定页按 `dpi` 渲染为 `RgbImage`。
@@ -12,6 +12,9 @@ use pdfium_render::prelude::*;
 /// 输出顺序 = 升序命中的页号（与调用方 `suspicious` 升序 zip 保持锁步）。
 ///
 /// libpdfium.so 定位优先级：`PDFIUM_LIB_DIR` 环境变量 > 可执行文件旁 `lib/`（打包布局）> 开发期相对路径。
+///
+/// ADR-0006：错误类型 `ConvertError`，pdfium 绑定/渲染失败归
+/// `Malformed { part: "page N" | None, detail }`（运行时错误，非文档本身问题）。
 pub fn render_pdf_pages(
     path: &Path,
     dpi: f32,
@@ -25,13 +28,16 @@ pub fn render_pdf_pages(
         Ok(bindings) => Pdfium::new(bindings),
         Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
         Err(e) => {
-            anyhow::bail!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}")
+            return Err(runtime(
+                None,
+                format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
+            ));
         }
     };
 
     let doc = pdfium
         .load_pdf_from_file(path, None)
-        .with_context(|| format!("PDFium 加载 PDF 失败: {}", path.display()))?;
+        .map_err(|e| runtime(None, format!("PDFium 加载 PDF 失败: {}: {e}", path.display())))?;
 
     // 空 = 全渲；非空 = 仅渲指定索引（排序去重后集合，O(1) 判定）
     let target: Option<BTreeSet<u32>> = if page_indices.is_empty() {
@@ -49,10 +55,12 @@ pub fn render_pdf_pages(
 /// doc_idx 与 paths 索引一一对应。
 ///
 /// 单个 PDF 打开失败 → 告警跳过该 doc（其页缺失，调用方容错），不中断整批。
+///
+/// ADR-0006：错误类型 `ConvertError`，渲染失败归 `Malformed { part: "page N", detail }`。
 pub fn render_cross_doc_fn(
     paths: Vec<std::path::PathBuf>,
     dpi: f32,
-) -> impl FnOnce(std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>) -> anyhow::Result<()> + Send + 'static
+) -> impl FnOnce(std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>) -> crate::error::Result<()> + Send + 'static
 {
     move |tx| {
         let so = locate_pdfium()?;
@@ -60,9 +68,10 @@ pub fn render_cross_doc_fn(
             Ok(bindings) => Pdfium::new(bindings),
             Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
             Err(e) => {
-                anyhow::bail!(
-                    "绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"
-                )
+                return Err(runtime(
+                    None,
+                    format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
+                ));
             }
         };
         let scale = dpi / 72.0;
@@ -80,7 +89,10 @@ pub fn render_cross_doc_fn(
                 if w <= 0 || h <= 0 {
                     let _ = tx.send(Err((
                         (doc_idx, i),
-                        anyhow::anyhow!("PDF {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
+                        runtime(
+                            Some(&format!("doc {doc_idx} page {i}")),
+                            format!("PDF {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
+                        ),
                     )));
                     continue;
                 }
@@ -92,13 +104,22 @@ pub fn render_cross_doc_fn(
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(Err(((doc_idx, i), anyhow::anyhow!("bitmap 转 image 失败: {e}"))));
+                            let _ = tx.send(Err((
+                                (doc_idx, i),
+                                runtime(
+                                    Some(&format!("doc {doc_idx} page {i}")),
+                                    format!("bitmap 转 image 失败: {e}"),
+                                ),
+                            )));
                         }
                     },
                     Err(e) => {
                         let _ = tx.send(Err((
                             (doc_idx, i),
-                            anyhow::anyhow!("渲染 doc{doc_idx} 第 {i} 页失败: {e}"),
+                            runtime(
+                                Some(&format!("doc {doc_idx} page {i}")),
+                                format!("渲染 doc{doc_idx} 第 {i} 页失败: {e}"),
+                            ),
                         )));
                     }
                 }
@@ -128,7 +149,10 @@ fn locate_pdfium() -> Result<String> {
     if dev.exists() {
         return Ok(dev.to_string_lossy().into_owned());
     }
-    anyhow::bail!("找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）")
+    Err(runtime(
+        None,
+        "找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）".to_string(),
+    ))
 }
 
 fn render_document(
@@ -151,12 +175,17 @@ fn render_document(
             // 不静默跳过：跳过会使输出图像数 < 请求页数，调用方 `zip(页号)` 错位
             // （表格归属错页）。0 尺寸页本就无法渲染（PDF 规范页尺寸须 >0），
             // 显式报错，由调用方容错回退（文字层）而非产出错位结果。
-            anyhow::bail!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}");
+            return Err(runtime(
+                Some(&format!("page {i}")),
+                format!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}"),
+            ));
         }
         let bitmap = page
             .render(w, h, None)
-            .with_context(|| format!("渲染第 {i} 页失败"))?;
-        let img = bitmap.as_image().context("bitmap 转 image 失败")?;
+            .map_err(|e| runtime(Some(&format!("page {i}")), format!("渲染第 {i} 页失败: {e}")))?;
+        let img = bitmap
+            .as_image()
+            .map_err(|e| runtime(Some(&format!("page {i}")), format!("bitmap 转 image 失败: {e}")))?;
         out.push(img.to_rgb8());
     }
     Ok(out)

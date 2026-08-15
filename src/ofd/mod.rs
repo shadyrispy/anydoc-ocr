@@ -21,13 +21,14 @@ use ofd_core::model::page::PageObject;
 use ofd_core::{LoadedDocument, OfdReader, RenderOptions};
 
 use crate::emitter::{DocumentEmitter, FlushFormat};
+use crate::error::{Result as CResult, from_ofd_error, runtime};
 use crate::gfm_adapter;
 use crate::ocr_engine;
 use crate::reading_order;
 use crate::region::Region;
 use crate::table_grid;
 use crate::timing::StageTimer;
-use crate::{ConvertOptions, Result as CResult};
+use crate::ConvertOptions;
 
 /// OFD 文字层提取的文本行：x0, x1, y0, y1（左、右、上、下，文档坐标），text。
 #[derive(Debug, Clone)]
@@ -59,7 +60,7 @@ enum PageData {
 /// OFD → Markdown 总入口。
 pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     let mut t = StageTimer::new();
-    let mut reader = OfdReader::open(path).map_err(|e| anyhow::anyhow!("打开 OFD 失败: {e}"))?;
+    let mut reader = OfdReader::open(path).map_err(from_ofd_error)?;
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
     let doc_bodies = reader.ofd().doc_bodies.clone();
 
@@ -71,7 +72,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     for (body_idx, body) in doc_bodies.iter().enumerate() {
         let doc = reader
             .load_document(body)
-            .map_err(|e| anyhow::anyhow!("装载 OFD 文档失败: {e}"))?;
+            .map_err(from_ofd_error)?;
         let page_count = doc.pages().len();
         for idx in 0..page_count {
             let page_ref = &doc.pages()[idx];
@@ -172,15 +173,14 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
         let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
         let path = path.to_path_buf();
         let dpi = opts.dpi;
-        let render_fn = move |tx: std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>| -> anyhow::Result<()> {
-            let mut reader = OfdReader::open(&path)
-                .map_err(|e| anyhow::anyhow!("流水线内重新打开 OFD 失败: {e}"))?;
+        let render_fn = move |tx: std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>| -> crate::error::Result<()> {
+            let mut reader = OfdReader::open(&path).map_err(from_ofd_error)?;
             let bodies = reader.ofd().doc_bodies.clone();
             for (gi, body_idx, page_idx) in &pending {
                 let body = &bodies[*body_idx];
                 let doc = reader
                     .load_document(body)
-                    .map_err(|e| anyhow::anyhow!("流水线内装载文档失败: {e}"))?;
+                    .map_err(from_ofd_error)?;
                 // 内联 render_page 逻辑（opts 非 'static，闭包用捕获的 dpi）。
                 // 单文档调用方：doc_idx 固定 0，page_idx = gi（OFD 扁平页序）。
                 match reader.render_page_to_image(&doc, *page_idx, &RenderOptions::with_dpi(dpi.into())) {
@@ -193,7 +193,10 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                     Err(e) => {
                         let _ = tx.send(Err((
                             (0, *gi),
-                            anyhow::anyhow!("渲染 OFD 页 {gi} 失败: {e}"),
+                            runtime(
+                                Some(&format!("OFD page {gi}")),
+                                format!("渲染 OFD 页 {gi} 失败: {e}"),
+                            ),
                         )));
                     }
                 }
@@ -292,7 +295,10 @@ fn render_page(
 ) -> CResult<RgbImage> {
     let img: RgbaImage = reader
         .render_page_to_image(doc, idx, &RenderOptions::with_dpi(opts.dpi.into()))
-        .map_err(|e| anyhow::anyhow!("渲染 OFD 第 {idx} 页失败: {e}"))?;
+        .map_err(|e| runtime(
+            Some(&format!("OFD page {idx}")),
+            format!("渲染 OFD 第 {idx} 页失败: {e}"),
+        ))?;
     Ok(image::DynamicImage::ImageRgba8(img).to_rgb8())
 }
 

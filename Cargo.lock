@@ -157,7 +157,6 @@ name = "anydoc-ocr"
 version = "0.1.0"
 dependencies = [
  "anydoc",
- "anyhow",
  "clap",
  "image",
  "memmap2",
