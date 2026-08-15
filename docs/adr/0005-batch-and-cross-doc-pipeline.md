@@ -3,6 +3,7 @@
 - 状态: Accepted
 - 日期: 2026-08-15
 - 决策者: 架构 review
+- 后续: ADR-0006（错误处理统一）补充本 ADR 错误隔离的类型化维度
 
 ## 背景
 
@@ -153,6 +154,13 @@ input: PathBuf,  // 文件或目录
   （复合键保序），但需 batch golden 验证跨文档 idx 分组
 - 目录遍历：递归深度无限制可能触发符号链接环（用 `walkdir` 或限制深度兜底）
 - 混合目录（文字型 + 图片型文档）：预分流处理，两类各自走快速路径/pipeline，不互相阻塞
+- **错误隔离的类型化**（brooks-review Critical 修复 + ADR-0006）：候选 2 落地后
+  发现 batch.rs 兜底分支曾把"doc 打开失败被 pipeline 跳过"标为 `Ok(String::new())`，
+  导致 main.rs 写出空 .md 并计入成功（静默数据丢失）。已修复为 `Err`，但暴露
+  错误类型信息在边界处丢失的问题。ADR-0006 决策全库统一用 `anydoc::ConvertError`
+  替代 `anyhow::Error`，把错误分类（Encrypted/Malformed/MissingPart 等）从源头
+  保留到 main.rs，按 `code()` 给用户精准提示。本 ADR 的"错误隔离"从"每文档独立
+  Result"升档为"每文档独立 **类型化** Result"。
 
 ### 不做项
 
@@ -167,3 +175,6 @@ input: PathBuf,  // 文件或目录
   模式不变，仅 idx 编址升级为复合键
 - ADR-0003（双段先做）：候选 2 不触碰 GFM 段，跨文档的只有 render↔OCR 段
 - ADR-0004（不加 wired adapter）：与批处理无关
+- ADR-0006（错误处理统一）：补充本 ADR 错误隔离的类型化维度。brooks-review 发现
+  候选 2 的静默失败 Critical（`Ok(空串)` 伪装成功）后，ADR-0006 决策全库统一用
+  `anydoc::ConvertError` 替代 `anyhow::Error`，从源头保留错误分类
