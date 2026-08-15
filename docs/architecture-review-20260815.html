@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>anydoc-ocr 架构深化评审 — 多 PDF OCR 吞吐</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .badge-strong { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+  .badge-explore { background:#fef9c3; color:#854d0e; border:1px solid #fde047; }
+  .badge-spec { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+  .badge-adr { background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd; }
+  .card { transition: box-shadow .2s; }
+  .card:hover { box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+  .mono { font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace; }
+  .diag-box { border:2px dashed #94a3b8; border-radius:8px; padding:10px; background:#f8fafc; }
+  .arrow { color:#64748b; font-weight:bold; }
+  .stage-r { background:#dbeafe; }
+  .stage-o { background:#fef3c7; }
+  .stage-g { background:#dcfce7; }
+  .stage-idle { background:#fecaca; }
+  table.mineru td, table.mineru th { border:1px solid #e2e8f0; padding:6px 10px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+<div class="max-w-6xl mx-auto px-6 py-10">
+
+  <header class="mb-10">
+    <div class="text-xs text-slate-500 mb-2">improve-codebase-architecture · 评审范围：多 PDF OCR 吞吐</div>
+    <h1 class="text-3xl font-bold text-slate-900">anydoc-ocr 架构深化评审</h1>
+    <p class="mt-2 text-slate-600">对齐 MinerU 工程实践，定位"处理多 PDF 时 OCR 速度"的深化点。每个候选给出现状摩擦、深化方案、before/after 可视化、推荐强度。</p>
+    <div class="mt-4 p-4 bg-white rounded-lg border border-slate-200 text-sm">
+      <div class="font-semibold mb-2 text-slate-700">评审基线（实测数据，本机 release build）</div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+        <div class="p-2 bg-slate-50 rounded"><div class="text-slate-500">单页 OCR 稳态</div><div class="font-mono font-bold">0.6–1.0 s</div></div>
+        <div class="p-2 bg-slate-50 rounded"><div class="text-slate-500">冷启 vs 稳态差</div><div class="font-mono font-bold">~0.5 s/进程</div></div>
+        <div class="p-2 bg-slate-50 rounded"><div class="text-slate-500">GFM 收尾占比</div><div class="font-mono font-bold">&lt; 1 %</div></div>
+        <div class="p-2 bg-slate-50 rounded"><div class="text-slate-500">render 被掩盖</div><div class="font-mono font-bold">~0 ms</div></div>
+      </div>
+      <div class="mt-2 text-xs text-slate-500">multipage.pdf 8 页墙钟 7.1s（ocr 7.05s）；image.pdf 单页 0.97s（ocr 0.92s）。冷启 0.5s 来自模型加载 + ORT 线程池初始化，每进程付一次。</div>
+    </div>
+  </header>
+
+  <!-- MinerU 对齐总览 -->
+  <section class="mb-10">
+    <h2 class="text-xl font-bold mb-3 text-slate-900">MinerU 实践 vs anydoc-ocr 现状</h2>
+    <table class="mineru w-full text-sm bg-white rounded-lg overflow-hidden">
+      <thead class="bg-slate-100">
+        <tr><th class="text-left">MinerU 实践</th><th class="text-left">anydoc-ocr 现状</th><th class="text-left">差距</th></tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        <tr><td>目录批处理 <code class="mono">-p dir</code>，单进程跑整批</td><td>CLI 单文件，N 文档 = N 进程</td><td class="text-red-600 font-semibold">大</td></tr>
+        <tr><td><code class="mono">AtomModelSingleton</code> 跨文档复用模型</td><td>进程级 cache 有，跨进程失效</td><td class="text-red-600 font-semibold">中（被单文件 CLI 放大）</td></tr>
+        <tr><td><code class="mono">doc_analyze_streaming</code> 跨文档 64 页处理窗口</td><td>per-doc <code class="mono">PagePipeline</code>，文档边界 OCR 池空转</td><td class="text-red-600 font-semibold">大</td></tr>
+        <tr><td><code class="mono">batch_ratio × BASE</code> 页级批推理</td><td><code class="mono">predict_images(vec![img])</code> 单页喂</td><td class="text-yellow-600 font-semibold">中</td></tr>
+        <tr><td>后台 <code class="mono">ThreadPoolExecutor</code> 输出线程</td><td>GFM 批量串行收尾（&lt;1%，ADR-0003 已延后）</td><td class="text-slate-500">小（数据不支持）</td></tr>
+        <tr><td><code class="mono">MINERU_INTRA_OP_NUM_THREADS</code></td><td>已有 <code class="mono">ANYDOC_ORT_INTRA_THREADS</code></td><td class="text-green-600 font-semibold">已对齐</td></tr>
+        <tr><td>模型缓存目录 + <code class="mono">lru_cache</code></td><td>已有 <code class="mono">$OAR_HOME</code> + <code class="mono">ANYDOC_MODEL_DIR</code></td><td class="text-green-600 font-semibold">已对齐</td></tr>
+        <tr><td><code class="mono">middle_json</code> 断点续算</td><td>ADR-0001 明确不做全套 IR</td><td class="text-slate-500">已决策（不重审）</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 候选 1 -->
+  <section class="card bg-white rounded-xl p-6 mb-6 border border-slate-200">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-lg font-bold text-slate-900">候选 1：批处理入口 + 跨文档引擎复用</h3>
+      <span class="badge-strong px-2 py-1 rounded text-xs font-semibold">Strong</span>
+    </div>
+    <div class="text-xs text-slate-500 mb-3">涉及：<span class="mono">src/main.rs</span> · <span class="mono">src/convert.rs</span> · <span class="mono">src/ocr_engine.rs</span></div>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">问题：</strong><code class="mono">convert_to_markdown(&amp;Path)</code> 是单文件 API；CLI <code class="mono">main.rs</code> 只接一个 input。处理 N 个 PDF = N 次进程启动 = N 次模型冷加载（实测 <strong>0.5s/进程</strong>）+ N 次 ORT 全局线程池初始化。<code class="mono">OcrEngine</code> 的 <code class="mono">static CACHE</code> 是进程级——它<em>本来</em>就是为跨调用复用设计的（注释写明"跨文档/跨调用复用"），但单文件 CLI 让它永远只命中一次就随进程退出。这是多文档吞吐的最大杀手：100 个文档凭空多 50s 纯模型重载。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">方案：</strong>引入 <code class="mono">BatchConverter</code> 深模块，持有 <code class="mono">Arc&lt;OcrEngine&gt;</code> 句柄（一次性 build）+ 跨文档调度。CLI 加 <code class="mono">--batch &lt;dir&gt;</code> 或接受多个 input 路径。库 API 加 <code class="mono">convert_many(paths, opts) -&gt; Vec&lt;Result&lt;String&gt;&gt;</code>，内部复用同一 engine 实例。MinerU 的 <code class="mono">AtomModelSingleton</code> + <code class="mono">-p dir</code> 即此模式。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">收益（locality + leverage）：</strong>模型加载与 ORT 初始化的复杂度收敛到 <code class="mono">BatchConverter</code> 一处（locality）；调用方只需传 paths 列表即拿到 N 份 markdown，不重复付冷启成本（leverage）。测试面改善：可单测 <code class="mono">convert_many</code> 传 3 个 paths 验证 engine 只 build 一次（用计数器 mock）。</p>
+
+    <div class="grid grid-cols-2 gap-4 mt-4">
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">BEFORE — N 进程，N 次冷加载</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div class="stage-idle px-2 py-1 rounded">进程1: build(0.5s) → convert(doc1) → exit</div>
+          <div class="stage-idle px-2 py-1 rounded">进程2: build(0.5s) → convert(doc2) → exit</div>
+          <div class="stage-idle px-2 py-1 rounded">进程3: build(0.5s) → convert(doc3) → exit</div>
+          <div class="text-red-600 mt-2">N 文档 = N×0.5s 冷加载 + N×ORT init</div>
+        </div>
+      </div>
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">AFTER — 单进程，engine 复用</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div class="stage-r px-2 py-1 rounded">BatchConverter: build(0.5s) 一次</div>
+          <div class="stage-o px-2 py-1 rounded">→ convert(doc1) [engine 复用]</div>
+          <div class="stage-o px-2 py-1 rounded">→ convert(doc2) [engine 复用]</div>
+          <div class="stage-o px-2 py-1 rounded">→ convert(doc3) [engine 复用]</div>
+          <div class="text-green-600 mt-2">N 文档 = 1×0.5s 冷加载</div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-4">
+      <div class="mermaid">
+graph LR
+  subgraph BEFORE["N 进程 (现状)"]
+    P1["进程1<br/>build→convert→exit"]
+    P2["进程2<br/>build→convert→exit"]
+    P3["进程3<br/>build→convert→exit"]
+  end
+  subgraph AFTER["单进程 (深化后)"]
+    BC["BatchConverter<br/>build 一次"]
+    BC --> C1["convert(doc1)"]
+    BC --> C2["convert(doc2)"]
+    BC --> C3["convert(doc3)"]
+  end
+  style P1 fill:#fecaca
+  style P2 fill:#fecaca
+  style P3 fill:#fecaca
+  style BC fill:#dbeafe
+  style C1 fill:#fef3c7
+  style C2 fill:#fef3c7
+  style C3 fill:#fef3c7
+      </div>
+    </div>
+    <p class="text-xs text-slate-500 mt-3"><strong>删除测试：</strong>删掉 <code class="mono">BatchConverter</code>，多文档只能逐个 <code class="mono">convert_to_markdown</code>，每次 build engine——N 次冷加载复杂度重现 → earning its keep。</p>
+  </section>
+
+  <!-- 候选 2 -->
+  <section class="card bg-white rounded-xl p-6 mb-6 border border-slate-200">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-lg font-bold text-slate-900">候选 2：跨文档流水线（PagePipeline 升档）</h3>
+      <span class="badge-strong px-2 py-1 rounded text-xs font-semibold">Strong</span>
+    </div>
+    <div class="text-xs text-slate-500 mb-3">涉及：<span class="mono">src/pipeline.rs</span> · <span class="mono">src/pdf/mod.rs</span> · <span class="mono">src/ofd/mod.rs</span> · <span class="mono">src/pdf/render.rs</span></div>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">问题：</strong><code class="mono">PagePipeline</code> 是 per-document：每个 doc 自己 spawn render 线程 + rayon scope + channel。处理很多小 PDF（1-3 页）时，per-doc setup 开销（thread spawn、channel 创建、rayon scope 建立）+ <strong>文档边界处 OCR 池空转</strong> dominates。doc1 OCR 跑完 → pipeline 结束 → doc2 重新 spawn → render 线程冷启。MinerU 的 <code class="mono">doc_analyze_streaming</code> 把多文档页面打包进同一 64 页处理窗口，文档边界只是 idx 跳变，pipeline 不停。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">方案：</strong>把 <code class="mono">PagePipeline</code> 从"per-doc 流水线"深化为"跨文档流水线"——一个长期运行的 render↔OCR pipeline，喂入 <code class="mono">(doc_idx, page_idx, img)</code>，产出 <code class="mono">(doc_idx, page_idx, StructureResult)</code>。<code class="mono">RenderFn</code> 升级为可跨文档迭代（接受 paths 列表，内部逐 doc open + 逐页渲染，idx 连续编号）。文档边界只是 idx 跳变，render 线程和 OCR 池都不停。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">收益：</strong>文档间 OCR 池空转消除（locality：调度逻辑集中到 pipeline 一处）；小文档 setup 摊薄（leverage：调用方传 paths 列表即拿到连续页结果）。依赖候选 1 的 <code class="mono">BatchConverter</code> 提供 engine 句柄。</p>
+
+    <div class="grid grid-cols-2 gap-4 mt-4">
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">BEFORE — per-doc pipeline，边界空转</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div>doc1: <span class="stage-r px-1 rounded">render</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR</span><span class="arrow">→</span><span class="stage-g px-1 rounded">gfm</span></div>
+          <div class="stage-idle px-2 py-1 rounded">空转（teardown + setup）</div>
+          <div>doc2: <span class="stage-r px-1 rounded">render</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR</span><span class="arrow">→</span><span class="stage-g px-1 rounded">gfm</span></div>
+          <div class="stage-idle px-2 py-1 rounded">空转</div>
+          <div>doc3: <span class="stage-r px-1 rounded">render</span>...</div>
+        </div>
+      </div>
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">AFTER — 跨文档 pipeline 不停</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div><span class="stage-r px-1 rounded">render d1p1</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR d1p1</span></div>
+          <div><span class="stage-r px-1 rounded">render d1p2</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR d1p2</span></div>
+          <div><span class="stage-r px-1 rounded">render d2p1</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR d2p1</span> <span class="text-green-600">[边界不停]</span></div>
+          <div><span class="stage-r px-1 rounded">render d2p2</span><span class="arrow">→</span><span class="stage-o px-1 rounded">OCR d2p2</span></div>
+          <div><span class="stage-r px-1 rounded">render d3p1</span>...</div>
+        </div>
+      </div>
+    </div>
+    <p class="text-xs text-slate-500 mt-3"><strong>删除测试：</strong>删掉跨文档 pipeline，回到 per-doc pipeline——文档间 OCR 池空转、小文档 thread spawn 开销重现 → earning its keep。</p>
+    <p class="text-xs text-amber-700 mt-2"><strong>约束：</strong>PDFium <code class="mono">PdfDocument</code> 非 Send、OFD <code class="mono">OfdReader</code> 非 Send——render 仍须在专属线程，闭包内逐 doc open（ADR-0002 已确立此模式，跨文档版本沿用）。<code class="mono">RenderItem</code> 的 idx 升级为 <code class="mono">(doc_idx, page_idx)</code> 复合键。</p>
+  </section>
+
+  <!-- 候选 3 -->
+  <section class="card bg-white rounded-xl p-6 mb-6 border border-slate-200">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-lg font-bold text-slate-900">候选 3：页级批推理（OCR 消费端攒批）</h3>
+      <span class="badge-explore px-2 py-1 rounded text-xs font-semibold">Worth exploring</span>
+    </div>
+    <div class="text-xs text-slate-500 mb-3">涉及：<span class="mono">src/pipeline.rs</span>（OCR 消费段）· <span class="mono">src/ocr_engine.rs</span></div>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">问题：</strong>pipeline 里 <code class="mono">engine.analyzer.predict_images(vec![img])</code> 单页喂——oar-ocr 支持 batch，但当前一页一喂（为了流水线掩盖渲染延迟）。CPU 推理（飞腾场景）单页 kernel launch + 内存搬运开销没摊薄。MinerU 用 <code class="mono">batch_ratio × BASE</code> 一次推多页（OCR det 一次 8×ratio 张）。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">方案：</strong>OCR 消费端攒一个小 buffer（如 4 页），凑够或超时即 <code class="mono">predict_images(buffer)</code>。需平衡：攒批提高吞吐 vs 延迟流水线掩盖渲染。MinerU 的处理窗口（64 页）在 GPU 上收益巨大，CPU 上收益待测。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">收益：</strong>摊薄 ORT 单次推理开销（locality：攒批逻辑在 pipeline 内）。但 CPU 场景 batch &gt; 4 后内存峰值上升 + padding 浪费反噬，需实测。</p>
+
+    <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+      <strong>⚠️ ADR-0002 关联风险：</strong>ADR-0002 已记录"单页 <code class="mono">predict_images(vec![img])</code> vs 批量存在数值级差异（oar-ocr batch padding/resize 影响），multipage.pdf golden 已 UPDATE 重基线"。改 batch size 需重新 <code class="mono">ANYDOC_GOLDEN_UPDATE=1</code> 重基线，且不同 batch size 间结果可能漂移——golden 锁的是某个固定 batch。建议先实测 batch=2/4 的吞吐收益与精度变化再决策。
+    </div>
+    <p class="text-xs text-slate-500 mt-3"><strong>删除测试：</strong>攒批模块删掉后 OCR 回到单页喂——功能不破，只是丢吞吐优化。删掉复杂度<em>不</em>重现（单页喂更简单）→ 这个深化是 leverage 型而非 locality 型，ROI 取决于实测收益是否值得 golden 重基线成本。</p>
+  </section>
+
+  <!-- 候选 4 -->
+  <section class="card bg-white rounded-xl p-6 mb-6 border border-slate-200">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-lg font-bold text-slate-900">候选 4：OCR 引擎预加载与文字层预检解耦</h3>
+      <span class="badge-explore px-2 py-1 rounded text-xs font-semibold">Worth exploring</span>
+    </div>
+    <div class="text-xs text-slate-500 mb-3">涉及：<span class="mono">src/pdf/mod.rs</span> · <span class="mono">src/ofd/mod.rs</span> · <span class="mono">src/pipeline.rs</span>（P4 预加载半成品）</div>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">问题：</strong><code class="mono">convert_pdf</code> 内：先 <code class="mono">text_layer_markdown</code>（文字层判定，含 0.3s deep garbled 检查）→ 判定走 OCR → 才 <code class="mono">OcrEngine::build</code>。对纯图片型文档批量，每文档都要先做一次注定失败的文字层预检 + 串行 build。MinerU 模型在进程启动即加载。<code class="mono">pipeline.rs</code> 注释提到 P4 预加载但没完全实现（"engine 已由调用方 build，预加载收益在首文档"——半成品）。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">方案：</strong>detect 阶段或批处理入口即 spawn 后台 <code class="mono">OcrEngine::build</code>，与首文档文字层预检并行。在候选 1 的 <code class="mono">BatchConverter</code> 构造时就触发 build，首文档预检期间模型已在后台加载。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">收益：</strong>首文档冷加载 0.5s 被文字层预检掩盖（locality：预加载逻辑收敛到 BatchConverter 构造）。单文档场景收益小，多文档场景首文档延迟降低。</p>
+
+    <div class="grid grid-cols-2 gap-4 mt-4">
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">BEFORE — 串行</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div class="stage-g px-2 py-1 rounded">text_layer 预检 (0.3s)</div>
+          <div class="stage-idle px-2 py-1 rounded">build engine (0.5s)</div>
+          <div class="stage-o px-2 py-1 rounded">OCR</div>
+        </div>
+      </div>
+      <div>
+        <div class="text-xs font-semibold text-slate-500 mb-2">AFTER — 预加载并行</div>
+        <div class="diag-box text-xs mono space-y-1">
+          <div class="flex gap-2"><span class="stage-g px-2 py-1 rounded flex-1">text_layer 预检 (0.3s)</span><span class="stage-idle px-2 py-1 rounded flex-1">build engine (0.5s) ‖</span></div>
+          <div class="stage-o px-2 py-1 rounded">OCR [engine 已就绪]</div>
+          <div class="text-green-600 text-xs">首文档省 ~0.3s</div>
+        </div>
+      </div>
+    </div>
+    <p class="text-xs text-slate-500 mt-3"><strong>删除测试：</strong>删掉预加载，build 回到 convert_pdf 内串行——首文档多 0.3s。复杂度小，主要是"把 build 提前 + spawn"的工程改动，ROI 中等。</p>
+  </section>
+
+  <!-- 候选 5 -->
+  <section class="card bg-white rounded-xl p-6 mb-6 border border-slate-200">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-lg font-bold text-slate-900">候选 5：GFM 输出流式（producer-consumer）</h3>
+      <span class="badge-spec px-2 py-1 rounded text-xs font-semibold">Speculative</span>
+      <span class="badge-adr px-2 py-1 rounded text-xs font-semibold ml-2">ADR-0003 已预见</span>
+    </div>
+    <div class="text-xs text-slate-500 mb-3">涉及：<span class="mono">src/gfm_adapter.rs</span> · <span class="mono">src/emitter.rs</span></div>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">问题：</strong>ADR-0003 已记录"双段先做，GFM 流式延后，待 P7 per-page 计时实测占比再定"。当前 GFM 是 OCR 后批量串行收尾（<code class="mono">structure_results_to_gfm(&amp;pages)</code>）。多文档场景下，doc N 的 GFM 收尾时 doc N+1 的 OCR 停转。MinerU 用 <code class="mono">ThreadPoolExecutor(max_workers=1)</code> 后台输出。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">数据不支持：</strong>本机 bench 显示 GFM 阶段 3–8ms，占比 <strong>&lt; 1%</strong>（multipage 8 页 gfm 8.5ms / 总 7060ms）。ADR-0003 的"延后"决策被实测验证正确。改 <code class="mono">gfm_adapter</code> 签名（batch→stream）+ <code class="mono">DocumentEmitter</code> 线程安全的风险，远高于 &lt;1% 的潜在收益。</p>
+
+    <p class="text-sm mb-3"><strong class="text-slate-700">结论：</strong>不建议做。列出仅为记录"已评估并排除"。若未来单文档页数极大（&gt;100 页）使 GFM 占比上升，或加 JSON 输出需 per-stage golden，再重新评估。</p>
+
+    <div class="mt-4 p-3 bg-violet-50 border border-violet-200 rounded text-xs text-violet-800">
+      <strong>ADR-0003 关联：</strong>此候选即 ADR-0003 延后的"P5 GFM 流式"。本评审用实测数据（gfm &lt;1%）验证了 ADR-0003 的延后决策。不构成 ADR 冲突，反而是 ADR 的数据回填。
+    </div>
+  </section>
+
+  <!-- Top recommendation -->
+  <section class="bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-xl p-6 mb-6">
+    <h2 class="text-xl font-bold mb-3">🏆 Top 推荐</h2>
+    <p class="text-sm mb-3"><strong>候选 1 + 候选 2 组合，按此顺序。</strong></p>
+    <ol class="text-sm space-y-2 list-decimal list-inside">
+      <li><strong>先做候选 1（批处理入口）</strong>——这是前置依赖。单文件 CLI 是多文档吞吐的根本瓶颈：N 进程 = N×0.5s 模型重载 + N×ORT init。<code class="mono">convert_many</code> + <code class="mono">--batch</code> 让 <code class="mono">OcrEngine</code> 的进程级 cache 真正发挥作用（它本来就是为跨文档复用设计的，被 CLI 架构拖累）。100 文档省 ~50s 纯开销，零精度风险（不改 OCR 路径）。</li>
+      <li><strong>再做候选 2（跨文档流水线）</strong>——在候选 1 的 <code class="mono">BatchConverter</code> 上把 <code class="mono">PagePipeline</code> 升档为跨文档。消除文档边界 OCR 池空转 + 小文档 setup 摊薄。这是 MinerU <code class="mono">doc_analyze_streaming</code> 的核心。需处理 <code class="mono">RenderItem</code> idx 升级为复合键，但 render 仍专属线程（ADR-0002 模式不变）。</li>
+    </ol>
+    <p class="text-sm mt-3 text-blue-100"><strong>候选 3（批推理）</strong>作为可选增量，但需先实测 batch=2/4 的吞吐收益与精度漂移，并接受 golden 重基线成本（ADR-0002 已预警）。<strong>候选 4（预加载）</strong>在候选 1 落地后自然收敛到 <code class="mono">BatchConverter</code> 构造时，作为候选 1 的附属实现。<strong>候选 5</strong>不做（ADR-0003 数据已验证）。</p>
+    <p class="text-xs mt-3 text-blue-200">组合落地后，多文档吞吐从"N×(冷启 + per-doc pipeline setup + OCR)"降到"1×冷启 + 跨文档连续 pipeline + OCR"，对齐 MinerU 的单进程批处理 + 跨文档处理窗口模式。</p>
+  </section>
+
+  <footer class="text-xs text-slate-400 mt-8 border-t border-slate-200 pt-4">
+    评审依据：anydoc-ocr 当前源码（升级到 anydoc 0.1.9 / pdf-inspector 1.14.2 / oar-ocr 0.9.1 后 release build）+ MinerU master 分支源码核验。ADR-0001/0002/0003/0004 已读，未重审已决策项。术语遵循项目领域词汇（Region/TableGrid/StructureResult/DocumentEmitter/PagePipeline/OcrEngine）。
+  </footer>
+
+</div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+</body>
+</html>
