@@ -1,4 +1,9 @@
 //! PDF 渲染：PDFium 逐页渲染为 RGB 图像（供 OCR 管线）
+//!
+//! ADR-0008：图片型 PDF 优先直提 image object 原始像素（`image_data()`），
+//! 跳过整页光栅化——避免 MediaBox 异常时渲染放大导致 OOM，且省去重复光栅化。
+//! 仅"单图满页"（恰好 1 个 image object、无 text/path/shading）才直提；
+//! 混合页/多图块回退 `page.render()`。
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -48,6 +53,38 @@ pub fn render_pdf_pages(
     render_document(&doc, dpi, &target)
 }
 
+/// ADR-0008：尝试直提页面 image object 的原始像素。
+///
+/// 仅当页面"单图满页"（恰好 1 个 image object、无 text/path/shading object）时
+/// 直提——图片型扫描件的典型形态。混合页/多图块返回 `None`，调用方回退整页渲染。
+///
+/// 直提跳过 pdfium 的整页光栅化（`page.render`），避免：
+/// 1. MediaBox 异常（如扫描仪把像素值当 pt）时渲染放大导致 OOM
+/// 2. 对已解码图像的重复光栅化（浪费 CPU + 内存）
+///
+/// `image_data()` 返回 image object 解码后的原始像素（考虑 filter/mask/transform），
+/// 非 MediaBox×DPI 缩放的渲染结果——DPI 对直提无意义。
+fn try_extract_page_image(page: &PdfPage) -> Option<image::RgbImage> {
+    let mut image_count = 0usize;
+    let mut other_count = 0usize;
+    let mut result = None;
+    for obj in page.objects().iter() {
+        if let Some(img_obj) = obj.as_image_object() {
+            image_count += 1;
+            if image_count > 1 {
+                return None; // 多个 image object → 回退渲染
+            }
+            result = img_obj.get_raw_image().ok().map(|i| i.to_rgb8());
+        } else {
+            other_count += 1;
+        }
+    }
+    if other_count > 0 || image_count == 0 {
+        return None; // 混合页或无图 → 回退渲染
+    }
+    result
+}
+
 /// ADR-0005 候选 2：跨文档渲染闭包——在专属线程内逐 doc open + 逐页产出
 /// ((doc_idx, page_idx), img) 入 channel。文档边界不停顿，OCR 池跨文档消费。
 ///
@@ -57,6 +94,7 @@ pub fn render_pdf_pages(
 /// 单个 PDF 打开失败 → 告警跳过该 doc（其页缺失，调用方容错），不中断整批。
 ///
 /// ADR-0006：错误类型 `ConvertError`，渲染失败归 `Malformed { part: "page N", detail }`。
+/// ADR-0008：优先直提 image object（`try_extract_page_image`），失败回退整页渲染。
 pub fn render_cross_doc_fn(
     paths: Vec<std::path::PathBuf>,
     dpi: f32,
@@ -84,6 +122,14 @@ pub fn render_cross_doc_fn(
                 }
             };
             for (i, page) in doc.pages().iter().enumerate() {
+                // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
+                // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
+                if let Some(img) = try_extract_page_image(&page) {
+                    if tx.send(Ok(((doc_idx, i), img))).is_err() {
+                        return Ok(()); // OCR 端退出
+                    }
+                    continue;
+                }
                 let w = (page.width().value * scale) as i32;
                 let h = (page.height().value * scale) as i32;
                 if w <= 0 || h <= 0 {
