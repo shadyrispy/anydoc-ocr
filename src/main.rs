@@ -3,11 +3,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anydoc_ocr::ConvertError;
+use anydoc_ocr::Result;
 use anydoc_ocr::convert_to_markdown;
 use anydoc_ocr::models::{OcrLayout, OcrTier};
 use clap::Parser;
-
-use crate::error::Result;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -46,10 +45,6 @@ struct Cli {
     dpi: f32,
 }
 
-mod error {
-    pub type Result<T> = std::result::Result<T, anydoc_ocr::ConvertError>;
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let threads = if cli.threads == 0 {
@@ -69,8 +64,16 @@ fn main() -> Result<()> {
     };
 
     if cli.input == "-" {
-        let (path, _tmp) = resolve_stdin()?;
-        let md = convert_to_markdown(&path, &opts)?;
+        // ADR-0006 审计跟进 W1：单文档路径 `?` 改 `match`，按 e.code() 给精准提示。
+        // batch 路径错误隔离继续；单文档路径遇错即终止，故 exit(1)。
+        let (path, _tmp) = match resolve_stdin() {
+            Ok(v) => v,
+            Err(e) => exit_with_hint(&e),
+        };
+        let md = match convert_to_markdown(&path, &opts) {
+            Ok(md) => md,
+            Err(e) => exit_with_hint(&e),
+        };
         write_single(&md, &cli.output)?;
         return Ok(());
     }
@@ -79,10 +82,20 @@ fn main() -> Result<()> {
     if input.is_dir() {
         run_batch(&input, &opts, &cli.output)?;
     } else {
-        let md = convert_to_markdown(&input, &opts)?;
+        let md = match convert_to_markdown(&input, &opts) {
+            Ok(md) => md,
+            Err(e) => exit_with_hint(&e),
+        };
         write_single(&md, &cli.output)?;
     }
     Ok(())
+}
+
+/// 单文档路径遇错即终止：打印 `失败: {e}\n  提示: {hint}` 后 `exit(1)`。
+/// 与 batch 路径共用 `error_hint` 内核（ADR-0006 审计跟进 W1）。
+fn exit_with_hint(e: &ConvertError) -> ! {
+    eprintln!("转换失败: {e}\n  提示: {}", error_hint(e));
+    std::process::exit(1);
 }
 
 /// 目录批处理：递归收集文档 → BatchConverter 转换 → 逐文件写出。
@@ -139,7 +152,10 @@ fn run_batch(
 fn error_hint(e: &ConvertError) -> &'static str {
     match e.code() {
         "encrypted" => "文档已加密，需提供密码或解密后重试",
-        "malformed" => "文档损坏或格式错误，检查文件是否完整或被截断",
+        // ADR-0006 审计跟进 S3：`runtime()` 把 ORT/pdfium 失败也归 Malformed（§3 既定，
+        // 不能 fork 加变体）。提示文案覆盖两类原因 + 指向 detail，不单押"文档损坏"，
+        // 避免对"找不到 libpdfium.so"等环境错误误导归因。
+        "malformed" => "文档损坏或运行时错误（如 ORT/pdfium 未配置）— 详见错误详情，检查文件完整性或运行环境",
         "missingPart" => "文档结构不完整（缺必需部件），可能源文件生成不完整",
         "resourceLimit" => "超出安全限制（可能解压炸弹或文档过大）",
         "unsupported" => "格式不支持或需 OCR 但 ORT/pdfium 环境未配置",

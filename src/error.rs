@@ -78,3 +78,61 @@ pub fn runtime(part: Option<&str>, detail: impl Into<String>) -> ConvertError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    //! ADR-0006 审计跟进 S1：锁定 `from_pdf_error` 语义契约。
+    //! `from_pdf_error` 镜像 anydoc 私有 `formats/pdf.rs:map_error`（上游未暴露），
+    //! 版本升级时语义漂移（如 `Parse` 改映射目标）会静默发生。本测试逐变体断言
+    //! `PdfError → ConvertError` 映射 + `code()` 稳定字符串，升 anydoc 时若挂即暴露。
+
+    use super::*;
+    use pdf_inspector::PdfError;
+
+    #[test]
+    fn from_pdf_error_maps_each_variant() {
+        // Encrypted → Encrypted / code "encrypted"
+        assert!(matches!(from_pdf_error(PdfError::Encrypted), ConvertError::Encrypted));
+        assert_eq!(from_pdf_error(PdfError::Encrypted).code(), "encrypted");
+
+        // InvalidStructure → Malformed / code "malformed"
+        assert!(matches!(
+            from_pdf_error(PdfError::InvalidStructure),
+            ConvertError::Malformed { .. }
+        ));
+        assert_eq!(from_pdf_error(PdfError::InvalidStructure).code(), "malformed");
+
+        // NotAPdf(String) → Malformed
+        assert!(matches!(
+            from_pdf_error(PdfError::NotAPdf("x".into())),
+            ConvertError::Malformed { .. }
+        ));
+
+        // Parse(String) → Malformed
+        assert!(matches!(
+            from_pdf_error(PdfError::Parse("x".into())),
+            ConvertError::Malformed { .. }
+        ));
+
+        // Io(io::Error) → Io / code "io"
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(matches!(from_pdf_error(PdfError::Io(io_err)), ConvertError::Io(_)));
+        assert_eq!(
+            from_pdf_error(PdfError::Io(std::io::Error::from(std::io::ErrorKind::NotFound))).code(),
+            "io"
+        );
+    }
+
+    #[test]
+    fn runtime_returns_malformed_with_part_and_detail() {
+        // ADR-0006 §3：runtime() 统一归 Malformed + detail。
+        let e = runtime(Some("page 3"), "渲染失败: gpu oom");
+        assert!(matches!(e, ConvertError::Malformed { ref part, ref detail }
+            if part.as_deref() == Some("page 3") && detail == "渲染失败: gpu oom"));
+        assert_eq!(e.code(), "malformed");
+
+        let e2 = runtime(None, "ort 加载失败");
+        assert!(matches!(e2, ConvertError::Malformed { part: None, ref detail }
+            if detail == "ort 加载失败"));
+    }
+}
+
