@@ -117,14 +117,14 @@ ORT 加载失败、pdfium 绑定失败、单页渲染失败等"非文档本身�
 - pipeline 内部错误链构造改用 `ConvertError::Malformed { part, detail }` 直接构造，
   detail 字符串承载原始错误信息（如 `format!("ORT 引擎加载失败: {e}")`），
   无需 anyhow 中转
-- anyhow 的 `Context` trait 在边界处改用 `map_err(|e| ConvertError::malformed(format!(...)))`
+- anyhow 的 `Context` trait 在边界处改用 `.map_err(|e| crate::error::runtime(None, format!("{e}")))`
   替代，语义等价
 - 移除 anyhow 后 `Cargo.toml` 删掉 anyhow 依赖，减少一个外部 crate
 
 **具体移除点**：
 - `src/lib.rs`：删 `pub type Result<T> = anyhow::Result<T>;`，改 `pub type Result<T> = std::result::Result<T, anydoc::ConvertError>;`
 - 各模块 `use anyhow::anyhow;` / `use anyhow::Context;` 删除，改用 `ConvertError` 构造
-- pipeline 内部 `anyhow::Error` 改 `ConvertError`，`anyhow::bail!` 改 `return Err(ConvertError::malformed(...))`
+- pipeline 内部 `anyhow::Error` 改 `ConvertError`，`anyhow::bail!` 改 `return Err(crate::error::runtime(part, detail))`
 - `Cargo.toml`：删 `anyhow = "..."` 依赖行
 
 ### 5. PDF 预分流：Err 不送 OCR
@@ -204,47 +204,69 @@ match result {
 
 ## 后果
 
-### 实施节奏：分 3 步递进
+### 实施节奏：结合 ADR-0005 已落代码分 3 步递进
 
-**第 1 步：PDF 路径**（源头分类 + batch 预分流过滤）
-- [text_layer.rs](../../src/pdf/text_layer.rs) `extract_text_with_positions` 错误按
-  `PdfError` 分类返 `ConvertError`，不再吞 `Ok(None)`
-- [pdf/mod.rs](../../src/pdf/mod.rs) `convert_pdf`/`convert_pdf_ocr` 签名改
-  `Result<.., ConvertError>`
-- [batch.rs](../../src/batch.rs) 预分流阶段 `Err` 直接标错不送 OCR；force_ocr 时
-  仍调 text_layer 做加密预检
-- 验证：现有 `batch_isolates_corrupt_pdf_as_err` 测试改断言 `ConvertError::Malformed`；
-  golden 不变（健康文档路径不变）
+ADR-0005 候选 1+2 已落地（batch.rs / pipeline.rs / pdf/render.rs / pdf/mod.rs /
+ofd/mod.rs / main.rs / lib.rs / text_layer.rs）。本 ADR 在这些已落代码上做错误
+处理升级：`anyhow::Error` → `ConvertError` 类型化。每步锚定 0005 的代码点，
+逐步替换，每步可独立编译 + golden 验证。
 
-**第 2 步：OFD + anydoc 格式映射**（边界统一）
-- [ofd/mod.rs](../../src/ofd/mod.rs) `OfdError → ConvertError` 映射（按上方映射表），
-  移除 `anyhow::anyhow!("...")` 构造，改用 `ConvertError::malformed(...)` /
-  `ConvertError::MissingPart { .. }` 等
-- [convert.rs](../../src/convert.rs) `convert_to_markdown` 签名改
-  `Result<String, ConvertError>`，anydoc 格式透传 `ConvertError`（移除
-  `map_err(|e| anyhow!("{e}"))`）
-- [lib.rs](../../src/lib.rs) `Result<T>` 别名改 `Result<T, ConvertError>`，
-  删 `pub type Result<T> = anyhow::Result<T>;`
-- [pipeline.rs](../../src/pipeline.rs) / [pdf/render.rs](../../src/pdf/render.rs)
-  内部 `anyhow::Error` 全改 `ConvertError`，`anyhow::bail!` 改
-  `return Err(ConvertError::malformed(...))`，移除 `use anyhow::*`
-- `Cargo.toml` 删 `anyhow` 依赖
-- 验证：OFD golden 不变；补 OFD 损坏样本测试
+**第 1 步：错误基础设施 + PDF 文字层源头分类**
+（锚定 0005 候选 2 的 `text_layer.rs` 预分流入口）
 
-**第 3 步：main.rs 提示 + 测试样本**
-- [main.rs](../../src/main.rs) 按 `code()` 精准提示（上方代码）
+- [error.rs](../../src/error.rs)：新建 `from_pdf_error` / `from_ofd_error` / `runtime`
+  映射助手；`Result<T>` 别名改 `Result<T, ConvertError>`
+- [lib.rs](../../src/lib.rs)：`pub use error::{ConvertError, Result}`，删旧
+  `pub type Result<T> = anyhow::Result<T>`
+- [text_layer.rs](../../src/pdf/text_layer.rs)：`extract_text_with_positions` 错误
+  按 `PdfError` 分类返 `Err(ConvertError)`，不再吞 `Ok(None)`（ADR-0006 §1 问题点）
+- **验证**：编译通过；健康 PDF golden 零变更（错误路径不影响）；`text_layer` 单元
+  测试（若有 mock PdfError）补 Encrypted/Malformed 分支断言
+
+**第 2 步：PDF 跨文档 pipeline + render 错误类型化**
+（锚定 0005 候选 2 的 `pipeline.rs` 复合键 + `pdf/render.rs` 跨文档闭包 + `pdf/mod.rs`）
+
+- [pipeline.rs](../../src/pipeline.rs)：`RenderItem` 的 `anyhow::Error` 改
+  `ConvertError`；`run()` 返回 `Result<Vec<..>, ConvertError>`；内部
+  `anyhow::anyhow!` 构造改 `crate::error::runtime(part, detail)`
+- [pdf/render.rs](../../src/pdf/render.rs)：`render_cross_doc_fn` 返回类型改
+  `Result<(), ConvertError>`；`anyhow::bail!` 改 `return Err(runtime(...))`；
+  `locate_pdfium` / `render_pdf_pages` / `render_document` 同步去 anyhow
+- [pdf/mod.rs](../../src/pdf/mod.rs)：`convert_pdf` / `convert_pdf_ocr` 签名靠
+  lib.rs 别名自动生效；内部 `?` 传播点检查（PdfError 已有 `from_pdf_error`，
+  渲染错误走 `runtime`）
+- **验证**：PDF golden（OCR + 非 OCR）零变更；batch golden 零变更
+
+**第 3 步：OFD + anydoc 格式 + batch 预分流 + main 提示 + 测试**
+（锚定 0005 候选 1+2 的 `ofd/mod.rs` + `convert.rs` + `batch.rs` + `main.rs`）
+
+- [ofd/mod.rs](../../src/ofd/mod.rs)：`OfdError → ConvertError` 映射（调
+  `crate::error::from_ofd_error`），移除全部 `anyhow::anyhow!("...")`；
+  render 闭包返回类型改 `Result<(), ConvertError>`
+- [convert.rs](../../src/convert.rs)：`convert_to_markdown` 签名靠别名生效；
+  anydoc 格式透传 `ConvertError`（删 `map_err(|e| anyhow!("{e}"))`，直接 `?`）
+- [batch.rs](../../src/batch.rs)：预分流阶段 `text_layer_markdown` 返 `Err` 直接
+  标错不送 `ocr_paths`（ADR-0006 §5）；force_ocr 时仍调 text_layer 做加密预检
+  （ADR-0006 §6）；兜底 `Err` 从 `anyhow::anyhow!` 改 `crate::error::runtime`
+- [main.rs](../../src/main.rs)：`run_batch` 的 `anyhow::Result` 改
+  `Result<(), ConvertError>`；`Err` 分支按 `e.code()` 精准提示（ADR-0006 §7）；
+  `write_single` / `resolve_stdin` 同步
+- `Cargo.toml`：删 `anyhow` 依赖（全库无残留 `use anyhow` 后）
 - 补 4 测试样本（覆盖三类）：
-  - 加密 PDF（qpdf 加密生成）
-  - 损坏 PDF（已有 `batch_isolates_corrupt_pdf_as_err`，改断言类型）
-  - 加密 docx（OOXML EncryptionInfo）
-  - 损坏 docx（zip 截断）
-- 验证：每样本断言对应 `ConvertError` 变体 + `code()` 字符串
+  - 加密 PDF（qpdf 加密生成）→ 断言 `ConvertError::Encrypted` + `code()=="encrypted"`
+  - 损坏 PDF（已有 `batch_isolates_corrupt_pdf_as_err`，改断言 `Malformed`）
+  - 加密 docx（OOXML EncryptionInfo）→ 断言 `Encrypted`
+  - 损坏 docx（zip 截断）→ 断言 `Malformed`
+- **验证**：全 golden + 4 新测试全绿；`cargo build` 无 anyhow 残留
 
 ### 风险
 
 - **签名变更连带**：`Result<T>` 别名改 `ConvertError` 后，所有 `?` 传播点需检查
-  `From` impl 是否覆盖。anydoc 已 impl `From<io::Error>`，PDF 路径需加
-  `From<PdfError>`（复用 anydoc 私有 map_error 逻辑，提到 anydoc-ocr 本地 impl）
+  `From` impl 是否覆盖。anydoc 已 impl `From<io::Error>`；`PdfError`/`OfdError`
+  无 `From` impl，调用方需显式 `.map_err(crate::error::from_pdf_error)` /
+  `from_ofd_error`（已在 error.rs 提供助手函数）。运行时错误用
+  `crate::error::runtime(part, detail)` 构造（anydoc 的 `ConvertError::malformed`
+  是 `pub(crate)` 我们用不了，直接构造 `Malformed { part, detail }`）
 - **golden 回归**：健康文档路径不变（错误分类只影响失败路径），golden 应零变更。
   但 `convert_to_markdown` 签名变更可能影响测试代码（`tests/golden.rs` 等），
   需同步改测试的 `?` 传播
