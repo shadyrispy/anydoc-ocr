@@ -1,6 +1,6 @@
 # ADR-0006: 错误处理统一——复用 anydoc::ConvertError
 
-- 状态: Accepted
+- 状态: Accepted（2026-08-15 审计跟进，详见末节）
 - 日期: 2026-08-15
 - 决策者: 架构 review
 
@@ -284,6 +284,180 @@ ofd/mod.rs / main.rs / lib.rs / text_layer.rs）。本 ADR 在这些已落代码
 - 不为 OFD 加密额外探测（ofd-core 不支持，收益不抵成本）
 - 不改 anydoc 内部错误处理（上游职责，我们只消费）
 - 不做错误重试/恢复策略（本 ADR 只管分类，恢复策略另议）
+
+## 审计跟进 (2026-08-15)
+
+ADR-0006 三步实施完成后，`brooks-review` 复审发现 4 处执行缺口（Health 92/100，
+无 Critical）。本节记录每个发现的 grilling（备选权衡 → 决策）与修复方案，
+并细化执行计划。**性质：对 0006 的补全/纠正，非新架构决策**——故修订本 ADR
+而非另开 0007。
+
+### 发现清单
+
+| 编号 | 严重度 | 风险类别 | 摘要 |
+|------|--------|----------|------|
+| W1 | 🟡 Warning | Change Propagation | `error_hint` 仅 batch 路径生效；stdin/单文件主路径 `?` 直传，无"下一步建议" |
+| S1 | 🟢 Suggestion | Knowledge Duplication | `from_pdf_error` 镜像 anydoc 私有 `map_error`，版本升级有语义漂移风险 |
+| S2 | 🟢 Suggestion | Accidental Complexity | main.rs 本地 `mod error` 重复 `anydoc_ocr::Result`（lib 已 pub 导出） |
+| S3 | 🟢 Suggestion | Domain Model Distortion | `runtime()` 错误归 `Malformed`，`error_hint` 对 `malformed` 提示"文档损坏"误导环境/运行时错误 |
+
+### 修复方案（grilling）
+
+#### W1：error_hint 覆盖全部 CLI 入口
+
+**Symptom**：[main.rs:71-76, 81-84](../../src/main.rs#L71-L84) 单文件/stdin 路径用
+`convert_to_markdown(...)?` 直传，`main()->Result<()>` 经 `Termination` 仅打印
+`ConvertError` 的 Display，不走 `error_hint`；仅 [main.rs:124-130](../../src/main.rs#L124-L130)
+batch 路径有提示。CLI 最常用模式 `anydoc-ocr encrypted.pdf` 拿不到 ADR-0006 §7
+承诺的精准提示。
+
+**备选权衡**：
+- (a) 抽 `fn print_error(e: &ConvertError)` 供三路共用 → 最小重复，但 `?` 优雅丢失
+- (b) 每路 `?` 改 `match` + 内联 hint → 重复 3 次 hint 调用
+- (c) 把 hint 推到 lib 层（`ConvertError::hint()`）→ 越界，lib 不应承载 CLI 文案
+- (d) 加差异化退出码（encrypted→2, malformed→3...）→ ADR-0006 §7 只要求"精准提示"，
+  退出码是脚本集成诉求，**YAGNI**，留待未来 ADR
+
+**决策**：采 (a)。抽 `fn print_error(e: &ConvertError) -> !`（打印 `失败: {e}\n  提示: {hint}`
++ `std::process::exit(1)`），stdin/单文件/batch 三路共用。**不加差异化退出码**
+（ADR-0006 未要求；脚本可解析 stderr 的 `code()` 行，未来需要再开 ADR）。
+
+**改动点**（main.rs）：
+- 新增 `fn print_error(e: &ConvertError) -> !`
+- stdin 路径：`let md = convert_to_markdown(&path, &opts).map_err(|e| { print_error(&e); })?;`
+  → 实为 `match convert_to_markdown(&path, &opts) { Ok(md)=>md, Err(e)=>print_error(&e) }`
+- 单文件路径：同上
+- batch 路径：内层 `Err(e)` 分支调 `error_hint` 改调 `print_error`（但 batch 不退出，
+  继续处理下一文件——故 batch 路径保留现有 `eprintln! + fail+=1`，**不**用 `print_error`）
+- 复核：`print_error` 仅用于"单文档即终止"语义；batch 是"错误隔离继续"，语义不同，
+  不强求统一函数。最终：stdin/单文件用 `print_error`，batch 保留 `error_hint` 调用
+
+**修正后的决策**：`error_hint` 仍被 batch 用；新增 `print_error` 给单文档路径。
+两者共用 `error_hint` 内核。不抽 `print_error`，而是单文档路径改为：
+```rust
+let md = match convert_to_markdown(&input, &opts) {
+    Ok(md) => md,
+    Err(e) => {
+        eprintln!("转换失败: {e}\n  提示: {}", error_hint(&e));
+        std::process::exit(1);
+    }
+};
+```
+保持 `error_hint` 为唯一提示源，batch 与单文档都调它，只是单文档额外 `exit(1)`。
+
+#### S1：锁定 from_pdf_error 语义契约
+
+**Symptom**：[error.rs:14-32](../../src/error.rs#L14-L32) 与 anydoc
+`formats/pdf.rs:40-48` 私有 `map_error` 逐变体同语义重复。`anydoc="=0.1.9"` 精确锁
+版 + 穷尽 match（新增 `PdfError` 变体编译即断）已防护"结构漂移"，但**语义漂移**
+（anydoc 把 `Parse` 改映射目标）在版本升级时静默发生。
+
+**备选权衡**：
+- (a) 单元测试断言每个 `PdfError` 变体 → 期望 `ConvertError` 变体 + `code()`
+- (b) 向 anydoc 上游 PR 把 `map_error` 设 `pub`，本库直接转发 → 依赖上游接受/合入时间，
+  不可控，不作为本次修复路径
+- (c) 不处理，靠 `=0.1.9` 锁版 → 升版时无防护
+
+**决策**：采 (a)。在 [error.rs](../../src/error.rs) 加 `#[cfg(test)] mod tests`，
+逐变体构造 `PdfError`（`Encrypted`/`InvalidStructure`/`NotAPdf(s)`/`Parse(s)`/
+`Io(io::Error)`）调 `from_pdf_error`，断言落到的 `ConvertError` 变体 + `code()`。
+升 anydoc 时该测试若挂即暴露语义变更。**不依赖 (b)**，但 ADR 记录：上游若暴露
+`map_error`，本库应改为转发以彻底消除重复（列为"未来优化"）。
+
+#### S2：删除 main.rs 冗余 mod error
+
+**Symptom**：[main.rs:10, 49-51](../../src/main.rs#L49-L51) 定义 `mod error { pub type Result<T> = ... }`
+并 `use crate::error::Result;`；但 [lib.rs:24](../../src/lib.rs#L24) 已
+`pub use error::{ConvertError, Result};`，`anydoc_ocr::Result` 已公开。
+
+**备选权衡**：
+- (a) 删 `mod error`，改 `use anydoc_ocr::Result;`
+- (b) 保留，理由"binary 自治" → 无实际收益，徒增同名混淆
+
+**决策**：采 (a)。删 `mod error {...}` 块与 `use crate::error::Result;`，改
+`use anydoc_ocr::Result;`。`ConvertError` 已 `use anydoc_ocr::ConvertError;`，无需改。
+
+#### S3：malformed 提示覆盖运行时/环境错误
+
+**Symptom**：[error.rs:74-78](../../src/error.rs#L74-L78) `runtime()` 把 ORT/pdfium
+失败归 `Malformed`（ADR-0006 §3 接受，因不能 fork 加变体）；
+[main.rs:142](../../src/main.rs#L142) `error_hint` 对 `malformed` 返
+"文档损坏或格式错误，检查文件是否完整或被截断"——对"找不到 libpdfium.so"/
+"ORT 推理失败"错误归因误导。`detail` 完整错误仍打印，影响限于"提示"行。
+
+**备选权衡**：
+- (a) `error_hint` 扫 `detail` 关键词（"libpdfium"/"onnxruntime"/"OCR 推理"）给环境类提示
+  → 字符串匹配脆弱，关键词漏判即退化为旧提示
+- (b) 软化 `malformed` 提示文案，覆盖两类原因 + 指向 detail → 诚实承认歧义，无脆弱匹配
+- (c) 接受现状，ADR 记录权衡 → detail 已暴露真因，但"提示"行仍误导
+- (d) 给运行时错误可区分信号（如 `part` 固定前缀 `"runtime:"`）→ 污染 part 语义，
+  part 本是"失败位置"
+
+**决策**：采 (b)。`malformed` 提示改为
+`"文档损坏或运行时错误（如 ORT/pdfium 未配置）— 详见错误详情，检查文件完整性或运行环境"`。
+不区分 sub-case（detail 已让用户定位真因），但不再单押"文档损坏"。比 (a) 健壮、
+比 (c) 诚实、比 (d) 干净。ADR-0006 §3 的 `runtime()→Malformed` 权衡不变。
+
+### 细化开发计划
+
+4 修复均为局部改动（每项 < 15 行），分 2 阶段执行，每阶段可独立编译验证。
+
+**阶段 A：main.rs 统一提示 + 冗余清理（W1 + S2 + S3）**
+
+三处同在 main.rs，一次编辑完成：
+1. 删 `mod error {...}` 块 + `use crate::error::Result;`（S2）
+2. 加 `use anydoc_ocr::Result;`
+3. 改 `error_hint` 的 `malformed` 文案为 S3 决策文本
+4. stdin 路径（[main.rs:72-74](../../src/main.rs#L72-L74)）：`?` 改 `match`，
+   `Err(e) => { eprintln!("转换失败: {e}\n  提示: {}", error_hint(&e)); std::process::exit(1); }`
+5. 单文件路径（[main.rs:82-83](../../src/main.rs#L82-L83)）：同上
+6. batch 路径（[main.rs:127-128](../../src/main.rs#L127-L128)）：保留现状（错误隔离继续）
+
+**阶段 B：error.rs 语义锁定测试（S1）**
+
+在 [error.rs](../../src/error.rs) 末尾加：
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pdf_inspector::PdfError;
+
+    #[test]
+    fn from_pdf_error_maps_each_variant() {
+        assert!(matches!(from_pdf_error(PdfError::Encrypted), ConvertError::Encrypted));
+        assert_eq!(from_pdf_error(PdfError::Encrypted).code(), "encrypted");
+        assert!(matches!(from_pdf_error(PdfError::InvalidStructure),
+                         ConvertError::Malformed { .. }));
+        assert_eq!(from_pdf_error(PdfError::InvalidStructure).code(), "malformed");
+        assert!(matches!(from_pdf_error(PdfError::NotAPdf("x".into())),
+                         ConvertError::Malformed { .. }));
+        assert!(matches!(from_pdf_error(PdfError::Parse("x".into())),
+                         ConvertError::Malformed { .. }));
+        assert!(matches!(from_pdf_error(PdfError::Io(std::io::ErrorKind::NotFound.into())),
+                         ConvertError::Io(_)));
+        assert_eq!(from_pdf_error(PdfError::Io(std::io::ErrorKind::NotFound.into())).code(), "io");
+    }
+}
+```
+
+**验证**：
+- `cargo build`（需 ORT/pdfium 环境就绪：`ORT_LIB_PATH`/`PDFIUM_LIB_DIR`/`LD_LIBRARY_PATH`）
+- `cargo test --lib from_pdf_error`（S1 单元测试，不依赖 ORT 运行时，仅 PdfError 构造）
+- `cargo test --test error_classification --test batch_golden`（W1/S3 不改 code()，
+  既有断言应全绿）
+- 手测：`anydoc-ocr tests/samples/encrypted.pdf` 应见"提示: 文档已加密..."
+  （W1 修复前无此行）；`anydoc-ocr <缺 pdfium 环境的 PDF>` 应见 S3 软化文案
+
+**本沙箱限制**：`third_party/ort/` 缺失致 ort-sys 链接失败，无法重跑测试。
+代码改动完成后需在 ORT 环境就绪的机器验证。S1 单元测试仅依赖 `pdf_inspector`
+（编译期，非运行时 ORT），受影响最小。
+
+### 审计跟进不做项
+
+- 不加差异化退出码（YAGNI，留待脚本集成诉求出现时另开 ADR）
+- 不向 anydoc 上游 PR 暴露 `map_error`（依赖外部时间，记为未来优化）
+- 不改 `runtime()→Malformed` 映射（ADR-0006 §3 既定，不能 fork 加变体）
+- 不做 `detail` 关键词扫描区分 sub-case（脆弱，detail 已暴露真因）
 
 ## 关联
 
