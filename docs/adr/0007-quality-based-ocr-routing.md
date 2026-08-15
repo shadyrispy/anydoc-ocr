@@ -52,16 +52,35 @@ imageproc 提供：
 - `photo-qa`：依赖 candle-core/candle-nn（PyTorch 替代），过重
 - `zenanalyze`：AGPL-3.0 传染，license 不可接受
 
-### D2：四指标定义
+### D2：四指标定义（阈值采用业界标准参数）
 
 | 指标 | 衡量 | 实现 | imageproc 复用 |
 |------|------|------|---------------|
-| Laplacian 方差 | 模糊度（核心） | `laplacian_filter` 结果的方差 | ✅ 卷积复用 |
+| **归一化** Laplacian 方差 | 模糊度（核心） | `laplacian_filter` 方差 ÷ 原图纹理方差 | ✅ 卷积复用 |
 | 局部噪声方差 | 噪点污染 | 原图 - `gaussian_blur_f32(σ=1)` 残差的均值 | ✅ 模糊复用 |
 | 对比度 | 灰度动态范围 | `(max - min) / 255.0` | 手写（1 行） |
 | 平均锐度 | 边缘清晰度 | `sobel_gradients` 结果的均值 | ✅ 卷积复用 |
 
-**手写总量**：统计函数 ~50 行 + 路由分级 ~30 行 = ~80 行新增代码。
+**关键修正：Laplacian 方差必须归一化**。原始方差依赖分辨率（4K 照片 vs 100DPI 扫描件量纲不同），跨 DPI 比较会失真。归一化方式：
+
+```rust
+let lap_norm = laplacian_var / (texture_var + 1e-6);
+// texture_var = 原图灰度方差 np.var(gray)
+```
+
+参考：imageguard（MIT 库）用此归一化产出 0-100 分，OCR 阈值 60。
+
+**阈值参数（业界标准，多源交叉验证）**：
+
+| 原始 Laplacian 方差 | 归一化值（约） | 质量 | OCR 适用性 | 来源 |
+|---------------------|--------------|------|-----------|------|
+| >500 | >2.5 | 很清晰 | 优秀 | changeimageto.com, woteq.com |
+| 200–500 | 1.0–2.5 | 可接受 | 良好 | 同上 |
+| 50–200 | 0.25–1.0 | 偏软 | 精度下降 | 同上 |
+| <50 | <0.25 | 模糊 | 不适用 | 同上 |
+| **默认阈值 100** | ~0.5 | 分界线 | 通用经验值 | CSDN, woflowinc/img-blur-check |
+
+**手写总量**：统计函数 ~50 行 + 归一化 ~5 行 + 路由分级 ~30 行 = ~85 行新增代码。
 
 ### D3：三级路由策略
 
@@ -73,12 +92,12 @@ MEDIUM (轻度污染): tiny/150    → 180s  (DPI 提升，覆盖小字)
 LOW    (重污染/小字): small/100 → 266s  (tier 升级，无瑕疵)
 ```
 
-**阈值树设计**（保守偏向，宁可升级）：
-1. 若 Laplacian 方差 < T_low → LOW（明显模糊）
-2. 否则若 噪声方差 > N_high 或 对比度 < C_low → MEDIUM（有污染）
+**阈值树设计**（保守偏向，宁可升级；阈值取业界标准参数）：
+1. 若归一化 Laplacian < 0.5 → LOW（明显模糊，对应原始方差 <100）
+2. 否则若 噪声方差 > 50.0 或 对比度 < 0.3 → MEDIUM（有污染）
 3. 否则 → HIGH
 
-阈值 T_low / N_high / C_low 用现有 7 样本（nuaa/cjrb/sthj + 4 fixtures）标定，记入配置常量。
+阈值依据：Laplacian 0.5 归一化值 = 业界通用 100 原始方差点（4 源交叉验证）；噪声/对比度阈值待 7 样本微调但量级已定。
 
 **否决的备选**：
 - 加权求和总分：四指标量纲不同，权重需训练数据标定，7 样本不足
@@ -127,9 +146,10 @@ Cargo.toml 新增 `imageproc = "0.25"`（与 image 0.25 版本对齐）。
 
 验证：`cargo build` + nuaa.pdf 实测路由到 LOW（small/100）+ cjrb.pdf 不走路由（有文字层）。
 
-### 阶段 3：阈值标定与测试
+### 阶段 3：阈值验证与测试
 
-- 用 7 样本（nuaa/cjrb/sthj + encrypted/corrupt PDF/docx）标定 T_low/N_high/C_low
+- 用 7 样本（nuaa/cjrb/sthj + encrypted/corrupt PDF/docx）验证业界标准阈值（Laplacian 0.5 / noise 50 / contrast 0.3）
+- 噪声/对比度阈值如需微调，记入配置常量；Laplacian 阈值固定取业界标准
 - 新增 `tests/quality_routing.rs`：断言 nuaa→LOW、sthj→MEDIUM/HIGH、清晰样本→HIGH
 - golden 测试加 `--quality-route off` 固定参数
 - 文档：CLI `--help` 说明 auto/off 语义
@@ -140,7 +160,7 @@ Cargo.toml 新增 `imageproc = "0.25"`（与 image 0.25 版本对齐）。
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| 阈值过拟合 | 7 样本标定的阈值可能不通用 | 保守阈值（宁可升级）+ 阈值设为配置常量可调 + `--quality-route off` 兜底 |
+| 阈值过拟合 | 业界标准阈值可能不适合中文扫描件 | Laplacian 阈值取 4 源交叉验证的业界标准（100/0.5）；噪声/对比度阈值可调 + `--quality-route off` 兜底 |
 | 路由误判代价不对称 | HIGH 误判为 LOW → 浪费 2 倍时间；LOW 误判为 HIGH → 识别错误 | 阈值偏向保守，宁可升级不可降级 |
 | golden 快照失效 | 质量路由改变默认行为 | golden 固定 `--quality-route off`，路由有独立测试 |
 | imageproc 依赖膨胀 | 编译时间增加 | imageproc 是 image-rs 生态轻量库，无重依赖；与 image 0.25 版本对齐 |
