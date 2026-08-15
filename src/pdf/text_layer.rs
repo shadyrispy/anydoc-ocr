@@ -31,7 +31,11 @@ const SPLIT_CLUSTER_TOL_FRACTION: f32 = 0.02;
 /// 含表格页回退 OCR 输出 `<table>` HTML（见 mod.rs 模块文档 T2-B）。
 ///
 /// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
-pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
+///
+/// `pub(crate)`：ADR-0005 候选 2 批处理预分流调用——`BatchConverter` 先逐 doc 试文字层，
+/// 命中（Some）即快速路径出结果；未命中（None）的图片型 PDF 收集到 `ocr_paths`
+/// 进跨文档 `PagePipeline`，与本函数解耦。
+pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
     // 先做廉价文本提取：图片型/扫描件（items 空）直接回落 OCR，跳过开销大且
     // pdf-inspector 有行分组 bug（layout.rs:1270 panic）的 garbled 预检。
     let items = match pdf_inspector::extract_text_with_positions(path) {

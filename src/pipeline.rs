@@ -30,8 +30,10 @@ use image::RgbImage;
 use crate::ocr_engine::OcrEngine;
 use crate::timing::{PageStage, PageTimings};
 
-/// 渲染项：(page_idx, 渲染结果)。渲染失败时 idx 仍须已知（调用方按页容错）。
-pub(crate) type RenderItem = Result<(usize, RgbImage), (usize, anyhow::Error)>;
+/// 渲染项：((doc_idx, page_idx), 渲染结果)。渲染失败时 idx 仍须已知（调用方按页容错）。
+/// 跨文档流水线（ADR-0005 候选 2）：doc_idx 区分文档，page_idx 为文档内页号。
+/// 单文档调用方传 doc_idx=0。
+pub(crate) type RenderItem = Result<((usize, usize), RgbImage), ((usize, usize), anyhow::Error)>;
 
 /// 渲染器闭包：在专属线程内 open doc + 逐页渲染，产出 (idx, img) 入 channel。
 /// 闭包返回 Ok(()) 表示渲染完毕，Err 表示致命错误（doc 打开失败等）。
@@ -88,15 +90,9 @@ impl<F: RenderFn> PagePipeline<F> {
     /// - 渲染失败页 → 该 idx 缺失（调用方容错）
     /// - OCR 失败页 → run() 返回 Err（调用方按页回退文字层/报错）
     /// - 渲染线程 panic/致命错误 → channel 关闭，run() 返回 Err
-    pub fn run(self) -> Result<Vec<(usize, oar_ocr::domain::structure::StructureResult)>> {
+    pub fn run(self) -> Result<Vec<((usize, usize), oar_ocr::domain::structure::StructureResult)>> {
         let bound = self.threads * Self::BOUND_MULT;
         let (tx, rx) = mpsc::sync_channel(bound);
-
-        // P4：预加载——detect 已判定走 OCR，spawn 后台 OcrEngine::build 与渲染并行。
-        // build 结果通过共享 Arc<OcrEngine> 体现（engine 已由调用方 build 好）。
-        // 注：当前调用方在 convert_pdf/convert_ofd 内已 build，这里 engine 是 build 后的句柄，
-        // 预加载收益在"首文档"场景（build 含模型下载）。后续 P3 集成时调用方应改为
-        // "detect 后即 spawn build，渲染同时进行"，此处 engine 即该预加载结果。
 
         // 渲染线程：执行 render_fn，逐页产出
         let render_fn = self.render_fn;
@@ -105,22 +101,21 @@ impl<F: RenderFn> PagePipeline<F> {
             .spawn(move || render_fn(tx))
             .map_err(|e| anyhow::anyhow!("启动渲染线程失败: {e}"))?;
 
-        // OCR 消费：rayon scope 并发，按 idx 回填到 BTreeMap
+        // OCR 消费：rayon scope 并发，按 (doc_idx, page_idx) 回填到 BTreeMap
         let results: std::sync::Mutex<
-            std::collections::BTreeMap<usize, Result<oar_ocr::domain::structure::StructureResult>>,
+            std::collections::BTreeMap<(usize, usize), Result<oar_ocr::domain::structure::StructureResult>>,
         > = std::sync::Mutex::new(std::collections::BTreeMap::new());
         let results_ref = &results;
         let engine_ref = &self.engine;
         let timings_ref = self.timings.as_deref();
 
         rayon::scope(|s| {
-            // rx move 进闭包，独占 recv（不需 Sync）。每收到一页 spawn 一个 OCR 任务。
             let rx = rx;
             while let Ok(item) = rx.recv() {
                 let (idx, img) = match item {
                     Ok((idx, img)) => (idx, img),
                     Err((idx, e)) => {
-                        eprintln!("[pipeline] render error page {idx}: {e}");
+                        eprintln!("[pipeline] render error page {idx:?}: {e}");
                         continue;
                     }
                 };
@@ -130,14 +125,12 @@ impl<F: RenderFn> PagePipeline<F> {
                     let start = std::time::Instant::now();
                     let r = engine.analyzer.predict_images(vec![img]);
                     if let Some(t) = timings {
-                        t.record(idx, PageStage::Ocr, start.elapsed().as_secs_f64() * 1000.0);
+                        t.record(idx.1, PageStage::Ocr, start.elapsed().as_secs_f64() * 1000.0);
                     }
-                    // predict_images 返回 Vec<Result<StructureResult, OCRError>>，
-                    // 单页输入 → 取首个结果
                     let res = match r.into_iter().next() {
                         Some(Ok(s)) => Ok(s),
-                        Some(Err(e)) => Err(anyhow::anyhow!("OCR 推理失败（页 {idx}）: {e}")),
-                        None => Err(anyhow::anyhow!("OCR 返回空结果（页 {idx}）")),
+                        Some(Err(e)) => Err(anyhow::anyhow!("OCR 推理失败（页 {:?}）: {e}", idx)),
+                        None => Err(anyhow::anyhow!("OCR 返回空结果（页 {:?}）", idx)),
                     };
                     results_ref.lock().unwrap().insert(idx, res);
                 });
@@ -151,7 +144,7 @@ impl<F: RenderFn> PagePipeline<F> {
             Err(e) => return Err(anyhow::anyhow!("渲染线程 panic: {e:?}")),
         }
 
-        // 收集按页序结果（保留 idx）
+        // 收集按 (doc_idx, page_idx) 升序结果
         let map = results.into_inner().unwrap();
         let mut out = Vec::with_capacity(map.len());
         for (idx, res) in map {

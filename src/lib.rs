@@ -5,6 +5,7 @@
 mod error;
 pub use error::Result;
 
+pub mod batch;
 pub mod convert;
 pub mod detect;
 pub(crate) mod emitter;

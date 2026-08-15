@@ -181,17 +181,18 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                 let doc = reader
                     .load_document(body)
                     .map_err(|e| anyhow::anyhow!("流水线内装载文档失败: {e}"))?;
-                // 内联 render_page 逻辑（opts 非 'static，闭包用捕获的 dpi）
+                // 内联 render_page 逻辑（opts 非 'static，闭包用捕获的 dpi）。
+                // 单文档调用方：doc_idx 固定 0，page_idx = gi（OFD 扁平页序）。
                 match reader.render_page_to_image(&doc, *page_idx, &RenderOptions::with_dpi(dpi.into())) {
                     Ok(rgba) => {
                         let img = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
-                        if tx.send(Ok((*gi, img))).is_err() {
+                        if tx.send(Ok(((0, *gi), img))).is_err() {
                             break; // OCR 端退出，停止渲染
                         }
                     }
                     Err(e) => {
                         let _ = tx.send(Err((
-                            *gi,
+                            (0, *gi),
                             anyhow::anyhow!("渲染 OFD 页 {gi} 失败: {e}"),
                         )));
                     }
@@ -208,9 +209,10 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
         .run()?;
         t.stage("ocr");
         timings.report();
-        // pipeline 返回 Vec<(gi, res)> 按 gi 升序——直接用 gi 映射 full_out，
+        // pipeline 返回 Vec<((doc_idx, page_idx), res)> 按复合键升序。
+        // OFD 单文档 doc_idx 恒 0，page_idx = gi 直接映射 full_out；
         // 渲染失败页 gi 缺失 → full_out 无该页 → 第三遍装配跳过（容错）
-        for (gi, res) in results {
+        for ((_doc_idx, gi), res) in results {
             let page = gi as u32;
             full_out.insert(
                 page,

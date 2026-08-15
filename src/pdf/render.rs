@@ -42,18 +42,18 @@ pub fn render_pdf_pages(
     render_document(&doc, dpi, &target)
 }
 
-/// P3：构造全量渲染闭包——在专属线程内 open doc + 逐页产出 (idx, img) 入 channel。
+/// ADR-0005 候选 2：跨文档渲染闭包——在专属线程内逐 doc open + 逐页产出
+/// ((doc_idx, page_idx), img) 入 channel。文档边界不停顿，OCR 池跨文档消费。
 ///
-/// 闭包捕获 path（Send），doc 在闭包内 open（PdfDocument 非 Send，不跨线程）。
-/// 返回 Ok(()) 渲染完毕，Err 致命错误（open/绑定失败）。单页渲染失败按页送 Err。
+/// 单文档调用方传 `vec![path]`（doc_idx 恒 0）；多文档批处理传完整 paths 列表，
+/// doc_idx 与 paths 索引一一对应。
 ///
-/// `locate_pdfium` + `bind_to_library` 在闭包内执行（线程内首次调用初始化全局绑定）。
-pub fn render_all_pages_fn(
-    path: &Path,
+/// 单个 PDF 打开失败 → 告警跳过该 doc（其页缺失，调用方容错），不中断整批。
+pub fn render_cross_doc_fn(
+    paths: Vec<std::path::PathBuf>,
     dpi: f32,
 ) -> impl FnOnce(std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>) -> anyhow::Result<()> + Send + 'static
 {
-    let path = path.to_path_buf();
     move |tx| {
         let so = locate_pdfium()?;
         let pdfium = match Pdfium::bind_to_library(&so) {
@@ -65,37 +65,42 @@ pub fn render_all_pages_fn(
                 )
             }
         };
-        let doc = pdfium
-            .load_pdf_from_file(&path, None)
-            .with_context(|| format!("PDFium 加载 PDF 失败: {}", path.display()))?;
         let scale = dpi / 72.0;
-        for (i, page) in doc.pages().iter().enumerate() {
-            let w = (page.width().value * scale) as i32;
-            let h = (page.height().value * scale) as i32;
-            if w <= 0 || h <= 0 {
-                // 0 尺寸页：送 per-page Err（保持页序，调用方容错），不中断整文档
-                let _ = tx.send(Err((
-                    i,
-                    anyhow::anyhow!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}"),
-                )));
-                continue;
-            }
-            match page.render(w, h, None) {
-                Ok(bitmap) => match bitmap.as_image() {
-                    Ok(img) => {
-                        if tx.send(Ok((i, img.to_rgb8()))).is_err() {
-                            break; // OCR 端退出，停止渲染
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err((i, anyhow::anyhow!("bitmap 转 image 失败: {e}"))));
-                    }
-                },
+        for (doc_idx, path) in paths.iter().enumerate() {
+            let doc = match pdfium.load_pdf_from_file(path, None) {
+                Ok(d) => d,
                 Err(e) => {
+                    eprintln!("[pipeline] 跨文档渲染：打开 {} 失败: {e}", path.display());
+                    continue;
+                }
+            };
+            for (i, page) in doc.pages().iter().enumerate() {
+                let w = (page.width().value * scale) as i32;
+                let h = (page.height().value * scale) as i32;
+                if w <= 0 || h <= 0 {
                     let _ = tx.send(Err((
-                        i,
-                        anyhow::anyhow!("渲染第 {i} 页失败: {e}"),
+                        (doc_idx, i),
+                        anyhow::anyhow!("PDF {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
                     )));
+                    continue;
+                }
+                match page.render(w, h, None) {
+                    Ok(bitmap) => match bitmap.as_image() {
+                        Ok(img) => {
+                            if tx.send(Ok(((doc_idx, i), img.to_rgb8()))).is_err() {
+                                return Ok(()); // OCR 端退出
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(((doc_idx, i), anyhow::anyhow!("bitmap 转 image 失败: {e}"))));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = tx.send(Err((
+                            (doc_idx, i),
+                            anyhow::anyhow!("渲染 doc{doc_idx} 第 {i} 页失败: {e}"),
+                        )));
+                    }
                 }
             }
         }
