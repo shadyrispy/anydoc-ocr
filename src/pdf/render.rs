@@ -62,27 +62,36 @@ pub fn render_pdf_pages(
 /// 1. MediaBox 异常（如扫描仪把像素值当 pt）时渲染放大导致 OOM
 /// 2. 对已解码图像的重复光栅化（浪费 CPU + 内存）
 ///
-/// `image_data()` 返回 image object 解码后的原始像素（考虑 filter/mask/transform），
-/// 非 MediaBox×DPI 缩放的渲染结果——DPI 对直提无意义。
-fn try_extract_page_image(page: &PdfPage) -> Option<image::RgbImage> {
+/// `get_raw_image()` 返回 image object 解码后的原始像素（考虑 filter/mask/transform），
+/// 非 MediaBox×DPI 缩放的渲染结果。
+///
+/// **降采样**：扫描件原始像素可能远超 OCR 所需（如 460dpi 扫描 → 3609×2540），
+/// 多页并发 OCR 会撑爆 cgroup 内存。直提后按 `dpi` 对应的 A4 长边（~12in×dpi）
+/// 限制最长边，超过则 Lanczos 降采样——既控内存又对齐 PP-OCR 训练分布
+/// （ADR-0007 实测 tiny/200dpi 反退化，100dpi 最优）。
+fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
     let mut image_count = 0usize;
+    let mut path_count = 0usize;
     let mut other_count = 0usize;
     let mut result = None;
     for obj in page.objects().iter() {
-        if let Some(img_obj) = obj.as_image_object() {
-            image_count += 1;
-            if image_count > 1 {
-                return None; // 多个 image object → 回退渲染
+        match obj.object_type() {
+            PdfPageObjectType::Image => {
+                image_count += 1;
+                if image_count > 1 {
+                    return None; // 多个 image object → 回退渲染
+                }
+                result = obj.as_image_object().and_then(|io| io.get_raw_image().ok()).map(|i| i.to_rgb8());
             }
-            result = img_obj.get_raw_image().ok().map(|i| i.to_rgb8());
-        } else {
-            other_count += 1;
+            PdfPageObjectType::Text => {} // 隐藏文字层（OCR 生成），不影响图像
+            PdfPageObjectType::Path => path_count += 1,
+            _ => other_count += 1,
         }
     }
-    if other_count > 0 || image_count == 0 {
-        return None; // 混合页或无图 → 回退渲染
+    if image_count != 1 || path_count > 0 || other_count > 0 {
+        return None; // 无图/多图/混合页（含 Path 等可见矢量）→ 回退渲染
     }
-    result
+    result.map(|img| downscale_to_dpi(img, dpi))
 }
 
 /// ADR-0005 候选 2：跨文档渲染闭包——在专属线程内逐 doc open + 逐页产出
@@ -124,7 +133,7 @@ pub fn render_cross_doc_fn(
             for (i, page) in doc.pages().iter().enumerate() {
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
                 // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
-                if let Some(img) = try_extract_page_image(&page) {
+                if let Some(img) = try_extract_page_image(&page, dpi) {
                     if tx.send(Ok(((doc_idx, i), img))).is_err() {
                         return Ok(()); // OCR 端退出
                     }
@@ -173,6 +182,27 @@ pub fn render_cross_doc_fn(
         }
         Ok(())
     }
+}
+
+/// ADR-0008：按 DPI 降采样图像到 A4 长边对应尺寸。
+///
+/// 扫描件原始像素常远超 OCR 所需（460dpi 扫描 → 3609×2540），多页并发 OCR
+/// 会撑爆 cgroup 内存。按 A4 长边 ~12in × `dpi` 限制最长边，超过则 Lanczos
+/// 降采样。低于上限原样返回（避免无谓拷贝）。
+///
+/// `dpi` 与渲染路径语义一致：100 → 最长边 ~1200px。PP-OCR 训练分布在此范围
+/// （ADR-0007 实测 100dpi 最优，200dpi 反退化）。
+pub(crate) fn downscale_to_dpi(img: image::RgbImage, dpi: f32) -> image::RgbImage {
+    let max_side = (dpi * 12.0).round().max(1.0) as u32;
+    let (w, h) = img.dimensions();
+    let longest = w.max(h);
+    if longest <= max_side {
+        return img; // 已在目标范围内，无需降采样
+    }
+    let scale = max_side as f32 / longest as f32;
+    let new_w = ((w as f32 * scale).round() as u32).max(1);
+    let new_h = ((h as f32 * scale).round() as u32).max(1);
+    image::imageops::resize(&img, new_w, new_h, image::imageops::FilterType::Lanczos3)
 }
 
 /// 定位 libpdfium.so：env > 可执行文件旁 lib/ > 开发期相对路径。

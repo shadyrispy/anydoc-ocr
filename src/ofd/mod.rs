@@ -182,7 +182,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
                     .load_document(body)
                     .map_err(from_ofd_error)?;
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
-                if let Some(img) = try_extract_ofd_page_image(&mut reader, &doc, *page_idx) {
+                if let Some(img) = try_extract_ofd_page_image(&mut reader, &doc, *page_idx, dpi) {
                     if tx.send(Ok(((0, *gi), img))).is_err() {
                         break; // OCR 端退出
                     }
@@ -306,6 +306,7 @@ fn try_extract_ofd_page_image(
     reader: &mut OfdReader<File>,
     doc: &LoadedDocument,
     page_idx: usize,
+    dpi: f32,
 ) -> Option<RgbImage> {
     let page_ref = doc.pages().get(page_idx)?;
     let page = reader.load_page(doc, page_ref).ok()?;
@@ -339,10 +340,10 @@ fn try_extract_ofd_page_image(
             if mm.id.value() == resource_id {
                 let media_path = resolve_path(&data_base, &mm.media_file);
                 if let Ok(bytes) = reader.package_mut().read(&media_path) {
-                    if let Ok(img) = image::load_from_memory(&bytes) {
-                        return Some(img.to_rgb8());
+                        if let Ok(img) = image::load_from_memory(&bytes) {
+                            return Some(crate::pdf::render::downscale_to_dpi(img.to_rgb8(), dpi));
+                        }
                     }
-                }
                 return None; // 找到资源但读取/解码失败 → 回退渲染
             }
         }

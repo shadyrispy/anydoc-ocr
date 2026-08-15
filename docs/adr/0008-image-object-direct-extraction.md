@@ -64,33 +64,51 @@ let img = image::load_from_memory(&bytes)?.to_rgb8();
 | 条件 | 原因 |
 |------|------|
 | PDF 页含多个 image object | 多图块拼接，直提会丢失页面整体性 |
-| PDF 页含 text/path/shading object | 混合页，需渲染合成 |
+| PDF 页含 Path/Shading 等可见矢量 object | 真正的混合页，需渲染合成 |
 | OFD 页含多个 ImageObject | 同上 |
 | OFD 页含 TextObject/PathObject | 混合页 |
 | 直提失败（解码错误等） | 容错回退 |
 
+**关于隐藏文字层**：图片型扫描件常带 OCR 生成的不可见文字层（大量 Text object，
+如 nuaa4 每页 141~964 个）。这些 Text object 不可见，不影响图像内容——**允许
+"1 image + 仅 Text object"直提**，仅当存在 Path/Shading 等可见矢量对象时才回退。
+否则 nuaa4 这类带隐藏文字层的图片型 PDF 无法直提，MediaBox 异常（2539×3609pt）
+下渲染 3526×5012px/页 × 19 页 → OOM。
+
+### 降采样
+
+扫描件原始像素常远超 OCR 所需（460dpi 扫描 → 3609×2540），多页并发 OCR 会撑爆
+cgroup 内存（4GB 限制下 nuaa 37 页、nuaa4 19 页均 OOM）。
+
+直提后按 `dpi` 对应的 A4 长边（~12in × dpi）限制最长边，超过则 Lanczos 降采样：
+- 100dpi → 最长边 1200px（nuaa4 3609×2540 → 844×1200）
+- 低于上限原样返回（nuaa 150dpi 扫描约 1240×1754，100dpi 下不降采样）
+
+这与渲染路径的 DPI 语义一致，且对齐 PP-OCR 训练分布（ADR-0007 实测 100dpi 最优、
+200dpi 反退化）。`downscale_to_dpi` 函数 PDF/OFD 共用（`pdf::render` 模块 pub(crate)）。
+
 ### DPI 语义
 
-直提路径**无 DPI 概念**——图像本身是光栅数据，原始像素就是 OCR 输入。`--dpi` 参数仅对渲染路径（混合页降级）生效。
-
-这简化了 ADR-0007 的质量路由：直提后直接看图像像素尺寸判断是否够 OCR，无需 MediaBox 归一化。
+直提路径的 `--dpi` 用于**降采样上限**（最长边 ≤ 12×dpi px），而非 MediaBox×DPI/72 的渲染缩放。
+渲染路径（混合页降级）的 DPI 语义不变。
 
 ## 影响
 
-### 性能
+### 性能（实测，tiny/100dpi，4GB cgroup/3 核）
 
-| 样本 | 当前（整页渲染） | 直提后（预期） |
-|------|-----------------|---------------|
-| nuaa4.pdf (10p, 460dpi) | OOM（80dpi）/ 90s（60dpi 单线程） | ~30s（原始像素，无放大） |
-| nuaa.pdf (37p, 150dpi) | 132s (tiny/100) | ~100s（省去渲染开销） |
-| nuaa3.pdf (1p, 150dpi) | 76s (tiny/100) | ~60s |
+| 样本 | 整页渲染 | 直提+降采样 |
+|------|---------|------------|
+| nuaa4.pdf (19p, 460dpi, 带隐藏文字层) | OOM（MediaBox 2539×3609pt 异常） | 85s，无 OOM |
+| nuaa.pdf (37p, 150dpi) | 132s | 93s（-29%） |
+| nuaa3.pdf (1p, 150dpi) | 76s | 46s（-39%） |
 
 ### 内存
 
-- 整页渲染：峰值 = N × 渲染画布（MediaBox×DPI/72 决定，可能放大）
-- 直提：峰值 = N × 原始图像（图像本身像素决定，无放大）
+- 整页渲染：峰值 = N × 渲染画布（MediaBox×DPI/72 决定，MediaBox 异常时放大 → OOM）
+- 直提+降采样：峰值 = ~2 × 降采样后图像（channel 背压限制），最长边 ≤ 12×dpi px
 
-nuaa4 单页：渲染 4000×2822×3=33MB vs 直提 3609×2540×3=27MB。但渲染是 10 页并发 → 340MB，直提受 channel 背压限制为 ~2 页 → 54MB。
+nuaa4 单页：渲染 3526×5012×3=53MB × 19 页 → OOM；
+直提降采样后 844×1200×3=3MB × 2（背压）→ 6MB。
 
 ### 与 ADR-0007 的关系
 
