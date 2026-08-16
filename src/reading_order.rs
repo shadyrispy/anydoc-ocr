@@ -48,16 +48,22 @@ pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
 
     // 列分类：左/右/整宽三组（复用 split_columns，消除与 order_within_block 的重复）
     let (left_refs, right_refs, full_refs) = split_columns(regions, split);
-    let mut left: Vec<(f32, String)> =
-        left_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
-    let mut right: Vec<(f32, String)> =
-        right_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
+    let mut left: Vec<(f32, String)> = left_refs
+        .iter()
+        .map(|r| (r.y_min, r.text.clone()))
+        .collect();
+    let mut right: Vec<(f32, String)> = right_refs
+        .iter()
+        .map(|r| (r.y_min, r.text.clone()))
+        .collect();
     left.sort_by(ord_y);
     right.sort_by(ord_y);
 
     // 整宽元素按 y 归页眉(y<正文起点)/页脚(y>正文终点)/正文区间(罕见置后)
-    let full: Vec<(f32, String)> =
-        full_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
+    let full: Vec<(f32, String)> = full_refs
+        .iter()
+        .map(|r| (r.y_min, r.text.clone()))
+        .collect();
     let body_min = left
         .iter()
         .chain(right.iter())
@@ -270,7 +276,9 @@ fn assemble_blocks<'a>(
         let inner_idx: Vec<usize> = regions
             .iter()
             .enumerate()
-            .filter(|(i, r)| !consumed[*i] && norm_membership(r.center_x(), r.y_min, scale, &blk.bbox))
+            .filter(|(i, r)| {
+                !consumed[*i] && norm_membership(r.center_x(), r.y_min, scale, &blk.bbox)
+            })
             .map(|(i, _)| i)
             .collect();
         if inner_idx.is_empty() {
@@ -312,7 +320,11 @@ fn append_leftover(
         .map(|(_, r)| r)
         .collect();
     if !leftover.is_empty() {
-        leftover.sort_by(|a, b| a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal));
+        leftover.sort_by(|a, b| {
+            a.y_min
+                .partial_cmp(&b.y_min)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let lines: Vec<(f32, String)> =
             leftover.iter().map(|r| (r.y_min, r.text.clone())).collect();
         out.extend(merge_into_paragraphs(&lines));
@@ -322,10 +334,8 @@ fn append_leftover(
 /// ADR-0009 D2：三级降级链——order_index 全 None 时调用。
 fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
     if let Some(rbs) = &page.region_blocks {
-        let mut sorted_rbs: Vec<&RegionBlock> = rbs
-            .iter()
-            .filter(|rb| rb.order_index.is_some())
-            .collect();
+        let mut sorted_rbs: Vec<&RegionBlock> =
+            rbs.iter().filter(|rb| rb.order_index.is_some()).collect();
         sorted_rbs.sort_by_key(|rb| rb.order_index.unwrap());
         if !sorted_rbs.is_empty() {
             let scale = page_scale(page);
@@ -338,15 +348,13 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
                     .filter_map(|&i| page.layout_elements.get(i))
                     .filter(|el| !NOISE_TYPES.contains(&el.element_type))
                     .collect();
-                els.sort_by(|a, b| {
-                    match (a.order_index, b.order_index) {
-                        (Some(i), Some(j)) => i.cmp(&j),
-                        _ => a
-                            .bbox
-                            .y_min()
-                            .partial_cmp(&b.bbox.y_min())
-                            .unwrap_or(std::cmp::Ordering::Equal),
-                    }
+                els.sort_by(|a, b| match (a.order_index, b.order_index) {
+                    (Some(i), Some(j)) => i.cmp(&j),
+                    _ => a
+                        .bbox
+                        .y_min()
+                        .partial_cmp(&b.bbox.y_min())
+                        .unwrap_or(std::cmp::Ordering::Equal),
                 });
                 out.extend(assemble_blocks(&els, regions, scale, &mut consumed));
             }
@@ -370,20 +378,25 @@ fn order_within_block(regions: &[Region]) -> Vec<(f32, String)> {
     }
     if let Some(split) = detect_column_split(regions) {
         let (left_refs, right_refs, full_refs) = split_columns(regions, split);
-        let mut left: Vec<(f32, String)> =
-            left_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
-        let mut right: Vec<(f32, String)> =
-            right_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
-        let mut mid: Vec<(f32, String)> =
-            full_refs.iter().map(|r| (r.y_min, r.text.clone())).collect();
+        let mut left: Vec<(f32, String)> = left_refs
+            .iter()
+            .map(|r| (r.y_min, r.text.clone()))
+            .collect();
+        let mut right: Vec<(f32, String)> = right_refs
+            .iter()
+            .map(|r| (r.y_min, r.text.clone()))
+            .collect();
+        let mut mid: Vec<(f32, String)> = full_refs
+            .iter()
+            .map(|r| (r.y_min, r.text.clone()))
+            .collect();
         left.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         right.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         mid.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         return mid.into_iter().chain(left).chain(right).collect();
     }
     // 单列：纯 y 排序
-    let mut v: Vec<(f32, String)> =
-        regions.iter().map(|r| (r.y_min, r.text.clone())).collect();
+    let mut v: Vec<(f32, String)> = regions.iter().map(|r| (r.y_min, r.text.clone())).collect();
     v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     v
 }
@@ -616,8 +629,8 @@ fn is_cn_numeral(c: char) -> bool {
 mod tests {
     use super::{merge_into_paragraphs, order_structure, order_text_regions, order_within_block};
     use crate::region::Region;
-    use oar_ocr::domain::structure::{LayoutElement, LayoutElementType, StructureResult};
     use oar_ocr::domain::TextRegion;
+    use oar_ocr::domain::structure::{LayoutElement, LayoutElementType, StructureResult};
     use oar_ocr::processors::BoundingBox;
 
     /// 构造区域：(x_min, x_max, y_min, y_max=+10, 文本)
@@ -635,7 +648,14 @@ mod tests {
     }
 
     /// 构造 layout 块元素：(x_min, y_min, x_max, y_max, 类型, order_index)
-    fn block_el(x0: f32, y0: f32, x1: f32, y1: f32, ty: LayoutElementType, order: Option<u32>) -> LayoutElement {
+    fn block_el(
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        ty: LayoutElementType,
+        order: Option<u32>,
+    ) -> LayoutElement {
         let mut el = LayoutElement::new(BoundingBox::from_coords(x0, y0, x1, y1), ty, 0.9);
         el.order_index = order;
         el
@@ -647,7 +667,13 @@ mod tests {
             .filter_map(|r| {
                 r.text.as_ref().filter(|t| !t.trim().is_empty()).map(|t| {
                     let b = &r.bounding_box;
-                    Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.as_ref().to_string())
+                    Region::new(
+                        b.x_min(),
+                        b.x_max(),
+                        b.y_min(),
+                        b.y_max(),
+                        t.as_ref().to_string(),
+                    )
                 })
             })
             .collect()
@@ -848,10 +874,7 @@ mod tests {
     /// ADR-0009 D3：标题行（# 开头）强制独段，不与相邻行合并。
     #[test]
     fn merge_into_paragraphs_heading_standalone() {
-        let lines = vec![
-            (100.0, "# 标题".into()),
-            (110.0, "正文".into()),
-        ];
+        let lines = vec![(100.0, "# 标题".into()), (110.0, "正文".into())];
         let out = merge_into_paragraphs(&lines);
         assert_eq!(out, vec!["# 标题", "正文"]);
     }

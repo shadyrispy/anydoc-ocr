@@ -45,9 +45,7 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions, pdf_force_ocr: bool) -> R
     let mut t = StageTimer::new();
     // 文字型：pdf-inspector 提取 + 自建阅读顺序；非文字型/失败回退 OCR。
     // pdf_force_ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
-    if !pdf_force_ocr
-        && let Some(md) = text_layer_markdown(path, opts)?
-    {
+    if !pdf_force_ocr && let Some(md) = text_layer_markdown(path, opts)? {
         return Ok(md);
     }
     // 图片型：跨文档 OCR pipeline（ADR-0005 候选 2）。单文档委托为 &[path]。
@@ -89,7 +87,13 @@ pub(crate) fn convert_pdf_ocr(
     // 不再改 dpi）。
     let tier = if opts.quality_route == crate::quality::QualityRoute::Auto {
         probe_first_doc_confidence(&paths[0], opts)?
-            .map(|needs| if needs { crate::models::OcrTier::Small } else { crate::models::OcrTier::Tiny })
+            .map(|needs| {
+                if needs {
+                    crate::models::OcrTier::Small
+                } else {
+                    crate::models::OcrTier::Tiny
+                }
+            })
             .unwrap_or(opts.ocr_tier)
     } else {
         opts.ocr_tier
@@ -102,7 +106,11 @@ pub(crate) fn convert_pdf_ocr(
         render_fn,
         engine,
         opts.threads,
-        if timings.enabled() { Some(timings.clone()) } else { None },
+        if timings.enabled() {
+            Some(timings.clone())
+        } else {
+            None
+        },
     )
     .run()?;
     timings.report();
@@ -160,10 +168,11 @@ fn probe_first_doc_confidence(path: &Path, opts: &ConvertOptions) -> Result<Opti
         Err(_) => return Ok(None),
     };
     // 探针固定用 tiny：本就是要判定 tiny 是否够用
-    let engine = match crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout) {
-        Ok(e) => e,
-        Err(_) => return Ok(None),
-    };
+    let engine =
+        match crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
     let pages = match engine.predict(imgs, 1, None) {
         Ok(p) => p,
         Err(_) => return Ok(None),

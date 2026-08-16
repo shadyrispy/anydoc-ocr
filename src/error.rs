@@ -91,7 +91,10 @@ mod tests {
     #[test]
     fn from_pdf_error_maps_each_variant() {
         // Encrypted → Encrypted / code "encrypted"
-        assert!(matches!(from_pdf_error(PdfError::Encrypted), ConvertError::Encrypted));
+        assert!(matches!(
+            from_pdf_error(PdfError::Encrypted),
+            ConvertError::Encrypted
+        ));
         assert_eq!(from_pdf_error(PdfError::Encrypted).code(), "encrypted");
 
         // InvalidStructure → Malformed / code "malformed"
@@ -99,7 +102,10 @@ mod tests {
             from_pdf_error(PdfError::InvalidStructure),
             ConvertError::Malformed { .. }
         ));
-        assert_eq!(from_pdf_error(PdfError::InvalidStructure).code(), "malformed");
+        assert_eq!(
+            from_pdf_error(PdfError::InvalidStructure).code(),
+            "malformed"
+        );
 
         // NotAPdf(String) → Malformed
         assert!(matches!(
@@ -115,9 +121,15 @@ mod tests {
 
         // Io(io::Error) → Io / code "io"
         let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert!(matches!(from_pdf_error(PdfError::Io(io_err)), ConvertError::Io(_)));
+        assert!(matches!(
+            from_pdf_error(PdfError::Io(io_err)),
+            ConvertError::Io(_)
+        ));
         assert_eq!(
-            from_pdf_error(PdfError::Io(std::io::Error::from(std::io::ErrorKind::NotFound))).code(),
+            from_pdf_error(PdfError::Io(std::io::Error::from(
+                std::io::ErrorKind::NotFound
+            )))
+            .code(),
             "io"
         );
     }
@@ -131,8 +143,9 @@ mod tests {
         assert_eq!(e.code(), "malformed");
 
         let e2 = runtime(None, "ort 加载失败");
-        assert!(matches!(e2, ConvertError::Malformed { part: None, ref detail }
-            if detail == "ort 加载失败"));
+        assert!(
+            matches!(e2, ConvertError::Malformed { part: None, ref detail }
+            if detail == "ort 加载失败")
+        );
     }
 }
-

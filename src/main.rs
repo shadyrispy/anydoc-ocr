@@ -119,15 +119,19 @@ fn run_batch(
         eprintln!("[batch] 目录 {} 下无受支持文档", input_dir.display());
         return Ok(());
     }
-    let output_dir = output.as_ref().ok_or_else(|| {
-        anydoc_ocr::ConvertError::Malformed {
+    let output_dir = output
+        .as_ref()
+        .ok_or_else(|| anydoc_ocr::ConvertError::Malformed {
             part: None,
             detail: "目录输入需要 --output 指定输出目录".to_string(),
-        }
-    })?;
+        })?;
     std::fs::create_dir_all(output_dir)?;
 
-    eprintln!("[batch] 发现 {} 个文档，输出到 {}", paths.len(), output_dir.display());
+    eprintln!(
+        "[batch] 发现 {} 个文档，输出到 {}",
+        paths.len(),
+        output_dir.display()
+    );
     let converter = anydoc_ocr::batch::BatchConverter::new(opts.clone(), force);
     let results = converter.convert_many(&paths);
     let mut ok = 0usize;
@@ -165,7 +169,9 @@ fn error_hint(e: &ConvertError) -> &'static str {
         // ADR-0006 审计跟进 S3：`runtime()` 把 ORT/pdfium 失败也归 Malformed（§3 既定，
         // 不能 fork 加变体）。提示文案覆盖两类原因 + 指向 detail，不单押"文档损坏"，
         // 避免对"找不到 libpdfium.so"等环境错误误导归因。
-        "malformed" => "文档损坏或运行时错误（如 ORT/pdfium 未配置）— 详见错误详情，检查文件完整性或运行环境",
+        "malformed" => {
+            "文档损坏或运行时错误（如 ORT/pdfium 未配置）— 详见错误详情，检查文件完整性或运行环境"
+        }
         "missingPart" => "文档结构不完整（缺必需部件），可能源文件生成不完整",
         "resourceLimit" => "超出安全限制（可能解压炸弹或文档过大）",
         "unsupported" => "格式不支持或需 OCR 但 ORT/pdfium 环境未配置",

@@ -14,7 +14,9 @@
 //! 补救：收集 Image 块内的 text_regions → 网格重建（复用 `crate::table_grid`），
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
 use crate::emitter::{DocumentEmitter, FlushFormat};
-use crate::reading_order::{norm_membership, order_structure, page_scale, postprocess_lines, title_level};
+use crate::reading_order::{
+    norm_membership, order_structure, page_scale, postprocess_lines, title_level,
+};
 use crate::region::Region;
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};

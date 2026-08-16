@@ -71,13 +71,7 @@ mod tests {
         let mut page = StructureResult::new("t", 0);
         let regs: Vec<TextRegion> = confs
             .iter()
-            .map(|&c| {
-                TextRegion::with_recognition(
-                    box11(),
-                    Some(Arc::from("字")),
-                    c,
-                )
-            })
+            .map(|&c| TextRegion::with_recognition(box11(), Some(Arc::from("字")), c))
             .collect();
         page.text_regions = Some(regs);
         page

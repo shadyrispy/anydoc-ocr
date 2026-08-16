@@ -40,9 +40,12 @@ pub fn render_pdf_pages(
         }
     };
 
-    let doc = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|e| runtime(None, format!("PDFium 加载 PDF 失败: {}: {e}", path.display())))?;
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
+        runtime(
+            None,
+            format!("PDFium 加载 PDF 失败: {}: {e}", path.display()),
+        )
+    })?;
 
     // 空 = 全渲；非空 = 仅渲指定索引（排序去重后集合，O(1) 判定）
     let target: Option<BTreeSet<u32>> = if page_indices.is_empty() {
@@ -81,7 +84,10 @@ fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
                 if image_count > 1 {
                     return None; // 多个 image object → 回退渲染
                 }
-                result = obj.as_image_object().and_then(|io| io.get_raw_image().ok()).map(|i| i.to_rgb8());
+                result = obj
+                    .as_image_object()
+                    .and_then(|io| io.get_raw_image().ok())
+                    .map(|i| i.to_rgb8());
             }
             PdfPageObjectType::Text => {} // 隐藏文字层（OCR 生成），不影响图像
             PdfPageObjectType::Path => path_count += 1,
@@ -107,8 +113,11 @@ fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
 pub fn render_cross_doc_fn(
     paths: Vec<std::path::PathBuf>,
     dpi: f32,
-) -> impl FnOnce(std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>) -> crate::error::Result<()> + Send + 'static
-{
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
     move |tx| {
         let so = locate_pdfium()?;
         let pdfium = match Pdfium::bind_to_library(&so) {
@@ -264,12 +273,18 @@ fn render_document(
                 format!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}"),
             ));
         }
-        let bitmap = page
-            .render(w, h, None)
-            .map_err(|e| runtime(Some(&format!("page {i}")), format!("渲染第 {i} 页失败: {e}")))?;
-        let img = bitmap
-            .as_image()
-            .map_err(|e| runtime(Some(&format!("page {i}")), format!("bitmap 转 image 失败: {e}")))?;
+        let bitmap = page.render(w, h, None).map_err(|e| {
+            runtime(
+                Some(&format!("page {i}")),
+                format!("渲染第 {i} 页失败: {e}"),
+            )
+        })?;
+        let img = bitmap.as_image().map_err(|e| {
+            runtime(
+                Some(&format!("page {i}")),
+                format!("bitmap 转 image 失败: {e}"),
+            )
+        })?;
         out.push(img.to_rgb8());
     }
     Ok(out)

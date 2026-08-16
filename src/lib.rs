@@ -13,8 +13,8 @@ pub mod models;
 pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
 pub(crate) mod ofd;
 pub(crate) mod pdf;
-pub mod quality;
 pub(crate) mod pipeline;
+pub mod quality;
 pub(crate) mod reading_order;
 pub(crate) mod region;
 pub(crate) mod table_grid;
@@ -22,8 +22,8 @@ pub(crate) mod text_health;
 pub(crate) mod timing;
 
 pub use convert::{ConvertOptions, ForceFlags, convert_to_markdown};
-pub use error::{ConvertError, Result};
 pub use detect::DocKind;
+pub use error::{ConvertError, Result};
 pub use models::OcrTier;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

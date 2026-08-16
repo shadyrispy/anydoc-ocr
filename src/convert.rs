@@ -30,7 +30,11 @@ pub struct ForceFlags {
     pub pdf_force_ocr: bool,
 }
 
-pub fn convert_to_markdown(path: &Path, opts: &ConvertOptions, force: ForceFlags) -> Result<String> {
+pub fn convert_to_markdown(
+    path: &Path,
+    opts: &ConvertOptions,
+    force: ForceFlags,
+) -> Result<String> {
     match crate::detect::detect(path) {
         DocKind::Pdf => pdf::convert_pdf(path, opts, force.pdf_force_ocr),
         DocKind::Ofd => ofd::convert_ofd(path, opts, force.ofd_force_ocr),

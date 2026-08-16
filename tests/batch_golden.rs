@@ -118,10 +118,7 @@ fn batch_matches_single_doc_output() {
         let md = match result {
             Ok(m) => m,
             Err(e) => {
-                failures.push(format!(
-                    "{}: 批处理失败: {e}",
-                    path.display()
-                ));
+                failures.push(format!("{}: 批处理失败: {e}", path.display()));
                 continue;
             }
         };
@@ -141,7 +138,10 @@ fn batch_matches_single_doc_output() {
         }
 
         // 与磁盘快照对比（保证跨 commit 稳定）
-        let snap = dir.join(format!("{}.sha256", snap_name(path.file_name().unwrap().to_str().unwrap())));
+        let snap = dir.join(format!(
+            "{}.sha256",
+            snap_name(path.file_name().unwrap().to_str().unwrap())
+        ));
         if update {
             std::fs::write(&snap, &batch_hash).expect("write snapshot");
             println!("[batch_golden] update {} -> {}", path.display(), batch_hash);
@@ -226,18 +226,15 @@ fn batch_isolates_corrupt_pdf_as_err() {
     std::fs::create_dir_all(&bogus_dir).expect("mkdir temp");
     let bogus = bogus_dir.join("corrupt.pdf");
     let mut f = std::fs::File::create(&bogus).expect("create corrupt.pdf");
-    f.write_all(b"%PDF-1.4\nthis is not a real pdf body\n%%EOF\n").expect("write");
+    f.write_all(b"%PDF-1.4\nthis is not a real pdf body\n%%EOF\n")
+        .expect("write");
     drop(f);
 
     let paths = vec![valid.clone(), bogus.clone()];
     let converter = BatchConverter::new(opts, force);
     let results = converter.convert_many(&paths);
 
-    assert_eq!(
-        results.len(),
-        2,
-        "[batch_fail] 结果数应等于输入文档数"
-    );
+    assert_eq!(results.len(), 2, "[batch_fail] 结果数应等于输入文档数");
 
     // 第一个（有效 multipage.pdf）应成功——错误隔离：单文档失败不炸整批
     assert!(

@@ -92,10 +92,8 @@ impl BatchConverter {
                 Err(e) => {
                     // pipeline 整体失败（绑定/ORT 致命错误）→ 该批 ocr_paths 全标 Err
                     for (orig_idx, _) in &ocr_paths {
-                        slots[*orig_idx] = Some(Err(runtime(
-                            None,
-                            format!("跨文档 OCR 失败: {e}"),
-                        )));
+                        slots[*orig_idx] =
+                            Some(Err(runtime(None, format!("跨文档 OCR 失败: {e}"))));
                     }
                 }
             }
@@ -163,7 +161,5 @@ fn is_supported_doc(path: &Path) -> bool {
 
 fn is_temp_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name.ends_with(".tmp")
-        || name.ends_with(".crdownload")
-        || name.starts_with("~$")
+    name.ends_with(".tmp") || name.ends_with(".crdownload") || name.starts_with("~$")
 }

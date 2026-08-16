@@ -20,6 +20,7 @@ use ofd_core::model::graphics::{ImageObject, PageBlock};
 use ofd_core::model::page::PageObject;
 use ofd_core::{LoadedDocument, OfdReader, RenderOptions, parent_dir, resolve_path};
 
+use crate::ConvertOptions;
 use crate::emitter::{DocumentEmitter, FlushFormat};
 use crate::error::{Result as CResult, from_ofd_error, runtime};
 use crate::gfm_adapter;
@@ -28,7 +29,6 @@ use crate::reading_order;
 use crate::region::Region;
 use crate::table_grid;
 use crate::timing::StageTimer;
-use crate::ConvertOptions;
 
 /// OFD 文字层提取的文本行：x0, x1, y0, y1（左、右、上、下，文档坐标），text。
 #[derive(Debug, Clone)]
@@ -73,9 +73,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> C
     let mut pages: Vec<PageData> = Vec::new();
 
     for (body_idx, body) in doc_bodies.iter().enumerate() {
-        let doc = reader
-            .load_document(body)
-            .map_err(from_ofd_error)?;
+        let doc = reader.load_document(body).map_err(from_ofd_error)?;
         let page_count = doc.pages().len();
         for idx in 0..page_count {
             let page_ref = &doc.pages()[idx];
@@ -91,8 +89,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> C
             let texts = collect_text_lines(&page);
             let text_len: usize = texts.iter().map(|line| line.text.chars().count()).sum();
             let img_count = count_images(&page);
-            let is_image =
-                ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
+            let is_image = ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
                 // P3：图片型页延迟渲染——记录 (body_idx, page_idx) 待第二遍流水线，
@@ -148,40 +145,39 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> C
     // 页在第一遍循环内已用 opts.dpi 渲染（页型判定时同步渲染），改 dpi 会与已渲染图
     // 矛盾；路径 B 走 ADR-0008 直提（downscale 按 dpi×12 控内存），dpi 敏感度低于
     // PDFium 整页光栅化。探针失败（渲染/OCR/装载）回退 opts.ocr_tier，不阻断。
-    let has_ocr_pages = pages.iter().any(|p| {
-        matches!(p, PageData::OcrFull(_) | PageData::OcrPendingImage { .. })
-    });
-    let route_tier: crate::models::OcrTier = if has_ocr_pages
-        && opts.quality_route == crate::quality::QualityRoute::Auto
-    {
-        const PROBE_DPI: f64 = 100.0;
-        let mut needs: Option<bool> = None;
-        if let Some(first_body) = doc_bodies.first() {
-            if let Ok(doc) = reader.load_document(first_body)
-                && let Ok(rgba) = reader
-                    .render_page_to_image(&doc, 0, &RenderOptions::with_dpi(PROBE_DPI))
-                && let Ok(engine) = crate::ocr_engine::OcrEngine::build(
-                    crate::models::OcrTier::Tiny,
-                    opts.ocr_layout,
-                )
-                && let Ok(pages_r) = engine.predict(
-                    vec![image::DynamicImage::ImageRgba8(rgba).to_rgb8()],
-                    1,
-                    None,
-                )
-                && let Some(page) = pages_r.first()
-            {
-                needs = Some(crate::quality::needs_upgrade(page));
+    let has_ocr_pages = pages
+        .iter()
+        .any(|p| matches!(p, PageData::OcrFull(_) | PageData::OcrPendingImage { .. }));
+    let route_tier: crate::models::OcrTier =
+        if has_ocr_pages && opts.quality_route == crate::quality::QualityRoute::Auto {
+            const PROBE_DPI: f64 = 100.0;
+            let mut needs: Option<bool> = None;
+            if let Some(first_body) = doc_bodies.first() {
+                if let Ok(doc) = reader.load_document(first_body)
+                    && let Ok(rgba) =
+                        reader.render_page_to_image(&doc, 0, &RenderOptions::with_dpi(PROBE_DPI))
+                    && let Ok(engine) = crate::ocr_engine::OcrEngine::build(
+                        crate::models::OcrTier::Tiny,
+                        opts.ocr_layout,
+                    )
+                    && let Ok(pages_r) = engine.predict(
+                        vec![image::DynamicImage::ImageRgba8(rgba).to_rgb8()],
+                        1,
+                        None,
+                    )
+                    && let Some(page) = pages_r.first()
+                {
+                    needs = Some(crate::quality::needs_upgrade(page));
+                }
             }
-        }
-        match needs {
-            Some(true) => crate::models::OcrTier::Small,
-            Some(false) => crate::models::OcrTier::Tiny,
-            None => opts.ocr_tier,
-        }
-    } else {
-        opts.ocr_tier
-    };
+            match needs {
+                Some(true) => crate::models::OcrTier::Small,
+                Some(false) => crate::models::OcrTier::Tiny,
+                None => opts.ocr_tier,
+            }
+        } else {
+            opts.ocr_tier
+        };
 
     // 路径 A：F3 乱码页批量 OCR（少量，已渲染）
     if !full_imgs.is_empty() {
@@ -191,7 +187,11 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> C
             route_tier,
             opts.ocr_layout,
             opts.threads,
-            if timings.enabled() { Some(&timings) } else { None },
+            if timings.enabled() {
+                Some(&timings)
+            } else {
+                None
+            },
         )?;
         timings.report();
         for (page, res) in full_pages.into_iter().zip(results) {
@@ -258,7 +258,11 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> C
             render_fn,
             engine,
             opts.threads,
-            if timings.enabled() { Some(timings.clone()) } else { None },
+            if timings.enabled() {
+                Some(timings.clone())
+            } else {
+                None
+            },
         )
         .run()?;
         t.stage("ocr");
@@ -385,10 +389,10 @@ fn try_extract_ofd_page_image(
             if mm.id.value() == resource_id {
                 let media_path = resolve_path(&data_base, &mm.media_file);
                 if let Ok(bytes) = reader.package_mut().read(&media_path) {
-                        if let Ok(img) = image::load_from_memory(&bytes) {
-                            return Some(crate::pdf::render::downscale_to_dpi(img.to_rgb8(), dpi));
-                        }
+                    if let Ok(img) = image::load_from_memory(&bytes) {
+                        return Some(crate::pdf::render::downscale_to_dpi(img.to_rgb8(), dpi));
                     }
+                }
                 return None; // 找到资源但读取/解码失败 → 回退渲染
             }
         }
@@ -420,10 +424,12 @@ fn render_page(
 ) -> CResult<RgbImage> {
     let img: RgbaImage = reader
         .render_page_to_image(doc, idx, &RenderOptions::with_dpi(opts.dpi.into()))
-        .map_err(|e| runtime(
-            Some(&format!("OFD page {idx}")),
-            format!("渲染 OFD 第 {idx} 页失败: {e}"),
-        ))?;
+        .map_err(|e| {
+            runtime(
+                Some(&format!("OFD page {idx}")),
+                format!("渲染 OFD 第 {idx} 页失败: {e}"),
+            )
+        })?;
     Ok(image::DynamicImage::ImageRgba8(img).to_rgb8())
 }
 

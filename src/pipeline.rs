@@ -20,8 +20,8 @@
 //!
 //! P4 预加载折叠：detect 判定走 OCR 后，render 线程 spawn 前 `thread::spawn` 后台
 //! `OcrEngine::build`，与渲染并行。build 失败 → run() 返回 Err（原本也是）。
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 
 use crate::error::{ConvertError, Result, runtime};
@@ -43,10 +43,7 @@ pub(crate) type RenderItem =
 ///
 /// 约束 `Send`：闭包捕获 path 等 Send 数据，在 spawn 内执行（doc 在闭包内 open，
 /// 不跨线程）。
-pub trait RenderFn:
-    FnOnce(mpsc::SyncSender<RenderItem>) -> Result<()> + Send + 'static
-{
-}
+pub trait RenderFn: FnOnce(mpsc::SyncSender<RenderItem>) -> Result<()> + Send + 'static {}
 impl<F: FnOnce(mpsc::SyncSender<RenderItem>) -> Result<()> + Send + 'static> RenderFn for F {}
 
 /// render↔OCR 流水线：渲染线程 + rayon OCR 池 + 有界背压。
@@ -114,7 +111,10 @@ impl<F: RenderFn> PagePipeline<F> {
 
         // OCR 消费：rayon scope 并发，按 (doc_idx, page_idx) 回填到 BTreeMap
         let results: std::sync::Mutex<
-            std::collections::BTreeMap<(usize, usize), Result<oar_ocr::domain::structure::StructureResult>>,
+            std::collections::BTreeMap<
+                (usize, usize),
+                Result<oar_ocr::domain::structure::StructureResult>,
+            >,
         > = std::sync::Mutex::new(std::collections::BTreeMap::new());
         // 渲染失败（单页 / 整文档）的错误，按 idx 收集供调用方回填。
         let render_errors: std::sync::Mutex<
@@ -141,7 +141,11 @@ impl<F: RenderFn> PagePipeline<F> {
                     let start = std::time::Instant::now();
                     let r = engine.analyzer.predict_images(vec![img]);
                     if let Some(t) = timings {
-                        t.record(idx.1, PageStage::Ocr, start.elapsed().as_secs_f64() * 1000.0);
+                        t.record(
+                            idx.1,
+                            PageStage::Ocr,
+                            start.elapsed().as_secs_f64() * 1000.0,
+                        );
                     }
                     let res = match r.into_iter().next() {
                         Some(Ok(s)) => Ok(s),
