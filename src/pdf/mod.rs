@@ -80,6 +80,9 @@ pub(crate) fn convert_pdf_ocr(
     if paths.is_empty() {
         return Ok(Vec::new());
     }
+    // F2：pipeline 主路径直接 `OcrEngine::build`，不经 `ocr_images`，须在此先提交
+    // 进程级 ORT 线程池（Ticket A）：任何 ONNX session 创建前调用才生效。
+    crate::ocr_engine::init_runtime(opts.threads);
     // ADR-0007：质量路由（后验置信度门控）。Auto 时 tiny 渲染+OCR 首文档首页，
     // 平均置信度低于阈值 → 升级 small 全篇重跑；Off 用显式 opts.ocr_tier。
     // 探针失败不阻断，回退显式参数。dpi 始终由用户显式控制（后验只升级 tier，
@@ -149,11 +152,22 @@ fn classify_doc_errors(
 /// ADR-0007（后验）：tiny 渲染+OCR 首文档首页 → 平均置信度 → 是否升级 small。
 /// 返回 `Some(true)` 升级、`Some(false)` 维持 tiny；探针失败（渲染/OCR）返回 Ok(None)，
 /// 调用方回退显式参数。探针仅 1 页 tiny，开销最小。
+///
+/// F1：任何一步失败（坏 PDF/缺页/模型缺失）都吞掉返回 Ok(None)，不得使整批 OCR 挂掉。
 fn probe_first_doc_confidence(path: &Path, opts: &ConvertOptions) -> Result<Option<bool>> {
-    let imgs = render::render_pdf_pages(path, opts.dpi, &[0])?;
+    let imgs = match render::render_pdf_pages(path, opts.dpi, &[0]) {
+        Ok(imgs) => imgs,
+        Err(_) => return Ok(None),
+    };
     // 探针固定用 tiny：本就是要判定 tiny 是否够用
-    let engine = crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout)?;
-    let pages = engine.predict(imgs, 1, None)?;
+    let engine = match crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    let pages = match engine.predict(imgs, 1, None) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
     let Some(page) = pages.first() else {
         return Ok(None);
     };

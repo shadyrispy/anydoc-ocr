@@ -60,6 +60,9 @@ enum PageData {
 /// OFD → Markdown 总入口。
 pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> CResult<String> {
     let mut t = StageTimer::new();
+    // F2：OFD 主路径直接 `OcrEngine::build`（探针/路径 B），不经 `ocr_images`，
+    // 须在首个 ONNX session 创建前提交进程级 ORT 线程池（Ticket A）。
+    crate::ocr_engine::init_runtime(opts.threads);
     let mut reader = OfdReader::open(path).map_err(from_ofd_error)?;
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
     let doc_bodies = reader.ofd().doc_bodies.clone();

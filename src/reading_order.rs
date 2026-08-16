@@ -409,8 +409,12 @@ fn merge_into_paragraphs(lines: &[(f32, String)]) -> Vec<String> {
     let mut cur = lines[0].1.clone();
     for w in lines.windows(2) {
         let gap = (w[1].0 - w[0].0).abs();
-        let next_is_heading = w[1].1.starts_with('#');
-        let cur_is_heading = w[0].1.starts_with('#');
+        // F3：标题检测需同时覆盖两条通路——OCR 通路标题前缀(`#`)在装配后才加，
+        // 合并时只有编号启发式(`title_level`)可用；文字层通路行已带 `#` 前缀。
+        // 两者取并集，否则任一路径的标题行都可能被并入正文段。
+        let is_heading = |s: &str| title_level(s).is_some() || s.trim_start().starts_with('#');
+        let next_is_heading = is_heading(&w[1].1);
+        let cur_is_heading = is_heading(&w[0].1);
         // 标题行强制独段；间距超阈值则分段
         if cur_is_heading || next_is_heading || gap > merge_threshold {
             out.push(std::mem::take(&mut cur));

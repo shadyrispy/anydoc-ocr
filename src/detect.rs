@@ -1,5 +1,5 @@
 //! 格式检测：PDF / OFD / 其他（anydoc 支持的格式）
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,16 +21,17 @@ pub fn detect(path: &Path) -> DocKind {
     if &head == b"%PDF" {
         return DocKind::Pdf;
     }
-    if &head == b"PK\x03\x04" && is_ofd_zip(path) {
+    // F5：复用已打开的句柄（seek 回 0），避免对同一路径二次 open。
+    if &head == b"PK\x03\x04" && is_ofd_zip(&mut f) {
         return DocKind::Ofd;
     }
     DocKind::Other
 }
 
-fn is_ofd_zip(path: &Path) -> bool {
-    let Ok(f) = std::fs::File::open(path) else {
+fn is_ofd_zip(f: &mut std::fs::File) -> bool {
+    if f.seek(SeekFrom::Start(0)).is_err() {
         return false;
-    };
+    }
     let Ok(z) = zip::ZipArchive::new(f) else {
         return false;
     };
