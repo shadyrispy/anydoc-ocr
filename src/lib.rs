@@ -21,7 +21,7 @@ pub(crate) mod table_grid;
 pub(crate) mod text_health;
 pub(crate) mod timing;
 
-pub use convert::{ConvertOptions, convert_to_markdown};
+pub use convert::{ConvertOptions, ForceFlags, convert_to_markdown};
 pub use error::{ConvertError, Result};
 pub use detect::DocKind;
 pub use models::OcrTier;

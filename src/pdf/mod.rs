@@ -41,11 +41,11 @@ pub mod render;
 mod text_layer;
 pub(crate) use text_layer::text_layer_markdown;
 
-pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
+pub fn convert_pdf(path: &Path, opts: &ConvertOptions, pdf_force_ocr: bool) -> Result<String> {
     let mut t = StageTimer::new();
     // 文字型：pdf-inspector 提取 + 自建阅读顺序；非文字型/失败回退 OCR。
-    // --pdf-force-ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
-    if !opts.pdf_force_ocr
+    // pdf_force_ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
+    if !pdf_force_ocr
         && let Some(md) = text_layer_markdown(path, opts)?
     {
         return Ok(md);
@@ -54,25 +54,29 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     let path_buf = path.to_path_buf();
     let mut out = convert_pdf_ocr(std::slice::from_ref(&path_buf), opts)?;
     t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
-    Ok(out.pop().map(|(_, md)| md).unwrap_or_default())
+    // 单文档：唯一 doc 的 Result 直接透传（Err 能带真实 detail，ADR 候选 3）。
+    match out.pop().map(|(_, r)| r) {
+        Some(Ok(md)) => Ok(md),
+        Some(Err(e)) => Err(e),
+        None => Ok(String::new()),
+    }
 }
 
 /// 跨文档图片型 PDF OCR（ADR-0005 候选 2）。
 ///
 /// 入参 `paths` 为预分流后的图片型 PDF 列表（已确认无可用文字层，或
-/// `pdf_force_ocr` 强制）。返回 `Vec<(doc_idx, markdown)>` 按 doc_idx 升序——
+/// `pdf_force_ocr` 强制）。返回 `Vec<(doc_idx, Result<String>)>` 按 doc_idx 升序——
 /// doc_idx 与入参 paths 的索引一一对应，调用方据此回填每文档的 Result。
+/// 每文档独立 Result：整文档打开失败/全页渲染失败 → 该 doc_idx 对应 Err（带真实
+/// detail，ADR 候选 3），其它文档不受影响（错误隔离）。
 ///
 /// 跨文档 render 闭包逐 doc open + 逐页渲染，OCR 池跨文档消费，文档边界不停顿。
-/// pipeline 返回 `Vec<((doc_idx, page_idx), StructureResult)>` 按复合键升序，
-/// 此处按 doc_idx 分组（同组内 page_idx 升序）逐 doc 跑 `structure_results_to_gfm`。
-///
-/// 错误传播：pipeline 整体失败（绑定/ORT）→ 整批 Err；单页渲染失败已在该页
-/// 缺失（pipeline 内 continue），调用方按 doc_idx 容错（缺失 doc 的 markdown 为空）。
+/// pipeline 返回 `(成功页, 渲染错误)` 按复合键升序，此处按 doc_idx 分组（同组内
+/// page_idx 升序）逐 doc 跑 `structure_results_to_gfm`。
 pub(crate) fn convert_pdf_ocr(
     paths: &[PathBuf],
     opts: &ConvertOptions,
-) -> Result<Vec<(usize, String)>> {
+) -> Result<Vec<(usize, Result<String>)>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -91,7 +95,7 @@ pub(crate) fn convert_pdf_ocr(
     let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr_layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
-    let results = crate::pipeline::PagePipeline::new(
+    let (results, render_errors) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.threads,
@@ -107,12 +111,39 @@ pub(crate) fn convert_pdf_ocr(
     for ((doc_idx, _page_idx), res) in results {
         by_doc.entry(doc_idx).or_default().push(res);
     }
+    // 整文档失败（哨兵页 usize::MAX 标记打开失败）→ 该 doc_idx 标 Err（带真实 detail）。
+    // 单页失败（page < usize::MAX）不标错——该 doc 其余页仍产出，保错误隔离。
+    let mut doc_errors = classify_doc_errors(render_errors);
     let mut out = Vec::with_capacity(paths.len());
     for (doc_idx, pages) in by_doc {
-        let md = gfm_adapter::structure_results_to_gfm(&pages);
-        out.push((doc_idx, md));
+        if let Some(e) = doc_errors.remove(&doc_idx) {
+            out.push((doc_idx, Err(e)));
+        } else {
+            let md = gfm_adapter::structure_results_to_gfm(&pages);
+            out.push((doc_idx, Ok(md)));
+        }
     }
+    // 整批路径中无任何成功页的 doc（打开失败）——已由 doc_errors 覆盖；若
+    // 仍有 doc_idx 完全缺失但无错误（理论不出现），补兜底 Err。
+    for (doc_idx, e) in doc_errors {
+        out.push((doc_idx, Err(e)));
+    }
+    out.sort_by_key(|(i, _)| *i);
     Ok(out)
+}
+
+/// 从渲染错误列表提取「整文档错误」：哨兵页 `usize::MAX` 标记打开失败，其余单页
+/// 失败（page < usize::MAX）不标错——该 doc 其余页仍产出，保错误隔离（ADR 候选 3）。
+fn classify_doc_errors(
+    render_errors: Vec<((usize, usize), crate::error::ConvertError)>,
+) -> BTreeMap<usize, crate::error::ConvertError> {
+    let mut doc_errors: BTreeMap<usize, crate::error::ConvertError> = BTreeMap::new();
+    for ((doc_idx, page_idx), e) in render_errors {
+        if page_idx == usize::MAX {
+            doc_errors.insert(doc_idx, e);
+        }
+    }
+    doc_errors
 }
 
 /// ADR-0007（后验）：tiny 渲染+OCR 首文档首页 → 平均置信度 → 是否升级 small。
@@ -127,4 +158,34 @@ fn probe_first_doc_confidence(path: &Path, opts: &ConvertOptions) -> Result<Opti
         return Ok(None);
     };
     Ok(Some(crate::quality::needs_upgrade(page)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::runtime;
+
+    /// ADR 候选 3 契约：哨兵页 usize::MAX → 该 doc 标 Err；单页失败（page < MAX）
+    /// 不标错（保错误隔离）。多 doc 只影响对应 doc。
+    #[test]
+    fn classify_doc_errors_sentinel_marks_whole_doc() {
+        let errs = vec![
+            ((0, usize::MAX), runtime(Some("doc 0"), "打开 0 失败")),
+            ((1, 0), runtime(Some("doc 1 page 0"), "单页渲染失败")),
+            ((2, usize::MAX), runtime(Some("doc 2"), "打开 2 失败")),
+        ];
+        let doc_errors = classify_doc_errors(errs);
+        // 哨兵页 doc 标记为 Err
+        assert_eq!(doc_errors.len(), 2);
+        assert!(doc_errors.contains_key(&0));
+        assert!(doc_errors.contains_key(&2));
+        // 单页失败(doc 1)不标错
+        assert!(!doc_errors.contains_key(&1));
+    }
+
+    /// ADR 候选 3 契约：空渲染错误 → 空 doc 错误。
+    #[test]
+    fn classify_doc_errors_empty_input() {
+        assert!(classify_doc_errors(vec![]).is_empty());
+    }
 }

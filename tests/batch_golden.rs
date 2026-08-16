@@ -13,7 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::PathBuf;
 
-use anydoc_ocr::{ConvertOptions, batch::BatchConverter, convert_to_markdown};
+use anydoc_ocr::{ConvertOptions, ForceFlags, batch::BatchConverter, convert_to_markdown};
 
 /// (相对 CARGO_MANIFEST_DIR 的样本路径, 是否需 OCR)
 fn samples() -> Vec<(&'static str, bool)> {
@@ -94,7 +94,7 @@ fn batch_matches_single_doc_output() {
     // 单文档基准
     let mut single_hashes: Vec<String> = Vec::with_capacity(paths.len());
     for p in &paths {
-        let md = match convert_to_markdown(p, &opts) {
+        let md = match convert_to_markdown(p, &opts, ForceFlags::default()) {
             Ok(m) => m,
             Err(e) => panic!("[batch_golden] 单文档 {} 转换失败: {e}", p.display()),
         };
@@ -102,7 +102,7 @@ fn batch_matches_single_doc_output() {
     }
 
     // 批处理：所有样本一次性送入 BatchConverter
-    let converter = BatchConverter::new(opts.clone());
+    let converter = BatchConverter::new(opts.clone(), ForceFlags::default());
     let results = converter.convert_many(&paths);
     assert_eq!(
         results.len(),
@@ -202,9 +202,12 @@ fn batch_isolates_corrupt_pdf_as_err() {
     let opts = ConvertOptions {
         dpi: 100.0,
         threads: 4,
-        // force_ocr 让伪 PDF 直接进 ocr_paths，绕过 text_layer 预分流
-        // （text_layer_markdown 对损坏 PDF 会返回 Ok(None) 也会进 ocr_paths，
-        //  但 force_ocr 路径更直接、不依赖 pdf-inspector 的容错行为）
+        ..Default::default()
+    };
+    // force_ocr 让伪 PDF 直接进 ocr_paths，绕过 text_layer 预分流
+    // （text_layer_markdown 对损坏 PDF 会返回 Ok(None) 也会进 ocr_paths，
+    //  但 force_ocr 路径更直接、不依赖 pdf-inspector 的容错行为）
+    let force = ForceFlags {
         pdf_force_ocr: true,
         ..Default::default()
     };
@@ -227,7 +230,7 @@ fn batch_isolates_corrupt_pdf_as_err() {
     drop(f);
 
     let paths = vec![valid.clone(), bogus.clone()];
-    let converter = BatchConverter::new(opts);
+    let converter = BatchConverter::new(opts, force);
     let results = converter.convert_many(&paths);
 
     assert_eq!(

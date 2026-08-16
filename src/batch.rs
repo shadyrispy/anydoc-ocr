@@ -18,16 +18,17 @@ use std::path::{Path, PathBuf};
 use crate::convert_to_markdown;
 use crate::detect::DocKind;
 use crate::error::{Result, runtime};
-use crate::ConvertOptions;
+use crate::{ConvertOptions, ForceFlags};
 
 /// 批处理转换器：跨文档复用 OCR 引擎（ADR-0005）。
 pub struct BatchConverter {
     opts: ConvertOptions,
+    force: ForceFlags,
 }
 
 impl BatchConverter {
-    pub fn new(opts: ConvertOptions) -> Self {
-        Self { opts }
+    pub fn new(opts: ConvertOptions, force: ForceFlags) -> Self {
+        Self { opts, force }
     }
 
     /// 批量转换：每文档独立 Result（错误隔离），OCR 引擎跨文档复用。
@@ -54,7 +55,7 @@ impl BatchConverter {
             match crate::pdf::text_layer_markdown(path, &self.opts) {
                 Ok(Some(md)) => {
                     // 命中文字层：force_ocr 时忽略文字层结果送 OCR，否则出结果
-                    if self.opts.pdf_force_ocr {
+                    if self.force.pdf_force_ocr {
                         ocr_paths.push((i, path.clone()));
                     } else {
                         slots[i] = Some(Ok(md));
@@ -79,25 +80,13 @@ impl BatchConverter {
             let just_paths: Vec<PathBuf> = ocr_paths.iter().map(|(_, p)| p.clone()).collect();
             match crate::pdf::convert_pdf_ocr(&just_paths, &self.opts) {
                 Ok(md_per_doc) => {
-                    // convert_pdf_ocr 返回 Vec<(doc_idx, md)> 按 doc_idx 升序；
-                    // doc_idx 与 just_paths 索引一一对应，回填到原始 paths 槽位。
+                    // convert_pdf_ocr 返回 Vec<(doc_idx, Result<String>)> 按 doc_idx
+                    // 升序；每文档独立 Result。doc_idx 与 just_paths 索引一一对应，
+                    // 回填到原始 paths 槽位。Err doc 带真实 detail（ADR 候选 3）——
+                    // 不再需要"槽位缺失→猜 Err(详见 stderr)"的兜底。
                     for (doc_idx, md) in md_per_doc {
                         let (orig_idx, _) = &ocr_paths[doc_idx];
-                        slots[*orig_idx] = Some(Ok(md));
-                    }
-                    // pipeline 整体 Ok 但某 doc_idx 缺失 = 该 doc 在 render_cross_doc_fn
-                    // 内打开失败被 `eprintln + continue` 跳过（render.rs），或所有页
-                    // 渲染失败被 pipeline.rs 过滤。ADR-0005 错误隔离：每文档独立 Result，
-                    // 失败必须走 Err 通道（不能伪装成 Ok(空串) 导致 main.rs 计入成功 +
-                    // 写出空 .md 文件，造成静默数据丢失）。
-                    // ADR-0006：错误类型 ConvertError，归 Malformed（运行时错误）。
-                    for (orig_idx, _) in &ocr_paths {
-                        if slots[*orig_idx].is_none() {
-                            slots[*orig_idx] = Some(Err(runtime(
-                                None,
-                                "文档 OCR 缺失：所有页渲染失败或文档无法打开（详见 stderr）",
-                            )));
-                        }
+                        slots[*orig_idx] = Some(md);
                     }
                 }
                 Err(e) => {
@@ -115,7 +104,7 @@ impl BatchConverter {
         // 3) 非 PDF 文档（OFD/docx/xlsx/pptx）per-doc 转换
         for (i, path) in paths.iter().enumerate() {
             if slots[i].is_none() {
-                slots[i] = Some(convert_to_markdown(path, &self.opts));
+                slots[i] = Some(convert_to_markdown(path, &self.opts, self.force));
             }
         }
 

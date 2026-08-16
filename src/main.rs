@@ -63,11 +63,13 @@ fn main() -> Result<()> {
     let opts = anydoc_ocr::ConvertOptions {
         ocr_tier: cli.ocr_tier,
         ocr_layout: cli.ocr_layout,
-        ofd_force_ocr: cli.ofd_force_ocr,
-        pdf_force_ocr: cli.pdf_force_ocr,
         threads,
         dpi: cli.dpi,
         quality_route: cli.quality_route,
+    };
+    let force = anydoc_ocr::ForceFlags {
+        ofd_force_ocr: cli.ofd_force_ocr,
+        pdf_force_ocr: cli.pdf_force_ocr,
     };
 
     if cli.input == "-" {
@@ -77,7 +79,7 @@ fn main() -> Result<()> {
             Ok(v) => v,
             Err(e) => exit_with_hint(&e),
         };
-        let md = match convert_to_markdown(&path, &opts) {
+        let md = match convert_to_markdown(&path, &opts, force) {
             Ok(md) => md,
             Err(e) => exit_with_hint(&e),
         };
@@ -87,9 +89,9 @@ fn main() -> Result<()> {
 
     let input = PathBuf::from(&cli.input);
     if input.is_dir() {
-        run_batch(&input, &opts, &cli.output)?;
+        run_batch(&input, &opts, force, &cli.output)?;
     } else {
-        let md = match convert_to_markdown(&input, &opts) {
+        let md = match convert_to_markdown(&input, &opts, force) {
             Ok(md) => md,
             Err(e) => exit_with_hint(&e),
         };
@@ -109,6 +111,7 @@ fn exit_with_hint(e: &ConvertError) -> ! {
 fn run_batch(
     input_dir: &PathBuf,
     opts: &anydoc_ocr::ConvertOptions,
+    force: anydoc_ocr::ForceFlags,
     output: &Option<PathBuf>,
 ) -> Result<()> {
     let paths = anydoc_ocr::batch::collect_documents(input_dir);
@@ -125,7 +128,7 @@ fn run_batch(
     std::fs::create_dir_all(output_dir)?;
 
     eprintln!("[batch] 发现 {} 个文档，输出到 {}", paths.len(), output_dir.display());
-    let converter = anydoc_ocr::batch::BatchConverter::new(opts.clone());
+    let converter = anydoc_ocr::batch::BatchConverter::new(opts.clone(), force);
     let results = converter.convert_many(&paths);
     let mut ok = 0usize;
     let mut fail = 0usize;

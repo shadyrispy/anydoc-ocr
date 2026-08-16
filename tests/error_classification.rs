@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 
-use anydoc_ocr::{convert_to_markdown, ConvertOptions};
+use anydoc_ocr::{convert_to_markdown, ConvertOptions, ForceFlags};
 
 fn sample(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/samples").join(name)
@@ -30,7 +30,7 @@ fn expect_code(path: &PathBuf, expected_code: &str, label: &str) {
         return;
     }
     let opts = ConvertOptions::default();
-    match convert_to_markdown(path, &opts) {
+    match convert_to_markdown(path, &opts, ForceFlags::default()) {
         Ok(md) => panic!(
             "[err_cls] {label} 应失败但成功（len={}）\n--- 输出前 200 字 ---\n{}",
             md.len(),
@@ -80,7 +80,7 @@ fn batch_intercepts_encrypted_pdf() {
         return;
     }
     let opts = ConvertOptions::default();
-    let converter = BatchConverter::new(opts);
+    let converter = BatchConverter::new(opts, ForceFlags::default());
     let results = converter.convert_many(&[encrypted.clone()]);
     assert_eq!(results.len(), 1, "[err_cls] batch 应返回 1 个结果");
     match &results[0] {

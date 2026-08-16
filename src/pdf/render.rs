@@ -126,7 +126,15 @@ pub fn render_cross_doc_fn(
             let doc = match pdfium.load_pdf_from_file(path, None) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("[pipeline] 跨文档渲染：打开 {} 失败: {e}", path.display());
+                    // 整文档打开失败 → 结构化回传（ADR 候选 3）。用哨兵页号 usize::MAX
+                    // 标记"整文档"错误，batch 借此回填真实 detail，而非"详见 stderr"占位。
+                    let _ = tx.send(Err((
+                        (doc_idx, usize::MAX),
+                        runtime(
+                            Some(&format!("doc {doc_idx}")),
+                            format!("打开 {} 失败: {e}", path.display()),
+                        ),
+                    )));
                     continue;
                 }
             };
