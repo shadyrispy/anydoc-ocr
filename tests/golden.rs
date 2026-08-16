@@ -14,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::PathBuf;
 
-use anydoc_ocr::{ConvertOptions, convert_to_markdown};
+use anydoc_ocr::{ConvertOptions, ForceFlags, convert_to_markdown};
 
 /// (相对 CARGO_MANIFEST_DIR 的样本路径, 是否需 OCR 引擎)
 fn samples() -> Vec<(&'static str, bool)> {
@@ -97,7 +97,7 @@ fn golden_outputs_are_stable() {
             skipped.push(format!("{rel} (missing)"));
             continue;
         }
-        let md = match convert_to_markdown(&path, &opts) {
+        let md = match convert_to_markdown(&path, &opts, ForceFlags::default()) {
             Ok(m) => m,
             Err(e) => {
                 failures.push(format!("{rel}: convert error: {e}"));

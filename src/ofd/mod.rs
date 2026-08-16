@@ -58,7 +58,7 @@ enum PageData {
 }
 
 /// OFD → Markdown 总入口。
-pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
+pub fn convert_ofd(path: &Path, opts: &ConvertOptions, ofd_force_ocr: bool) -> CResult<String> {
     let mut t = StageTimer::new();
     let mut reader = OfdReader::open(path).map_err(from_ofd_error)?;
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
@@ -89,7 +89,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             let text_len: usize = texts.iter().map(|line| line.text.chars().count()).sum();
             let img_count = count_images(&page);
             let is_image =
-                opts.ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
+                ofd_force_ocr || (text_len < IMAGE_PAGE_MIN_TEXT_CHARS && img_count > 0);
 
             if is_image {
                 // P3：图片型页延迟渲染——记录 (body_idx, page_idx) 待第二遍流水线，

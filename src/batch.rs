@@ -18,16 +18,17 @@ use std::path::{Path, PathBuf};
 use crate::convert_to_markdown;
 use crate::detect::DocKind;
 use crate::error::{Result, runtime};
-use crate::ConvertOptions;
+use crate::{ConvertOptions, ForceFlags};
 
 /// 批处理转换器：跨文档复用 OCR 引擎（ADR-0005）。
 pub struct BatchConverter {
     opts: ConvertOptions,
+    force: ForceFlags,
 }
 
 impl BatchConverter {
-    pub fn new(opts: ConvertOptions) -> Self {
-        Self { opts }
+    pub fn new(opts: ConvertOptions, force: ForceFlags) -> Self {
+        Self { opts, force }
     }
 
     /// 批量转换：每文档独立 Result（错误隔离），OCR 引擎跨文档复用。
@@ -54,7 +55,7 @@ impl BatchConverter {
             match crate::pdf::text_layer_markdown(path, &self.opts) {
                 Ok(Some(md)) => {
                     // 命中文字层：force_ocr 时忽略文字层结果送 OCR，否则出结果
-                    if self.opts.pdf_force_ocr {
+                    if self.force.pdf_force_ocr {
                         ocr_paths.push((i, path.clone()));
                     } else {
                         slots[i] = Some(Ok(md));
@@ -103,7 +104,7 @@ impl BatchConverter {
         // 3) 非 PDF 文档（OFD/docx/xlsx/pptx）per-doc 转换
         for (i, path) in paths.iter().enumerate() {
             if slots[i].is_none() {
-                slots[i] = Some(convert_to_markdown(path, &self.opts));
+                slots[i] = Some(convert_to_markdown(path, &self.opts, self.force));
             }
         }
 
