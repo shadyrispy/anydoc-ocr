@@ -76,13 +76,18 @@ pub(crate) fn convert_pdf_ocr(
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    // ADR-0007：质量路由。Auto 时渲染首文档前 3 页评估 → 自动选 tier/dpi；
-    // Off 用显式 opts.ocr_tier/opts.dpi。评估失败不阻断，回退显式参数。
-    let (tier, dpi) = if opts.quality_route == crate::quality::QualityRoute::Auto {
-        route_first_doc_quality(&paths[0], opts.dpi).unwrap_or((opts.ocr_tier, opts.dpi))
+    // ADR-0007：质量路由（后验置信度门控）。Auto 时 tiny 渲染+OCR 首文档首页，
+    // 平均置信度低于阈值 → 升级 small 全篇重跑；Off 用显式 opts.ocr_tier。
+    // 探针失败不阻断，回退显式参数。dpi 始终由用户显式控制（后验只升级 tier，
+    // 不再改 dpi）。
+    let tier = if opts.quality_route == crate::quality::QualityRoute::Auto {
+        probe_first_doc_confidence(&paths[0], opts)?
+            .map(|needs| if needs { crate::models::OcrTier::Small } else { crate::models::OcrTier::Tiny })
+            .unwrap_or(opts.ocr_tier)
     } else {
-        (opts.ocr_tier, opts.dpi)
+        opts.ocr_tier
     };
+    let dpi = opts.dpi;
     let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr_layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
@@ -110,16 +115,16 @@ pub(crate) fn convert_pdf_ocr(
     Ok(out)
 }
 
-/// ADR-0007：渲染首文档前 3 页（100dpi 探针）→ 质量评估 → 路由档位。
-/// 评估失败返回 None，调用方回退显式参数。探针仅 3 页，开销 <20ms。
-fn route_first_doc_quality(path: &Path, base_dpi: f32) -> Option<(crate::models::OcrTier, f32)> {
-    const PROBE_DPI: f32 = 100.0;
-    const PROBE_PAGES: usize = 3;
-    let imgs = render::render_pdf_pages(path, PROBE_DPI, &[0, 1, 2]).ok()?;
-    let grays: Vec<image::GrayImage> = imgs
-        .into_iter()
-        .map(|rgb| image::imageops::grayscale(&rgb))
-        .collect();
-    let tier = crate::quality::route_pages(&grays, PROBE_PAGES);
-    Some((tier.tier(), tier.dpi(base_dpi)))
+/// ADR-0007（后验）：tiny 渲染+OCR 首文档首页 → 平均置信度 → 是否升级 small。
+/// 返回 `Some(true)` 升级、`Some(false)` 维持 tiny；探针失败（渲染/OCR）返回 Ok(None)，
+/// 调用方回退显式参数。探针仅 1 页 tiny，开销最小。
+fn probe_first_doc_confidence(path: &Path, opts: &ConvertOptions) -> Result<Option<bool>> {
+    let imgs = render::render_pdf_pages(path, opts.dpi, &[0])?;
+    // 探针固定用 tiny：本就是要判定 tiny 是否够用
+    let engine = crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout)?;
+    let pages = engine.predict(imgs, 1, None)?;
+    let Some(page) = pages.first() else {
+        return Ok(None);
+    };
+    Ok(Some(crate::quality::needs_upgrade(page)))
 }
