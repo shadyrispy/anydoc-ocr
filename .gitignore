@@ -1,6 +1,8 @@
 /target
 **/*.rs.bk
-# 第三方预编译库按架构分目录；x64 仅本地验证用，不入库
+# 第三方预编译库按架构分目录；预编译二进制不入库（本地下载即可）
+third_party/*/linux-x64
+third_party/*/linux-aarch64
 third_party/*/x64
 third_party/*/aarch64
 third_party/*.tgz
@@ -13,3 +15,10 @@ third_party/dl/
 /tests/real_samples
 # 一次性实验脚本（INT8 量化探针、压测、加固笔记）；本地存档，不入库
 /.scratch
+# ADR/架构文档本地维护，不入库
+/docs
+# 临时分享包/产物
+/.trae-html-share-packages
+/*.html
+# 临时评估对比脚本
+/scripts/compare_accuracy*.py

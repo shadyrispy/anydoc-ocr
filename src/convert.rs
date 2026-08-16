@@ -1,7 +1,9 @@
 //! 总调度：按格式分流到对应通道
 use std::path::Path;
 
-use crate::{Result, detect::DocKind, models::OcrLayout, models::OcrTier, ofd, pdf};
+use crate::Result;
+use crate::detect::DocKind;
+use crate::{models::OcrLayout, models::OcrTier, ofd, pdf, quality::QualityRoute};
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
@@ -17,12 +19,16 @@ pub struct ConvertOptions {
     pub threads: usize,
     /// 渲染 DPI（图片型走 OCR 时的渲染分辨率）
     pub dpi: f32,
+    /// ADR-0007：质量路由开关。Auto 渲染前 N 页评估→自动选 tier/dpi；Off 用显式参数
+    pub quality_route: QualityRoute,
 }
 
 pub fn convert_to_markdown(path: &Path, opts: &ConvertOptions) -> Result<String> {
     match crate::detect::detect(path) {
         DocKind::Pdf => pdf::convert_pdf(path, opts),
         DocKind::Ofd => ofd::convert_ofd(path, opts),
-        DocKind::Other => anydoc::to_markdown(path).map_err(|e| anyhow::anyhow!("{e}")),
+        // ADR-0006：anydoc 的 ConvertError 直接透传（移除 `map_err(|e| anyhow!("{e}"))`
+        // 降级——保留 code() 稳定字符串，调用方可按 code() 精准提示）。
+        DocKind::Other => anydoc::to_markdown(path),
     }
 }

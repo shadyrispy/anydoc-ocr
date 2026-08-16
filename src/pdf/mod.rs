@@ -25,14 +25,21 @@
 //!
 //! T2-B：跨页重复的"页面家具/水印"（页眉/页脚/居中/斜向水印）在文字层按
 //! "同文本 + 同归一化位置跨页重复达阈值"剔除，避免污染阅读顺序。
-use std::path::Path;
+//!
+//! ADR-0005 候选 2：`convert_pdf_ocr` 接受 `&[PathBuf]`，跨文档 render↔OCR
+//! pipeline（[`render::render_cross_doc_fn`]）。`convert_pdf` 单文档调用方
+//! 委托给它（`&[path]`）。`BatchConverter::convert_many` 预分流：文字型 doc
+//! 走 `text_layer_markdown` 快速路径，图片型 doc 收集到 `ocr_paths` 一次性
+//! 送入 `convert_pdf_ocr`——文档边界 OCR 池空转消除 + 小文档 setup 摊薄。
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::timing::StageTimer;
 use crate::{ConvertOptions, Result, gfm_adapter};
 
 pub mod render;
 mod text_layer;
-use text_layer::text_layer_markdown;
+pub(crate) use text_layer::text_layer_markdown;
 
 pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     let mut t = StageTimer::new();
@@ -43,15 +50,76 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions) -> Result<String> {
     {
         return Ok(md);
     }
-    // 图片型：PDFium 渲染 + oar-ocr OCR（全量渲：空索引 = 渲所有页）
-    // DPI 默认 100（可由 --dpi 调整）。DPI 200→100：像素量降 75%，实测 上海公报52p
-    // 148.5s→100.0s(-33%)，内容恢复率零损失(99.83%)；80 起脚注/小字开始漏检。
-    let images = render::render_pdf_pages(path, opts.dpi, &[])?;
-    t.stage("render");
-    let pages =
-        crate::ocr_engine::ocr_images(images, opts.ocr_tier, opts.ocr_layout, opts.threads)?;
-    t.stage("ocr");
-    let md = gfm_adapter::structure_results_to_gfm(&pages);
-    t.stage("gfm");
-    Ok(md)
+    // 图片型：跨文档 OCR pipeline（ADR-0005 候选 2）。单文档委托为 &[path]。
+    let path_buf = path.to_path_buf();
+    let mut out = convert_pdf_ocr(std::slice::from_ref(&path_buf), opts)?;
+    t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
+    Ok(out.pop().map(|(_, md)| md).unwrap_or_default())
+}
+
+/// 跨文档图片型 PDF OCR（ADR-0005 候选 2）。
+///
+/// 入参 `paths` 为预分流后的图片型 PDF 列表（已确认无可用文字层，或
+/// `pdf_force_ocr` 强制）。返回 `Vec<(doc_idx, markdown)>` 按 doc_idx 升序——
+/// doc_idx 与入参 paths 的索引一一对应，调用方据此回填每文档的 Result。
+///
+/// 跨文档 render 闭包逐 doc open + 逐页渲染，OCR 池跨文档消费，文档边界不停顿。
+/// pipeline 返回 `Vec<((doc_idx, page_idx), StructureResult)>` 按复合键升序，
+/// 此处按 doc_idx 分组（同组内 page_idx 升序）逐 doc 跑 `structure_results_to_gfm`。
+///
+/// 错误传播：pipeline 整体失败（绑定/ORT）→ 整批 Err；单页渲染失败已在该页
+/// 缺失（pipeline 内 continue），调用方按 doc_idx 容错（缺失 doc 的 markdown 为空）。
+pub(crate) fn convert_pdf_ocr(
+    paths: &[PathBuf],
+    opts: &ConvertOptions,
+) -> Result<Vec<(usize, String)>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    // ADR-0007：质量路由。Auto 时渲染首文档前 3 页评估 → 自动选 tier/dpi；
+    // Off 用显式 opts.ocr_tier/opts.dpi。评估失败不阻断，回退显式参数。
+    let (tier, dpi) = if opts.quality_route == crate::quality::QualityRoute::Auto {
+        route_first_doc_quality(&paths[0], opts.dpi).unwrap_or((opts.ocr_tier, opts.dpi))
+    } else {
+        (opts.ocr_tier, opts.dpi)
+    };
+    let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr_layout)?;
+    let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
+    let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
+    let results = crate::pipeline::PagePipeline::new(
+        render_fn,
+        engine,
+        opts.threads,
+        if timings.enabled() { Some(timings.clone()) } else { None },
+    )
+    .run()?;
+    timings.report();
+
+    // 按复合键 (doc_idx, page_idx) 升序结果分组——pipeline 已保证页序，
+    // 同 doc_idx 组内 page_idx 升序，直接 collect 进 Vec 保序。
+    let mut by_doc: BTreeMap<usize, Vec<oar_ocr::domain::structure::StructureResult>> =
+        BTreeMap::new();
+    for ((doc_idx, _page_idx), res) in results {
+        by_doc.entry(doc_idx).or_default().push(res);
+    }
+    let mut out = Vec::with_capacity(paths.len());
+    for (doc_idx, pages) in by_doc {
+        let md = gfm_adapter::structure_results_to_gfm(&pages);
+        out.push((doc_idx, md));
+    }
+    Ok(out)
+}
+
+/// ADR-0007：渲染首文档前 3 页（100dpi 探针）→ 质量评估 → 路由档位。
+/// 评估失败返回 None，调用方回退显式参数。探针仅 3 页，开销 <20ms。
+fn route_first_doc_quality(path: &Path, base_dpi: f32) -> Option<(crate::models::OcrTier, f32)> {
+    const PROBE_DPI: f32 = 100.0;
+    const PROBE_PAGES: usize = 3;
+    let imgs = render::render_pdf_pages(path, PROBE_DPI, &[0, 1, 2]).ok()?;
+    let grays: Vec<image::GrayImage> = imgs
+        .into_iter()
+        .map(|rgb| image::imageops::grayscale(&rgb))
+        .collect();
+    let tier = crate::quality::route_pages(&grays, PROBE_PAGES);
+    Some((tier.tier(), tier.dpi(base_dpi)))
 }
