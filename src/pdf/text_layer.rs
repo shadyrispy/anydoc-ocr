@@ -27,6 +27,12 @@ const MIN_GAP_FRACTION: f32 = 0.01;
 /// 封面/标题的字母间距是单行现象，聚不到 3 行 → 不拆）。
 const SPLIT_CLUSTER_TOL_FRACTION: f32 = 0.02;
 
+/// 列间隙最小宽度（页宽比例）：候选 gap 须 >=3% 页宽才算列间隙。
+/// 与 `reading_order::detect_column_split` 的 3% 口径一致。1% 的 `MIN_GAP_FRACTION`
+/// 会把列表项（`a) `、`b) ` 等编号与正文的小间隙 ~1%）误判为列间隙，单栏页
+/// 聚出假 gutter（9001c 文字版 4.1/4.2 正文缺行根因）。
+const COL_GUTTER_GAP_FRACTION: f32 = 0.03;
+
 /// 文字层 Markdown：pdf-inspector 提取 TextItem → 列感知拆行 → 排序；
 /// 含表格页回退 OCR 输出 `<table>` HTML（见 mod.rs 模块文档 T2-B）。
 ///
@@ -331,7 +337,7 @@ pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
 /// 双列页：每行的 gutter 都在同一 x → 聚成主簇。封面大标题字母间距大但每行
 /// split_x 不同/行数少 → 主簇不足 3 → 返回 None，行保持整行。
 fn clustered_row_split(lines: &[pdf_inspector::extractor::TextLine], page_w: f32) -> Option<f32> {
-    let min_gap = MIN_GAP_FRACTION * page_w;
+    let min_gap = COL_GUTTER_GAP_FRACTION * page_w;
     let tol = SPLIT_CLUSTER_TOL_FRACTION * page_w;
     let mut candidates: Vec<f32> = Vec::new();
     for line in lines {
@@ -835,5 +841,30 @@ mod tests {
                 "第二章 附则".to_string(),
             ]
         );
+    }
+
+    /// 回归（9001c 文字版 4.1/4.2 正文缺行根因）：单栏页的列表项编号间隙
+    /// （`a) `、`b) ` 等，~1% 页宽）不得被当成列间隙聚成假 gutter → 返回 None。
+    /// 此前 `MIN_GAP_FRACTION=0.01` 会把 `a)/b)/c)` 与正文间的小间隙判为列间隙，
+    /// 多处编号行聚成主簇 → 误判双列 → 正文被拆/颠倒/丢失。
+    #[test]
+    fn list_label_gaps_do_not_form_false_column() {
+        // 单栏：5 个列表项行（编号与正文 gap≈1%），其余为通栏正文行。
+        // 通栏正文行无 >3% 间隙 → 主簇候选仅来自列表项 → 3% 阈值下全部被过滤。
+        let list_rows: Vec<TextLine> = (0..5)
+            .map(|_| {
+                tl(vec![
+                    ti("a)", 75.0, 12.0),                            // 编号
+                    ti("与质量管理体系有关的相关方；", 91.0, 200.0), // 正文，gap≈4pt
+                ])
+            })
+            .collect();
+        let body_rows: Vec<TextLine> = (0..10)
+            .map(|_| tl(vec![ti("组织应确定与所承担装备任务相关的法律法规、标准、使用需求、保障条件等影响因素。", 75.0, 400.0)]))
+            .collect();
+        // 通栏正文行无 gap；列表项 gap=(91-87)=4pt，占 595 的 0.67% < 3% → 非候选
+        let mut lines = list_rows;
+        lines.extend(body_rows);
+        assert_eq!(clustered_row_split(&lines, PAGE_W), None);
     }
 }

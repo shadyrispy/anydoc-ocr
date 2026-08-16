@@ -1,0 +1,1109 @@
+[
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "中华人民共和国国家军用标准"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                121,
+                134,
+                927,
+                173
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "FL 0106"
+                    }
+                ]
+            },
+            "bbox": [
+                136,
+                198,
+                236,
+                217
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                710,
+                186,
+                909,
+                205
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "代替 GJB 9001B-2009"
+                    }
+                ]
+            },
+            "bbox": [
+                731,
+                207,
+                909,
+                224
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "质量管理体系要求"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                336,
+                383,
+                692,
+                418
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "Quality management systems requirements"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                292,
+                441,
+                736,
+                463
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2017－05－18 发布"
+                    }
+                ]
+            },
+            "bbox": [
+                112,
+                834,
+                319,
+                855
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2017－07－01 实施"
+                    }
+                ]
+            },
+            "bbox": [
+                724,
+                834,
+                929,
+                855
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB"
+                    }
+                ]
+            },
+            "bbox": [
+                615,
+                40,
+                873,
+                111
+            ]
+        },
+        {
+            "type": "page_footer",
+            "content": {
+                "page_footer_content": [
+                    {
+                        "type": "text",
+                        "content": "中央军委装备发展部 颁布"
+                    }
+                ]
+            },
+            "bbox": [
+                364,
+                883,
+                657,
+                904
+            ]
+        }
+    ],
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "目 次"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                487,
+                137,
+                573,
+                162
+            ]
+        },
+        {
+            "type": "index",
+            "content": {
+                "list_type": "text_list",
+                "list_items": [
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "引言 .................................................................................. V"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "2 规范性引用文件 ...................................................................... 1"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "3 术语和定义 ....................................................... ...... 2"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "4.2 理解相关方的需求和期望 ............................................................ 2"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "4.4 质量管理体系及其过程 ......................................................... ..... 3"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.1.1 总则 ... ............................ ....... 3"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.1.2 以顾客为关注焦点 ................................................"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.2 方针 ............"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.2.1 制定质量方针 ............... ...... 4"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.2.2 沟通质量方针 ..............."
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "5.3 组织的岗位、职责和权限 ............................................................ 4"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "6 策划 ... ...... 5"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "...... 5"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "6.3 变更的策划 ...................................................."
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.1.3 基础设施 ............ ................................... ..... 6"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.1.4 过程运行环境 ...................................................."
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.2 能力 ....................."
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.3 意识 .............................................................................. 7"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.4 沟通 .............................................................................. 8"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.5 成文信息 .......................................................................... 8"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.5.1 总则 ............................................................................ 8"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "7.5.3 成文信息的控制 .................................................................. 8"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8 运行 ................................................................................ 9"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.2 产品和服务的要求 ................................................................. 10"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.2.1 顾客沟通 ...."
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.2.2 产品和服务要求的确定 ........................................................... 10"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.2.3 产品和服务要求的评审 ........................................................... 10"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.2.4 产品和服务要求的更改 ........................................................... 11"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3 产品和服务的设计和开发 ........................................................... 11"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3.1 总则 ............ ................................................... 11"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3.3 设计和开发输入 ................................................................. 12"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3.5 设计和开发输出 ................................................................. 13"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3.6 设计和开发更改 ................................................................. 13"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.3.8 设计和开发的试验控制 ........................................................... 13"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.4 外部提供的过程、产品和服务的控制 ................................................. 14"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.4.1 总则 ............. ............................................. 14"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.4.2 控制类型和程度 ................................................................. 14"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5 生产和服务提供 ............... ................................................... 15"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.1 生产和服务提供的控制 ........................................................... 15"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.2 标识和可追溯性 ................................................................. 16"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.3 顾客或外部供方的财产 ........................................................... 16"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.4 防护 ... ........................................ ........ 16"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.5 交付后的活动 ................................................................... 16"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.6 更改控制 ....................................................................... 17"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.5.7 关键过程 ................ .......... 17"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.6 产品和服务的放行 .... ... 17"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "8.7 不合格输出的控制 ........... ... 17"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9 绩效评价 ........ ... 18"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.1 监视、测量、分析和评价 .............................................. ...... 18"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.1.1 总则 .......... ... 18"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.1.2 顾客满意 ................................ .... 18"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.1.3 分析与评价 ............................. .... 18"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.2 内部审核 ............. ... 19"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.3 管理评审 .............................................................. ...... 19"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.3.1 总则 ........ ... 19"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.3.2 管理评审输入 ............................... .... 19"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "9.3.3 管理评审输出 ........................... .... 20"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "...... 20"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "10.1 总则 ....... .... 20"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "10.2 不合格和纠正措施 ......... .... 20"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "10.3 持续改进 ......... .... 21"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "附 录 A (资料性附录) 新结构、术语和概念说明 ..... ... 22"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "附 录 B (资料性附录) GB/T 19000《质量管理体系 基础和术语》中的质量管理原则......... 25"
+                            }
+                        ]
+                    },
+                    {
+                        "item_type": "text",
+                        "item_content": [
+                            {
+                                "type": "text",
+                                "content": "附 录 C (资料性附录) 相关国家军用标准 ........ .. 30"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "bbox": [
+                110,
+                198,
+                909,
+                900
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                768,
+                84,
+                907,
+                98
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "I"
+                    }
+                ]
+            },
+            "bbox": [
+                895,
+                920,
+                905,
+                931
+            ]
+        }
+    ],
+    [
+        {
+            "type": "index",
+            "content": {
+                "list_type": "text_list",
+                "list_items": []
+            },
+            "bbox": [
+                110,
+                114,
+                910,
+                904
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                84,
+                253,
+                98
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "II"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                923,
+                171,
+                935
+            ]
+        }
+    ],
+    [
+        {
+            "type": "index",
+            "content": {
+                "list_type": "text_list",
+                "list_items": []
+            },
+            "bbox": [
+                110,
+                115,
+                909,
+                541
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                768,
+                84,
+                907,
+                98
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "III"
+                    }
+                ]
+            },
+            "bbox": [
+                878,
+                919,
+                905,
+                932
+            ]
+        }
+    ],
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "前 言"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                447,
+                117,
+                541,
+                141
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准代替GJB 9001B-2009《质量管理体系要求》，是在等同采用GB/T 19001-2016(ISO 9001：2015)的基础上增加装备质量管理体系特殊要求编制而成，将装备质量管理体系的特殊要求作为标准的一部分(B部分)，列在GB/T 19001-2016标准(A部分)相应条款之后，独立成条并作为该条款的补充，对引言中部分描述内容进行了具体化，对附录进行了调整。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                193,
+                907,
+                274
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "为便于识别，本标准采用国家标准的内容(A部分)以宋体字表述，增加的特殊要求(B部分)以楷体字表述。"
+                    }
+                ]
+            },
+            "bbox": [
+                112,
+                277,
+                907,
+                315
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准为承担军队装备及配套产品论证、研制、生产、试验、维修和服务任务的组织规定了质量管理体系要求，并为实施质量管理体系评定提供了依据。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                320,
+                907,
+                358
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准的附录A、附录B和附录C是资料性附录。"
+                    }
+                ]
+            },
+            "bbox": [
+                147,
+                364,
+                505,
+                380
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准由中央军委装备发展部合同监管局提出。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                385,
+                514,
+                401
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准起草单位：中国新时代认证中心、技术基础管理中心、陆军北京军事代表局、军械工程学院、海军装备研究院舰船论证研究所、海军驻天津地区军事代表局、空军驻北京地区军事代表局、火箭军装备部试验监管局、赛宝认证中心、中国航天科技集团公司第七〇八研究所、中国电子科技集团公司第十五研究所。"
+                    }
+                ]
+            },
+            "bbox": [
+                112,
+                407,
+                907,
+                486
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准主要起草人：程旭辉、王树海、王江山、刘世济、夏海光、刘连才、刘希凤、冀 林、李跃生、马绍力、于永利、马 力、吕恩长、侯志强、蔡 戬、刘金刚。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                491,
+                907,
+                530
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准所代替标准的历次版本发布情况为：GJB/Z 9001-1996、GJB/Z 9002-1996、GJB/Z 9003-1996、GJB 9001A-2001、GJB 9001A-2009。"
+                    }
+                ]
+            },
+            "bbox": [
+                112,
+                535,
+                897,
+                573
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                84,
+                253,
+                97
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "IV"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                922,
+                171,
+                935
+            ]
+        }
+    ]
+]

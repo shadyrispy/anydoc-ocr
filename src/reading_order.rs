@@ -125,11 +125,11 @@ pub fn detect_column_split(regions: &[Region]) -> Option<f32> {
     if page_w <= 0.0 {
         return None;
     }
-    let mut body: Vec<f32> = regions
+    let body_regions: Vec<&Region> = regions
         .iter()
         .filter(|r| !r.is_full_width(page_w))
-        .map(|r| r.center_x())
         .collect();
+    let mut body: Vec<f32> = body_regions.iter().map(|r| r.center_x()).collect();
     if body.len() < 4 {
         return None;
     }
@@ -144,8 +144,22 @@ pub fn detect_column_split(regions: &[Region]) -> Option<f32> {
         }
     }
     let min_gap = 0.03 * page_w;
-    (best_gap >= min_gap && best_i >= 2 && (body.len() - best_i) >= 2)
-        .then(|| (body[best_i - 1] + body[best_i]) / 2.0)
+    if best_gap < min_gap || best_i < 2 || (body.len() - best_i) < 2 {
+        return None;
+    }
+    let split = (body[best_i - 1] + body[best_i]) / 2.0;
+    // 傀栏 vs 单栏判别：真实列间隙是一段无文本的竖直空白带——页内没有任何区域
+    // 跨过该中线（左列区域右缘 < split、右列区域左缘 > split）。单栏页行宽天然
+    // 变化（短标签 + 通栏段落），最大 center_x 间隙往往是相邻两行的宽度差，
+    // 全宽正文区域会跨过该"假间隙"。若存在跨过分隔线的区域 → 非真列 → 单栏。
+    // 修复：9001c 文字版 4.1/4.2 节正文大量缺行（误判双列后正文被颠倒/切割）。
+    let bridges = body_regions
+        .iter()
+        .any(|r| r.x_min < split && split < r.x_max);
+    if bridges {
+        return None;
+    }
+    Some(split)
 }
 
 fn ord_y(a: &(f32, String), b: &(f32, String)) -> std::cmp::Ordering {
@@ -750,6 +764,34 @@ mod tests {
             reg(520.0, 950.0, 200.0, "R2"),
         ];
         assert_eq!(order_text_regions(&regions), vec!["L1", "L2", "R1", "R2"]);
+    }
+
+    /// 回归（9001c 文字版 4.1/4.2 正文缺行根因）：单栏页行宽天然变化（短标签 +
+    /// 通栏段落），最大 center_x 间隙是相邻两行的宽度差，通栏正文区域跨过该
+    /// "假间隙" → 不得判为双列（bridging 判别）。此前误判双列导致正文颠序/丢失。
+    #[test]
+    fn single_column_full_width_lines_do_not_split() {
+        // 短标签行 cx≈100，通栏段落行 cx≈300（跨 75..540 全宽）
+        let regions = vec![
+            reg(75.0, 540.0, 500.0, "通栏正文一"), // cx=307，跨假间隙
+            reg(75.0, 180.0, 400.0, "短标签"),     // cx=127
+            reg(75.0, 540.0, 300.0, "通栏正文二"), // cx=307
+            reg(75.0, 540.0, 200.0, "通栏正文三"), // cx=307
+            reg(75.0, 160.0, 100.0, "短标题4.1"),  // cx=117
+        ];
+        // 最大 cx 间隙在 127 与 307 之间（gap=180，>3% 页宽），但通栏行跨过该
+        // 中线 → bridging → 非列 → 单栏 y 排序，正文不被切割/颠倒。
+        assert_eq!(
+            order_text_regions(&regions),
+            vec![
+                "短标题4.1",
+                "通栏正文三",
+                "通栏正文二",
+                "短标签",
+                "通栏正文一"
+            ],
+            "单栏页不得误判双列"
+        );
     }
 
     #[test]

@@ -1,0 +1,2084 @@
+[
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "引 言"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                452,
+                159,
+                563,
+                183
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                126,
+                215,
+                210,
+                231
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "采用质量管理体系是组织的一项战略决策，能够帮助其提高整体绩效，为推动可持续发展奠定良好基础。"
+                    }
+                ]
+            },
+            "bbox": [
+                124,
+                241,
+                885,
+                273
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织根据本标准实施质量管理体系的潜在益处是："
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                276,
+                527,
+                293
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a)稳定提供满足顾客要求以及适用的法律法规要求的产品和服务的能力；"
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                295,
+                712,
+                314
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 促成增强顾客满意的机会："
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                313,
+                383,
+                329
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 应对与组织环境和目标相关的风险和机遇；"
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                330,
+                509,
+                347
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 证实符合规定的质量管理体系要求的能力："
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                348,
+                509,
+                365
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 证实具备承担装备建设相关任务的能力。"
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                366,
+                492,
+                382
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准可用于内部和外部各方。"
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                384,
+                391,
+                400
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "实施本标准并非需要："
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                403,
+                321,
+                418
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——统一不同质量管理体系的架构；"
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                421,
+                421,
+                437
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——形成与本标准条款结构相一致的文件："
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                439,
+                470,
+                455
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——在组织内使用本标准的特定术语。"
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                457,
+                438,
+                472
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准规定的质量管理体系要求是对产品和服务要求的补充。"
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                475,
+                608,
+                491
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准采用过程方法，该方法结合了“策划一实施一检查一处置”(PDCA)循环和基于风险的思维。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                494,
+                880,
+                527
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "过程方法使组织能够策划过程及其相互作用。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                529,
+                489,
+                546
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "PDCA循环使组织能够确保其过程得到充分的资源和管理，确定改进机会并采取行动。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                548,
+                791,
+                566
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "基于风险的思维使组织能够确定可能导致其过程和质量管理体系偏离策划结果的各种因素，采取预防控制，最大限度地降低不利影响，并最大限度地利用出现的机遇(见A.4)。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                566,
+                878,
+                601
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在日益复杂的动态环境中持续满足要求，并针对未来需求和期望采取适当行动，这无疑是组织面临的一项挑战。为了实现这一目标，组织可能会发现，除了纠正和持续改进，还有必要采取各种形式的改进，如突破性变革、创新和重组。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                602,
+                878,
+                654
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在本标准中使用如下助动词："
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                656,
+                368,
+                671
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—“应”表示要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                673,
+                314,
+                687
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—“宜”表示建议；"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                691,
+                314,
+                705
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—“可”表示允许；"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                709,
+                312,
+                724
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—“能”表示可能或能够。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                726,
+                364,
+                742
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "“注”的内容是理解和说明有关要求的指南。"
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                745,
+                484,
+                762
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.2 质量管理原则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                114,
+                769,
+                265,
+                784
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准是在GB/T19000所阐述的质量管理原则基础上制定的。每项原则的介绍均包含概述、该原则对组织的重要性的依据，应用该原则的主要益处示例以及应用该原则提高组织绩效的典型措施示例。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                794,
+                873,
+                829
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "质量管理原则是："
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                829,
+                278,
+                845
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——以顾客为关注焦点："
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                847,
+                327,
+                864
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——领导作用；"
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                865,
+                258,
+                880
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——全员积极参与；"
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                884,
+                290,
+                899
+            ]
+        },
+        {
+            "type": "page_aside_text",
+            "content": {
+                "page_aside_text_content": []
+            },
+            "bbox": [
+                5,
+                9,
+                25,
+                979
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                747,
+                102,
+                887,
+                118
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "V"
+                    }
+                ]
+            },
+            "bbox": [
+                855,
+                914,
+                870,
+                926
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——过程方法；"
+                    }
+                ]
+            },
+            "bbox": [
+                183,
+                134,
+                297,
+                150
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——改进："
+                    }
+                ]
+            },
+            "bbox": [
+                183,
+                152,
+                265,
+                168
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——循证决策；"
+                    }
+                ]
+            },
+            "bbox": [
+                183,
+                170,
+                297,
+                186
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—关系管理。"
+                    }
+                ]
+            },
+            "bbox": [
+                183,
+                188,
+                299,
+                204
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.3 过程方法"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                151,
+                213,
+                270,
+                229
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.3.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                151,
+                237,
+                253,
+                253
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准倡导在建立、实施质量管理体系以及提高其有效性时采用过程方法，通过满足顾客要求增强顾客满意。采用过程方法所需考虑的具体要求见4.4。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                253,
+                912,
+                289
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "将相互关联的过程作为一个体系加以理解和管理，有助于组织有效和高效地实现其预期结果。这种方法使组织能够对体系的过程之间相互关联和相互依赖的关系进行有效控制，以提高组织整体绩效。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                289,
+                912,
+                325
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "过程方法包括按照组织的质量方针和战略方向，对各过程及其相互作用进行系统的规定和管理，从而实现预期结果。可通过采用PDCA循环(见0.3.2)以及始终基于风险的思维(见0.3.3)对过程和整个体系进行管理，旨在有效利用机遇并防止发生不良结果。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                325,
+                912,
+                379
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在质量管理体系中应用过程方法能够："
+                    }
+                ]
+            },
+            "bbox": [
+                184,
+                382,
+                472,
+                397
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 理解并持续满足要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                184,
+                401,
+                386,
+                415
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 从增值的角度考虑过程；"
+                    }
+                ]
+            },
+            "bbox": [
+                184,
+                418,
+                403,
+                433
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 获得有效的过程绩效；"
+                    }
+                ]
+            },
+            "bbox": [
+                184,
+                436,
+                386,
+                450
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 在评价数据和信息的基础上改进过程。"
+                    }
+                ]
+            },
+            "bbox": [
+                186,
+                453,
+                505,
+                468
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "单一过程的各要素及其相互作用如图1所示。每一过程均有特定的监视和测量检查点以用于控制，这些检查点根据相关的风险有所不同。"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                468,
+                909,
+                506
+            ]
+        },
+        {
+            "type": "image",
+            "content": {
+                "image_source": {
+                    "path": "images/241cc1b9947321e0c3e17773f72724eda6c034cf2888bf90892dd87637891d3f.jpg"
+                },
+                "image_caption": [
+                    {
+                        "type": "text",
+                        "content": "图 1 单一过程要素示意图"
+                    }
+                ],
+                "image_footnote": []
+            },
+            "bbox": [
+                173,
+                515,
+                894,
+                753
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.3.2 PDCA 循环"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                154,
+                791,
+                307,
+                807
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "PDCA循环能够应用于所有过程以及整个质量管理体系。图2表明了本标准第4章至第10章是如何构成 PDCA 循环的。"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                807,
+                914,
+                843
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "PDCA循环可以简要描述如下："
+                    }
+                ]
+            },
+            "bbox": [
+                186,
+                846,
+                421,
+                860
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—策划(Plan)：根据顾客的要求和组织的方针，建立体系的目标及其过程，确定实现结果所需的资源，并识别和应对风险和机遇；"
+                    }
+                ]
+            },
+            "bbox": [
+                186,
+                861,
+                914,
+                895
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                104,
+                290,
+                118
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "VI"
+                    }
+                ]
+            },
+            "bbox": [
+                156,
+                912,
+                178,
+                924
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——实施(Do)：执行所做的策划;"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                127,
+                402,
+                142
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——检查(Check)：根据方针、目标、要求和所策划的活动，对过程以及形成的产品和服务进行监视和测量(适用时)，并报告结果；"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                145,
+                877,
+                178
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—处置(Act)：必要时，采取措施提高绩效。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                182,
+                491,
+                197
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.3.3 基于风险的思维"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                116,
+                201,
+                303,
+                215
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "基于风险的思维(见A.4)是实现质量管理体系有效性的基础。本标准以前的版本已经隐含基于风险思维的概念，例如：采取预防措施消除潜在的不合格，对发生的不合格进行分析，并采取与不合格的影响相适应的措施，防止其再发生。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                219,
+                878,
+                270
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "为满足本标准的要求，组织需策划和实施应对风险和机遇的措施。应对风险和机遇，为提高质量管理体系有效性、获得改进结果以及防止不利影响奠定基础。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                272,
+                877,
+                306
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "某些有利于实现预期结果的情况可能导致机遇的出现，例如：有利于组织吸引顾客、开发新产品和服务、减少浪费或提高生产率的一系列情形。利用机遇所采取的措施也可能包括考虑相关风险。风险是不确定性的影响，不确定性可能有正面的影响，也可能有负面的影响。风险的正面影响可能提供机遇但并非所有的正面影响均可提供机遇。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                309,
+                877,
+                379
+            ]
+        },
+        {
+            "type": "image",
+            "content": {
+                "image_source": {
+                    "path": "images/7115e337985852018bcf375c768de47c58653eae1bb1d384b4ea21fdc2ec1cc1.jpg"
+                },
+                "image_caption": [],
+                "image_footnote": [
+                    {
+                        "type": "text",
+                        "content": "注：括号中的数字表示本标准的相应章节。"
+                    }
+                ]
+            },
+            "bbox": [
+                207,
+                396,
+                781,
+                699
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "图 2 本标准的结构在 PDCA 循环中的展示"
+                    }
+                ]
+            },
+            "bbox": [
+                326,
+                735,
+                658,
+                750
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.4 与其他管理体系标准的关系"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                111,
+                759,
+                365,
+                774
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准采用ISO制定的管理体系标准框架，以提高与其他管理体系标准的协调一致性(见A.1)。"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                784,
+                851,
+                799
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准使组织能够使用过程方法，并结合PDCA循环和基于风险的思维，将其质量管理体系与其他管理体系标准要求进行协调或一体化。"
+                    }
+                ]
+            },
+            "bbox": [
+                111,
+                802,
+                872,
+                835
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准(A 部分)与 GB/T 19000 和 GB/T 19004 存在如下关系："
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                837,
+                599,
+                853
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "—GB/T19000《质量管理体系基础和术语》为正确理解和实施本标准提供必要基础："
+                    }
+                ]
+            },
+            "bbox": [
+                143,
+                856,
+                784,
+                870
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "——GB/T19004《追求组织的持续成功质量管理方法》为选择超出本标准要求的组织提供指南。"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                874,
+                851,
+                888
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准(A部分)不包括针对环境管理、职业健康和安全管理或财务管理等其他管理体系的特定要"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                892,
+                872,
+                907
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                737,
+                98,
+                878,
+                111
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "VII"
+                    }
+                ]
+            },
+            "bbox": [
+                846,
+                909,
+                872,
+                920
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "求。"
+                    }
+                ]
+            },
+            "bbox": [
+                137,
+                136,
+                169,
+                150
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在本标准(A部分)的基础上，已经制定了若干行业特定要求的质量管理体系标准。其中的某些标准规定了质量管理体系的附加要求，而另一些标准则仅限于提供在特定行业应用本标准的指南。"
+                    }
+                ]
+            },
+            "bbox": [
+                136,
+                150,
+                899,
+                186
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准(A部分)的章条内容与之前版本(GB/T19001-2008/ISO9001：2008)章条内容之间的对应关系见ISO/TC176/SC2(国际标准化组织/质量管理和质量保证技术委员会/质量体系分委员会)的公开网站：www.iso.org/tc176/sc02/public。"
+                    }
+                ]
+            },
+            "bbox": [
+                137,
+                186,
+                900,
+                241
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "0.5 本标准装备特殊要求的考虑"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                139,
+                249,
+                393,
+                266
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准在等同采用国家标准GB/T 19001-2016的基础上增加装备质量管理体系的特殊要求(B部分)，这样做的重要意义在于："
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                272,
+                899,
+                308
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 坚持质量至上，突出满足作战使用需求和实战化运用要求。装备使用基于严酷的作战环境，其质量关乎战争胜负、关乎官兵生命，质量管理体系特殊要求突出装备的可靠性、维修性、保障性、测试性、安全性和环境适应性等通用质量特性要求；突出标准化、软件工程化、技术状态管理等控制要求；突出新产品试制、试验和关键过程控制的要求；突出装备交付后的维修、保障和质量事故处理要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                308,
+                900,
+                397
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 贯彻军民融合国家战略，突出军品必为精品的要求。引导组织在构建质量管理体系时，首先应满足国家标准要求，在此基础上，满足装备的特殊要求，促进其产品和服务的质量管理体系过程军民通用，提升质量管理体系能力和水平，降低组织的管理成本。"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                398,
+                900,
+                450
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 保持科学性、针对性和前瞻性，提高可操作性。本标准试图将国家标准中较为通用的要求具体化，较为宽泛的选择更具针对性，引导组织建立装备质量管理体系并更具适用性；基于风险管理先进理念，合理提出质量管理体系特殊要求，满足当前和未来信息化体系建设要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                453,
+                900,
+                506
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                137,
+                105,
+                278,
+                118
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "VIII"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                913,
+                174,
+                925
+            ]
+        }
+    ],
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "质量管理体系要求"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                367,
+                163,
+                582,
+                184
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "1 范围"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                94,
+                218,
+                159,
+                234
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准为下列组织规定了质量管理体系要求："
+                    }
+                ]
+            },
+            "bbox": [
+                126,
+                244,
+                462,
+                258
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a)需要证实其具有稳定提供满足顾客要求及适用法律法规要求的产品和服务的能力；"
+                    }
+                ]
+            },
+            "bbox": [
+                124,
+                262,
+                765,
+                278
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 通过体系的有效应用，包括体系改进的过程，以及保证符合顾客要求和适用的法律法规要求，旨在增强顾客满意。"
+                    }
+                ]
+            },
+            "bbox": [
+                124,
+                280,
+                850,
+                314
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准规定的所有要求是通用的，旨在适用于各种类型、不同规模和提供不同产品和服务的组织。"
+                    }
+                ]
+            },
+            "bbox": [
+                124,
+                316,
+                851,
+                333
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本标准适用于承担军队装备及配套产品论证、研制、生产、试验、维修和服务任务的组织，提供其他军用产品和服务的组织可参照使用。"
+                    }
+                ]
+            },
+            "bbox": [
+                90,
+                335,
+                851,
+                367
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注1：在本标准中的术语“产品”或“服务”仅适用于预期提供给顾客或顾客所要求的产品和服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                371,
+                754,
+                386
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注2：法律法规要求可称作为法定要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                390,
+                377,
+                404
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注3：本标准中的组织是指各类军队装备的承制单位。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                407,
+                462,
+                421
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注4：本标准中的顾客是指产品和服务的接受者，包括军队装备机关、军事代表机构、项目管理机构、装备使用部队，以及供应链中的订购方。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                426,
+                851,
+                458
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "2 规范性引用文件"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                89,
+                466,
+                242,
+                482
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "下列文件对于本文件的应用是必不可少的。凡是注日期的引用文件，仅注日期的版本适用于本文件。凡是不注日期的引用文件，其最新版本(包括所有的修改单)适用于本文件。"
+                    }
+                ]
+            },
+            "bbox": [
+                89,
+                492,
+                850,
+                527
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GB/T19000-2016 质量管理体系基础和术语"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                529,
+                466,
+                544
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 190 特性分类"
+                    }
+                ]
+            },
+            "bbox": [
+                122,
+                547,
+                274,
+                561
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 368 装备维修性工作通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                565,
+                392,
+                579
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 450 装备可靠性工作通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                582,
+                392,
+                596
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 451 可靠性维修性保障性术语"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                600,
+                392,
+                614
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 571 不合格品管理"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                619,
+                308,
+                633
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 841 故障报告、分析和纠正措施系统"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                637,
+                442,
+                652
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 900 装备安全性工作通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                656,
+                390,
+                670
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 907 产品质量评审"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                672,
+                306,
+                687
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 908 首件鉴定"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                691,
+                271,
+                704
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 909 关键件和重要件的质量控制"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                709,
+                407,
+                723
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 1269 工艺评审"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                726,
+                277,
+                741
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 1362 军工产品定型程序和要求"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                745,
+                397,
+                760
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 1405 装备质量管理术语"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                763,
+                348,
+                777
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 1710 试制和生产准备状态检查"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                780,
+                397,
+                794
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 1909 装备可靠性维修性保障性要求论证"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                797,
+                464,
+                813
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 2547 装备测试性工作通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                815,
+                397,
+                830
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 2786 军用软件开发通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                834,
+                380,
+                848
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 3206 技术状态管理"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                852,
+                311,
+                866
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 3872 装备综合保障通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                869,
+                378,
+                885
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 4239 装备环境土程通用要求"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                887,
+                378,
+                901
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                715,
+                105,
+                855,
+                118
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "1"
+                    }
+                ]
+            },
+            "bbox": [
+                833,
+                916,
+                843,
+                927
+            ]
+        }
+    ]
+]

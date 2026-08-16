@@ -1,0 +1,122 @@
+[
+    {
+        "type": "text",
+        "text": "附录 C",
+        "text_level": 2,
+        "bbox": [
+            456,
+            151,
+            547,
+            168
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "(资料性附录)",
+        "bbox": [
+            447,
+            170,
+            552,
+            187
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "相关国家军用标准",
+        "bbox": [
+            429,
+            188,
+            572,
+            205
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "GJB 9001C-2017 相关国家军用标准见表 C.1。",
+        "bbox": [
+            153,
+            221,
+            494,
+            238
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "table",
+        "img_path": "images/1bd08f79deee9481c3917baf0984ecd7e93924807286b64587b5e4e59b6b38e0.jpg",
+        "table_caption": [
+            "表 C.1 GJB 9001C-2017 相关国家军用标准"
+        ],
+        "table_footnote": [],
+        "table_body": "<table><tr><td colspan=\"1\" rowspan=\"1\">序号</td><td colspan=\"1\" rowspan=\"1\">GJB 9001C 条款号</td><td colspan=\"2\" rowspan=\"1\">涉及的常用国家军用标准</td></tr><tr><td colspan=\"1\" rowspan=\"1\">1</td><td colspan=\"1\" rowspan=\"1\">3</td><td colspan=\"1\" rowspan=\"1\">GJB 1405A-2006</td><td colspan=\"1\" rowspan=\"1\">装备质量管理术语</td></tr><tr><td colspan=\"1\" rowspan=\"1\">2</td><td colspan=\"1\" rowspan=\"1\">3</td><td colspan=\"1\" rowspan=\"1\">GJB 451A-2005</td><td colspan=\"1\" rowspan=\"1\">可靠性维修性保障性术语</td></tr><tr><td colspan=\"1\" rowspan=\"1\">3</td><td colspan=\"1\" rowspan=\"1\">4.4.1</td><td colspan=\"1\" rowspan=\"1\">GJB 5000A-2008</td><td colspan=\"1\" rowspan=\"1\">军用软件研制能力成熟度模型</td></tr><tr><td colspan=\"1\" rowspan=\"1\">4</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 8000-2013</td><td colspan=\"1\" rowspan=\"1\">军用软件研制能力等级要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">5</td><td colspan=\"1\" rowspan=\"1\">7.1.5.2</td><td colspan=\"1\" rowspan=\"1\">GJB 2739A-2009</td><td colspan=\"1\" rowspan=\"1\">装备计量保障中量值的溯源与传递</td></tr><tr><td colspan=\"1\" rowspan=\"1\">6</td><td colspan=\"1\" rowspan=\"1\">7.6</td><td colspan=\"1\" rowspan=\"1\">GJB 1686A-2005</td><td colspan=\"1\" rowspan=\"1\">装备质量信息管理通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">1一</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 1775-1993</td><td colspan=\"1\" rowspan=\"1\">装备质量与可靠性信息分类和编码通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">8</td><td colspan=\"1\" rowspan=\"1\">8.1 f)</td><td colspan=\"1\" rowspan=\"1\">GJB/Z 114-1998</td><td colspan=\"1\" rowspan=\"1\">新产品标准化大纲编制指南</td></tr><tr><td colspan=\"1\" rowspan=\"1\">9</td><td colspan=\"1\" rowspan=\"1\">8.1 g)</td><td colspan=\"1\" rowspan=\"1\">GJB 368B-2009</td><td colspan=\"1\" rowspan=\"1\">装备维修性工作通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">10</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 450A-2004</td><td colspan=\"1\" rowspan=\"1\">装备可靠性工作通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">11</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 900A-2012</td><td colspan=\"1\" rowspan=\"1\">装备安全性工作通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">12</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 2547A-2012</td><td colspan=\"1\" rowspan=\"1\">装备测试性工作通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">13</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 3872-1999</td><td colspan=\"1\" rowspan=\"1\">装备综合保障通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">14</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 4239-2001</td><td colspan=\"1\" rowspan=\"1\">装备环境工程通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">15</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 1909A-2009</td><td colspan=\"1\" rowspan=\"1\">装备可靠性维修性保障性要求论证</td></tr><tr><td colspan=\"1\" rowspan=\"1\">16</td><td colspan=\"1\" rowspan=\"1\">8.1 h)</td><td colspan=\"1\" rowspan=\"1\">GJB 2786A-2009</td><td colspan=\"1\" rowspan=\"1\">军用软件开发通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">17</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 438B-2009</td><td colspan=\"1\" rowspan=\"1\">军用软件开发文档通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">18</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 439A-2013</td><td colspan=\"1\" rowspan=\"1\">军用软件质量保证通用要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">19</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 5234-2004</td><td colspan=\"1\" rowspan=\"1\">军用软件验证和确认</td></tr><tr><td colspan=\"1\" rowspan=\"1\">20</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 5235-2004</td><td colspan=\"1\" rowspan=\"1\">军用软件配置管理</td></tr><tr><td colspan=\"1\" rowspan=\"1\">21</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 1267-1991</td><td colspan=\"1\" rowspan=\"1\">军用软件维护</td></tr><tr><td colspan=\"1\" rowspan=\"1\">22</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 1268A-2004</td><td colspan=\"1\" rowspan=\"1\">军用软件验收要求</td></tr><tr><td colspan=\"1\" rowspan=\"1\">23</td><td colspan=\"1\" rowspan=\"1\">8.1 i)</td><td colspan=\"1\" rowspan=\"1\">GJB 3206A-2010</td><td colspan=\"1\" rowspan=\"1\">技术状态管理</td></tr><tr><td colspan=\"1\" rowspan=\"1\">24</td><td colspan=\"1\" rowspan=\"1\">8.1 j)</td><td colspan=\"1\" rowspan=\"1\">GJB/Z 171-2013</td><td colspan=\"1\" rowspan=\"1\">武器装备研制项目风险管理指南</td></tr><tr><td colspan=\"1\" rowspan=\"1\">25</td><td colspan=\"1\" rowspan=\"1\">8.1 k)</td><td colspan=\"1\" rowspan=\"1\">GJB/Z 4-1988</td><td colspan=\"1\" rowspan=\"1\">质量成本管理指南</td></tr><tr><td colspan=\"1\" rowspan=\"1\">26</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB 1364-1992</td><td colspan=\"1\" rowspan=\"1\">装备费用一效能分析</td></tr><tr><td colspan=\"1\" rowspan=\"1\">27</td><td colspan=\"1\" rowspan=\"1\"></td><td colspan=\"1\" rowspan=\"1\">GJB/Z 127A-2006</td><td colspan=\"1\" rowspan=\"1\">装备质量管理统计方法应用指南</td></tr><tr><td colspan=\"1\" rowspan=\"1\">28</td><td colspan=\"1\" rowspan=\"1\">8.3.2 1)</td><td colspan=\"1\" rowspan=\"1\">GJB 190-1986</td><td colspan=\"1\" rowspan=\"1\">特性分类</td></tr><tr><td colspan=\"1\" rowspan=\"1\">29</td><td colspan=\"1\" rowspan=\"1\">8.3.3 g)</td><td colspan=\"1\" rowspan=\"1\">GJB 3363-1998</td><td colspan=\"1\" rowspan=\"1\">生产性分析</td></tr><tr><td colspan=\"1\" rowspan=\"1\">30</td><td colspan=\"1\" rowspan=\"1\">8.3.4 i),</td><td colspan=\"1\" rowspan=\"1\">GJB 1310-1991</td><td colspan=\"1\" rowspan=\"1\">设计评审</td></tr><tr><td>31</td><td>8.3.4</td><td>GJB 1362A-2007</td><td>军工产品定型程序和要求</td></tr><tr><td>32</td><td></td><td>GJB/Z 170-2013</td><td>军工产品设计定型文件编制指南</td></tr><tr><td>33</td><td>8.3.5 e)</td><td>GJB 909-1990</td><td>关键件和重要件的质量控制</td></tr><tr><td>34</td><td>8.3.5 f)</td><td>GJB 1371-1992</td><td>装备保障性分析</td></tr><tr><td>35</td><td></td><td>GJB 3872-1999</td><td>装备综合保障通用要求</td></tr><tr><td>36</td><td>8.3.5 g)</td><td>GJB/Z 23-1991</td><td>可靠性和维修性工程报告编写一般要求</td></tr><tr><td>37</td><td></td><td>GJB 6600-2008</td><td>装备交互式电子技术手册</td></tr><tr><td>38</td><td>8.3.7</td><td>GJB 2366-1995</td><td>试制过程的质量控制</td></tr><tr><td>39</td><td>8.3.7 a)</td><td>GJB 1710-1993</td><td>试制和生产准备状态检查</td></tr><tr><td>40</td><td>8.3.7 b)</td><td>GJB 1269-1991</td><td>工艺评审</td></tr><tr><td>41</td><td>8.3.7 c)</td><td>GJB 908-1990</td><td>首件鉴定</td></tr><tr><td>42</td><td>8.3.7 d)</td><td>GJB 907-1990</td><td>产品质量评审</td></tr><tr><td>43</td><td>8.3.8</td><td>GJB 1452A-2004</td><td>大型试验质量管理要求</td></tr><tr><td>44</td><td></td><td>GJB 1309-1991</td><td>军工产品大型试验计量保证与监督要求</td></tr><tr><td>45</td><td></td><td>GJB 5711-2006</td><td>装备质量问题处理通用要求</td></tr><tr><td>46</td><td>8.3.8 g)</td><td>GJB 5234-2004</td><td>军用软件验证和确认</td></tr><tr><td>47</td><td></td><td>GJB 5235-2004</td><td>军用软件配置管理</td></tr><tr><td>48</td><td>8.4.1</td><td>GJB 1404-1992</td><td>器材供应单位质量保证能力评定</td></tr><tr><td>49</td><td></td><td>GJB 939-1990</td><td>外购器材的质量管理</td></tr><tr><td>50</td><td></td><td>GJB 5714-2006</td><td>外购器材质量监督要求</td></tr><tr><td>51</td><td>8.5.1</td><td>GJB 467-1988</td><td>工序质量控制要求</td></tr><tr><td>52</td><td>8.5.2</td><td>GJB 726-1989</td><td>军工产品质量标识和可追溯性要求</td></tr><tr><td>53</td><td></td><td>GJB 1330-1991</td><td>军工产品批次管理的质量控制要求</td></tr><tr><td>54</td><td>8.6</td><td>GJB 1442-1992</td><td>检验工作要求</td></tr><tr><td>55</td><td></td><td>GJB 179A-1996</td><td>计数抽样检验程序及表</td></tr><tr><td>56</td><td></td><td>GJB 3916A-2006</td><td>装备出厂检查、交接与发运质量工作要求</td></tr><tr><td>57</td><td></td><td>GJB 3677A-2006</td><td>装备检验验收程序</td></tr><tr><td>58</td><td>8.7.1</td><td>GJB 571-1988</td><td>不合格品管理</td></tr><tr><td>59</td><td>10.2.1</td><td>GJB 841-1990</td><td>故障报告、分析和纠正措施系统</td></tr><tr><td>60</td><td></td><td>GJB/Z 768A-1998</td><td>故障树分析指南</td></tr><tr><td>61</td><td></td><td>GJB/Z 1391-2006</td><td>故障模式、影响及危害性分析指南</td></tr></table>",
+        "bbox": [
+            132,
+            263,
+            868,
+            899
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "header",
+        "text": "GJB9001C-2017",
+        "bbox": [
+            740,
+            92,
+            880,
+            106
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "page_number",
+        "text": "27",
+        "bbox": [
+            861,
+            905,
+            882,
+            916
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "table",
+        "img_path": "",
+        "table_caption": [
+            ""
+        ],
+        "table_footnote": [],
+        "bbox": [
+            149,
+            148,
+            888,
+            803
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "header",
+        "text": "GJB 9001C-2017",
+        "bbox": [
+            144,
+            98,
+            284,
+            111
+        ],
+        "page_idx": 1
+    },
+    {
+        "type": "page_number",
+        "text": "28",
+        "bbox": [
+            132,
+            908,
+            153,
+            920
+        ],
+        "page_idx": 1
+    }
+]
