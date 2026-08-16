@@ -44,9 +44,10 @@ struct Cli {
     /// 快 33%，80 起脚注/小字开始漏检。实测 上海公报52p: 100 vs 200 恢复率均 99.83%。
     #[arg(long, default_value_t = 100.0)]
     dpi: f32,
-    /// ADR-0007：质量路由。auto 渲染前 N 页评估自动选 tier/dpi（清晰件→tiny 快、
-    /// 污染件→small 准）；off 用 --ocr-tier/--dpi 显式值（golden 测试固定 off）
-    #[arg(long, value_enum, default_value_t = QualityRoute::Auto)]
+    /// ADR-0007：质量路由（后验置信度门控）。auto 用 tiny 跑首页 OCR，平均置信度
+    /// 低于阈值则升级 small 全篇重跑（污染件更准）；off 用 --ocr-tier 显式值，
+    /// 不承担额外首页 OCR 开销（golden 测试固定 off）。默认 off。
+    #[arg(long, value_enum, default_value_t = QualityRoute::Off)]
     quality_route: QualityRoute,
 }
 

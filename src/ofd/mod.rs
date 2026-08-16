@@ -138,12 +138,13 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
     }
     let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
 
-    // ADR-0007：OFD 质量路由（brooks-review Critical 修复）。仅当有待 OCR 页
-    // （OcrFull 乱码页 / OcrPendingImage 图片型页）且 quality_route==Auto 时探针。
-    // **只路由 tier，不改 dpi**：路径 A 的 F3 乱码页在第一遍循环内已用 opts.dpi
-    // 渲染（页型判定时同步渲染），改 dpi 会与已渲染图矛盾；路径 B 走 ADR-0008 直提
-    // （downscale 按 dpi×12 控内存），dpi 敏感度低于 PDFium 整页光栅化。tier 路由
-    // 仍有效（tiny→small 提精度）。探针取首 body 前 3 页，失败回退 opts.ocr_tier。
+    // ADR-0007：OFD 质量路由（后验置信度门控）。仅当有待 OCR 页（OcrFull 乱码页 /
+    // OcrPendingImage 图片型页）且 quality_route==Auto 时探针：tiny 渲染+OCR 首 body
+    // 首页 → 平均置信度低于阈值 → 升级 small 全篇重跑；否则用显式 opts.ocr_tier。
+    // 与 PDF 侧同一算法（needs_upgrade）。**只路由 tier，不改 dpi**：路径 A 的 F3 乱码
+    // 页在第一遍循环内已用 opts.dpi 渲染（页型判定时同步渲染），改 dpi 会与已渲染图
+    // 矛盾；路径 B 走 ADR-0008 直提（downscale 按 dpi×12 控内存），dpi 敏感度低于
+    // PDFium 整页光栅化。探针失败（渲染/OCR/装载）回退 opts.ocr_tier，不阻断。
     let has_ocr_pages = pages.iter().any(|p| {
         matches!(p, PageData::OcrFull(_) | PageData::OcrPendingImage { .. })
     });
@@ -151,25 +152,29 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
         && opts.quality_route == crate::quality::QualityRoute::Auto
     {
         const PROBE_DPI: f64 = 100.0;
-        const PROBE_PAGES: usize = 3;
-        let mut grays: Vec<image::GrayImage> = Vec::new();
+        let mut needs: Option<bool> = None;
         if let Some(first_body) = doc_bodies.first() {
-            if let Ok(doc) = reader.load_document(first_body) {
-                let n = doc.pages().len().min(PROBE_PAGES);
-                for idx in 0..n {
-                    if let Ok(rgba) =
-                        reader.render_page_to_image(&doc, idx, &RenderOptions::with_dpi(PROBE_DPI))
-                    {
-                        let rgb = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
-                        grays.push(image::imageops::grayscale(&rgb));
-                    }
-                }
+            if let Ok(doc) = reader.load_document(first_body)
+                && let Ok(rgba) = reader
+                    .render_page_to_image(&doc, 0, &RenderOptions::with_dpi(PROBE_DPI))
+                && let Ok(engine) = crate::ocr_engine::OcrEngine::build(
+                    crate::models::OcrTier::Tiny,
+                    opts.ocr_layout,
+                )
+                && let Ok(pages_r) = engine.predict(
+                    vec![image::DynamicImage::ImageRgba8(rgba).to_rgb8()],
+                    1,
+                    None,
+                )
+                && let Some(page) = pages_r.first()
+            {
+                needs = Some(crate::quality::needs_upgrade(page));
             }
         }
-        if grays.is_empty() {
-            opts.ocr_tier
-        } else {
-            crate::quality::route_pages(&grays, PROBE_PAGES).tier()
+        match needs {
+            Some(true) => crate::models::OcrTier::Small,
+            Some(false) => crate::models::OcrTier::Tiny,
+            None => opts.ocr_tier,
         }
     } else {
         opts.ocr_tier
