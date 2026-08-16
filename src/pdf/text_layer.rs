@@ -31,13 +31,29 @@ const SPLIT_CLUSTER_TOL_FRACTION: f32 = 0.02;
 /// 含表格页回退 OCR 输出 `<table>` HTML（见 mod.rs 模块文档 T2-B）。
 ///
 /// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
-pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
+///
+/// `pub(crate)`：ADR-0005 候选 2 批处理预分流调用——`BatchConverter` 先逐 doc 试文字层，
+/// 命中（Some）即快速路径出结果；未命中（None）的图片型 PDF 收集到 `ocr_paths`
+/// 进跨文档 `PagePipeline`，与本函数解耦。
+pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<Option<String>> {
     // 先做廉价文本提取：图片型/扫描件（items 空）直接回落 OCR，跳过开销大且
     // pdf-inspector 有行分组 bug（layout.rs:1270 panic）的 garbled 预检。
+    //
+    // ADR-0006：错误不再吞 `Ok(None)`——加密 PDF（Encrypted）、损坏 PDF
+    // （InvalidStructure/Parse/NotAPdf）按 `PdfError` 分类返 `Err`，
+    // batch 预分流阶段据此直接标错、不送 OCR（避免绕一大圈丢失分类）。
+    // Io 错误（文件读不到等）同样返 Err，由调用方处理。
     let items = match pdf_inspector::extract_text_with_positions(path) {
         Ok(items) => items,
-        Err(_) => return Ok(None),
+        Err(e) => return Err(crate::error::from_pdf_error(e)),
     };
+    // pdf-inspector 1.14+ 对图片对象返回 `[Image: ...]` 占位 TextItem（FormXob 引用等），
+    // 非真实文字。过滤后判空——纯图片型 PDF（image.pdf/image_table.pdf）过滤后为空，
+    // 回退 OCR，避免误判"有文字层"输出占位符。
+    let items: Vec<pdf_inspector::TextItem> = items
+        .into_iter()
+        .filter(|i| !i.text.trim_start().starts_with("[Image:"))
+        .collect();
     if items.is_empty() {
         return Ok(None);
     }
@@ -182,8 +198,13 @@ pub(super) fn text_layer_markdown(path: &Path, opts: &ConvertOptions) -> Result<
         if !to_render.is_empty()
             && let Ok(imgs) = super::render::render_pdf_pages(path, opts.dpi, &to_render)
             && !imgs.is_empty()
-            && let Ok(results) =
-                crate::ocr_engine::ocr_images(imgs, opts.ocr_tier, opts.ocr_layout, opts.threads)
+            && let Ok(results) = crate::ocr_engine::ocr_images(
+                imgs,
+                opts.ocr_tier,
+                opts.ocr_layout,
+                opts.threads,
+                None,
+            )
         {
             for (page, res) in ocr_pages.into_iter().zip(results) {
                 let has_table = res.layout_elements.iter().any(|e| {
