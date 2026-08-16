@@ -143,17 +143,17 @@ cat 公文.pdf | anydoc-ocr -         # stdin 输入
 
 ## 库用法
 
-核心 API：`convert_to_markdown(path, &ConvertOptions) -> Result<String>`，外加 `OcrEngine` 单例（`build`/`predict`/`clear_cache`）、`ocr_images`/`ocr_pdf_pages` 便捷函数、`DocKind`、`OcrTier`。
+核心 API：`convert_to_markdown(path, &ConvertRequest) -> Result<String>`，外加 `OcrEngine` 单例（`build`/`predict`/`clear_cache`）、`ocr_images`/`ocr_pdf_pages` 便捷函数、`DocKind`、`OcrTier`。
 
 ```rust
-use anydoc_ocr::{convert_to_markdown, ConvertOptions, OcrTier, OcrLayout};
+use anydoc_ocr::{convert_to_markdown, ConvertRequest, OcrTier, OcrLayout};
 
-let opts = ConvertOptions {
-    ocr_tier: OcrTier::Small,
-    ocr_layout: OcrLayout::Doc,
-    dpi: 100.0,      // 必须显式设置：Default 的 dpi=0 会使 OCR 渲染失效
-    threads: 4,
-    ..Default::default()
+let opts = ConvertRequest {
+    ocr: anydoc_ocr::OcrConfig {
+        tier: OcrTier::Small,
+        layout: OcrLayout::Doc,
+    },
+    ..Default::default()  // render.dpi 默认 100.0（旧 dpi=0 陷阱已修）
 };
 let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts)?;
 ```
@@ -190,7 +190,7 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts)?;
 ```
 src/
   main.rs           CLI 入口（clap 参数）
-  lib.rs            库入口，重导出 convert_to_markdown / ConvertOptions / OcrTier 等
+  lib.rs            库入口，重导出 convert_to_markdown / ConvertRequest / OcrTier 等
   convert.rs        格式分流（detect → pdf/ofd/anydoc）
   detect.rs         PDF/OFD/Other 魔数检测
   pdf/              文字层提取 + 阅读顺序、渲染（render.rs）、OCR 回退
@@ -213,7 +213,6 @@ scripts/            build-x64 / build-aarch64 / package-aarch64 / package-single
 
 - **DPI ≤80** 起脚注/小字开始漏检（印刷体公文 100 为甜点：快 33% 且零精度损失）。
 - **`medium` 档在 ARM CPU 上慢**（det 59MB / rec 73MB），慎用于大批量。
-- **`ConvertOptions` 的 `Default` 实现 `dpi=0`**，库调用方必须显式设 `dpi`，否则 OCR 渲染失效（golden 测试内同样显式设 100）。
 - **ORT 全局线程池仅首次生效**：若宿主已先初始化 ORT，`init_runtime` 的配置被忽略（幂等）；配置失败时告警并回落 ORT 默认线程池（可能线程超额订阅）。
 - **模型加载失败不自动重试下载**：`ANYDOC_MODEL_DIR` 下缺文件时该模型回退裸名下载；但自备模型不能放 `$OAR_HOME`（见环境变量表）。
 - **OFD 中文渲染依赖 CJK 字体**：目标机需安装 `fonts/NotoSansCJK-Regular.ttc`（`scripts/install-font.sh`）。

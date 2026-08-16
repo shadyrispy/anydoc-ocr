@@ -3,30 +3,31 @@
 //! 现状（P3 前）：PDF/OFD 两通路都是"先全量渲染物化所有页图 → 再批量 OCR"，
 //! 渲染延迟完全不被掩盖，峰值内存 = N×页图（52p×100dpi≈1.4GB）。
 //!
-//! P3：渲染线程逐页产出图 → 有界 channel 背压送入 → rayon 池并发 OCR → 按 idx 回填。
+//! P3：渲染线程逐页产出图 → 有界 channel 背压送入 → 消费线程逐页 OCR → 按 idx 回填。
 //! - 渲染延迟被 OCR 掩盖（N 页渲染时 N-1 页在 OCR）
 //! - 峰值内存降到 ~2×页图（渲染中 + OCR 中，channel bound = threads×2）
-//! - PDFium `PdfDocument` / OFD `OfdReader` 非 Send → 渲染在专属单线程（闭包内 open），
-//!   OCR 用 rayon 池
+//! - PDFium `PdfDocument` / OFD `OfdReader` 非 Send → 渲染在专属单线程（闭包内 open）
 //!
-//! 深模块 [`PagePipeline`]：拥有 render 闭包 + OCR 池 + 背压，暴露 `run()` 返回按页序
-//! 的结果。删除测试——删掉后 channel/spawn/回填逻辑散到 PDF/OFD 两调用方，
+//! P0-1b：OCR 消费从"rayon 池并发"收敛为**单消费者**——oar 的 `OrtInfer` 每模型
+//! 恒单 session（`vec![Mutex<Session>]` ×1），页级并发只会在 session 锁上 convoy
+//! 且实测高并发死锁（见 `ocr_engine::OcrEngine::infer_lock` 文档）。真并行来自：
+//! 渲染线程与消费线程的重叠 + ORT intra-op 线程池在单次 run 内的 batch 并行。
+//!
+//! 深模块 [`PagePipeline`]：拥有 render 闭包 + 背压 + OCR 消费，暴露 `run()` 返回
+//! 按页序的结果。删除测试——删掉后 channel/spawn/回填逻辑散到 PDF/OFD 两调用方，
 //! 复杂度重现 → earning its keep。
 //!
 //! 设计：不抽 `RenderSource` trait（PdfDocument/OfdReader 非 Send，trait 难以 clean），
 //! 改用 `RenderFn: FnOnce(mpsc::Sender) -> Result<()> + Send`——调用方传入打开 doc +
 //! 逐页渲染的闭包，在 spawn 内执行。两调用方（PDF/OFD）各自构造闭包，共享 OCR 消费
 //! 逻辑（本模块 `run` 内）。
-//!
-//! P4 预加载折叠：detect 判定走 OCR 后，render 线程 spawn 前 `thread::spawn` 后台
-//! `OcrEngine::build`，与渲染并行。build 失败 → run() 返回 Err（原本也是）。
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 
-use crate::error::{ConvertError, Result, runtime};
+use crate::error::{ConvertError, Result, Stage, runtime};
 use crate::ocr_engine::OcrEngine;
-use crate::timing::{PageStage, PageTimings};
+use crate::timing::PageTimings;
 use image::RgbImage;
 
 /// 渲染项：((doc_idx, page_idx), 渲染结果)。渲染失败时 idx 仍须已知（调用方按页容错）。
@@ -61,7 +62,8 @@ pub struct PagePipeline<F: RenderFn> {
 }
 
 impl<F: RenderFn> PagePipeline<F> {
-    /// bound = threads×2：渲染最多领先 OCR 2 轮，控峰值内存。
+    /// bound = threads×2：渲染最多领先 OCR 2 轮，控峰值内存（仅内存背压语义；
+    /// OCR 线程并发由 run() 内专用线程池 `num_threads(threads)` 精确限定）。
     const BOUND_MULT: usize = 2;
 
     pub fn new(
@@ -107,79 +109,52 @@ impl<F: RenderFn> PagePipeline<F> {
         let render_handle = thread::Builder::new()
             .name("anydoc-render".into())
             .spawn(move || render_fn(tx))
-            .map_err(|e| runtime(None, format!("启动渲染线程失败: {e}")))?;
+            .map_err(|e| runtime(Stage::Render, None, format!("启动渲染线程失败: {e}")))?;
 
-        // OCR 消费：rayon scope 并发，按 (doc_idx, page_idx) 回填到 BTreeMap
-        let results: std::sync::Mutex<
-            std::collections::BTreeMap<
-                (usize, usize),
-                Result<oar_ocr::domain::structure::StructureResult>,
-            >,
-        > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        // OCR 消费：P0-1b 后为**单消费者**循环——oar 每模型单 session，页级并发
+        // 只有锁 convoy（且有死锁实证，见 `ocr_engine::OcrEngine::infer_lock`
+        // 文档），`predict_one` 内部已引擎级串行化。真并行 = 渲染线程（生产者）
+        // 与本消费线程重叠 + ORT intra-op 在单次 run 内的 batch 并行。
+        //
+        // 背压语义不变：channel bound = threads×BOUND_MULT，OCR 忙时渲染线程
+        // 在 `send` 上阻塞，峰值内存 ~2×页图。
+        let mut results: std::collections::BTreeMap<
+            (usize, usize),
+            Result<oar_ocr::domain::structure::StructureResult>,
+        > = std::collections::BTreeMap::new();
         // 渲染失败（单页 / 整文档）的错误，按 idx 收集供调用方回填。
-        let render_errors: std::sync::Mutex<
-            std::collections::BTreeMap<(usize, usize), ConvertError>,
-        > = std::sync::Mutex::new(std::collections::BTreeMap::new());
-        let results_ref = &results;
-        let render_errors_ref = &render_errors;
-        let engine_ref = &self.engine;
-        let timings_ref = self.timings.as_deref();
-
-        rayon::scope(|s| {
-            let rx = rx;
-            while let Ok(item) = rx.recv() {
-                let (idx, img) = match item {
-                    Ok((idx, img)) => (idx, img),
-                    Err((idx, e)) => {
-                        render_errors_ref.lock().unwrap().insert(idx, e);
-                        continue;
-                    }
-                };
-                let engine = engine_ref;
-                let timings = timings_ref;
-                s.spawn(move |_| {
-                    let start = std::time::Instant::now();
-                    let r = engine.analyzer.predict_images(vec![img]);
-                    if let Some(t) = timings {
-                        t.record(
-                            idx.1,
-                            PageStage::Ocr,
-                            start.elapsed().as_secs_f64() * 1000.0,
-                        );
-                    }
-                    let res = match r.into_iter().next() {
-                        Some(Ok(s)) => Ok(s),
-                        Some(Err(e)) => Err(runtime(
-                            Some(&format!("page {:?}", idx)),
-                            format!("OCR 推理失败: {e}"),
-                        )),
-                        None => Err(runtime(
-                            Some(&format!("page {:?}", idx)),
-                            "OCR 返回空结果".to_string(),
-                        )),
-                    };
-                    results_ref.lock().unwrap().insert(idx, res);
-                });
-            }
-        });
+        let mut render_errors: std::collections::BTreeMap<(usize, usize), ConvertError> =
+            std::collections::BTreeMap::new();
+        let engine = &self.engine;
+        let timings = self.timings.as_deref();
+        while let Ok(item) = rx.recv() {
+            let (idx, img) = match item {
+                Ok((idx, img)) => (idx, img),
+                Err((idx, e)) => {
+                    render_errors.insert(idx, e);
+                    continue;
+                }
+            };
+            // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
+            let res = engine.predict_one(img, idx.0, idx.1, timings);
+            results.insert(idx, res);
+        }
 
         // 等渲染线程结束
         match render_handle.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e), // render_fn 返回致命错误
-            Err(e) => return Err(runtime(None, format!("渲染线程 panic: {e:?}"))),
+            Err(e) => return Err(runtime(Stage::Render, None, format!("渲染线程 panic: {e:?}"))),
         }
 
         // 收集按 (doc_idx, page_idx) 升序结果
-        let map = results.into_inner().unwrap();
-        let mut out = Vec::with_capacity(map.len());
-        for (idx, res) in map {
+        let mut out = Vec::with_capacity(results.len());
+        for (idx, res) in results {
             match res {
                 Ok(r) => out.push((idx, r)),
                 Err(e) => return Err(e),
             }
         }
-        let errs = render_errors.into_inner().unwrap().into_iter().collect();
-        Ok((out, errs))
+        Ok((out, render_errors.into_iter().collect()))
     }
 }

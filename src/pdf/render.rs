@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::error::{Result, runtime};
+use crate::error::{Result, Stage, runtime};
 use pdfium_render::prelude::*;
 
 /// 将 PDF 指定页按 `dpi` 渲染为 `RgbImage`。
@@ -34,6 +34,7 @@ pub fn render_pdf_pages(
         Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
         Err(e) => {
             return Err(runtime(
+                Stage::Render,
                 None,
                 format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
             ));
@@ -42,6 +43,7 @@ pub fn render_pdf_pages(
 
     let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
         runtime(
+            Stage::Render,
             None,
             format!("PDFium 加载 PDF 失败: {}: {e}", path.display()),
         )
@@ -125,6 +127,7 @@ pub fn render_cross_doc_fn(
             Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
             Err(e) => {
                 return Err(runtime(
+                    Stage::Render,
                     None,
                     format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
                 ));
@@ -140,8 +143,9 @@ pub fn render_cross_doc_fn(
                     let _ = tx.send(Err((
                         (doc_idx, usize::MAX),
                         runtime(
-                            Some(&format!("doc {doc_idx}")),
-                            format!("打开 {} 失败: {e}", path.display()),
+                            Stage::Render,
+                            None,
+                            format!("打开 doc {doc_idx}（{}）失败: {e}", path.display()),
                         ),
                     )));
                     continue;
@@ -162,8 +166,9 @@ pub fn render_cross_doc_fn(
                     let _ = tx.send(Err((
                         (doc_idx, i),
                         runtime(
-                            Some(&format!("doc {doc_idx} page {i}")),
-                            format!("PDF {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
+                            Stage::Render,
+                            Some(i),
+                            format!("PDF doc {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
                         ),
                     )));
                     continue;
@@ -179,8 +184,9 @@ pub fn render_cross_doc_fn(
                             let _ = tx.send(Err((
                                 (doc_idx, i),
                                 runtime(
-                                    Some(&format!("doc {doc_idx} page {i}")),
-                                    format!("bitmap 转 image 失败: {e}"),
+                                    Stage::Render,
+                                    Some(i),
+                                    format!("doc {doc_idx} bitmap 转 image 失败: {e}"),
                                 ),
                             )));
                         }
@@ -189,7 +195,8 @@ pub fn render_cross_doc_fn(
                         let _ = tx.send(Err((
                             (doc_idx, i),
                             runtime(
-                                Some(&format!("doc {doc_idx} page {i}")),
+                                Stage::Render,
+                                Some(i),
                                 format!("渲染 doc{doc_idx} 第 {i} 页失败: {e}"),
                             ),
                         )));
@@ -243,8 +250,9 @@ fn locate_pdfium() -> Result<String> {
         return Ok(dev.to_string_lossy().into_owned());
     }
     Err(runtime(
+        Stage::Render,
         None,
-        "找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）".to_string(),
+        "找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）",
     ))
 }
 
@@ -269,19 +277,22 @@ fn render_document(
             // （表格归属错页）。0 尺寸页本就无法渲染（PDF 规范页尺寸须 >0），
             // 显式报错，由调用方容错回退（文字层）而非产出错位结果。
             return Err(runtime(
-                Some(&format!("page {i}")),
+                Stage::Render,
+                Some(i),
                 format!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}"),
             ));
         }
         let bitmap = page.render(w, h, None).map_err(|e| {
             runtime(
-                Some(&format!("page {i}")),
+                Stage::Render,
+                Some(i),
                 format!("渲染第 {i} 页失败: {e}"),
             )
         })?;
         let img = bitmap.as_image().map_err(|e| {
             runtime(
-                Some(&format!("page {i}")),
+                Stage::Render,
+                Some(i),
                 format!("bitmap 转 image 失败: {e}"),
             )
         })?;

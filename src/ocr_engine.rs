@@ -11,10 +11,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Once};
 use std::time::Instant;
 
-use crate::error::{Result, runtime};
+use crate::error::{Result, Stage, runtime};
 use image::RgbImage;
 use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
-use rayon::prelude::*;
 
 use crate::models::{OcrLayout, OcrTier, spec_for};
 
@@ -27,22 +26,24 @@ static ORT_INIT: Once = Once::new();
 /// 二者相乘在 8 核飞腾上为 4×8=32 线程风暴。这里提交进程级 ORT 线程池，
 /// 令 `intra = max(1, cores / parallel)`，使总线程≈核心数、无超额订阅。
 ///
-/// `parallel` 取自 `opts.threads`；`ANYDOC_ORT_INTRA_THREADS` 可强制覆盖（调试用）。
+/// P2：`cfg.ort_intra > 0` 时用显式值；`0` = 自动（cores/page_parallel）。
+/// `ANYDOC_ORT_INTRA_THREADS` 仍可强制覆盖（调试用，优先级最高）。
 /// ORT 环境为进程全局、首次初始化者生效；已在别处初始化则本调用被忽略（幂等）。
 ///
 /// **必须在 `OcrEngine::build` 之前调用**：ORT 全局线程池只有先于任何 ONNX session
 /// 创建时 commit 才生效，而 session 在 `build` 内的 `build_analyzer` 里创建；放到
 /// session 之后（如 `predict` 内）提交将被 ORT 忽略，本配置形同虚设。
-pub(crate) fn init_runtime(parallel: usize) {
+pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
     ORT_INIT.call_once(|| {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let parallel = parallel.max(1).min(cores);
+        let parallel = cfg.page_parallel.max(1).min(cores);
         let intra = std::env::var("ANYDOC_ORT_INTRA_THREADS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&n| n > 0)
+            .or(if cfg.ort_intra > 0 { Some(cfg.ort_intra) } else { None })
             .unwrap_or_else(|| (cores / parallel).max(1));
         // 配置失败不得掀翻宿主进程（本 crate 亦作为库被集成）：告警后回落 ORT 默认线程池。
         let opts = match ort::environment::GlobalThreadPoolOptions::default()
@@ -74,6 +75,14 @@ static CACHE: LazyLock<Mutex<HashMap<EngineKey, Arc<OcrEngine>>>> =
 /// 已构建的 OCR 分析器句柄（内部 `Arc` 共享，跨线程安全）。
 pub struct OcrEngine {
     pub(crate) analyzer: Arc<OARStructure>,
+    /// 引擎级推理互斥（P0-1b）：oar 的 `OrtInfer` 每模型恒为**单 session**
+    /// （`vec![Mutex::new(session)]`），多线程并发 `predict_images` 只会在同一把
+    /// session futex 上 convoy，且实测高并发下出现"持锁线程消失"型死锁
+    /// （4 worker 等待 CRNN session 锁、锁字=2、进程内无持有者，2026-08-16
+    /// batch_golden gdb 取证）。真并行由 ORT intra-op 线程池在**单次 run 内**
+    /// 提供（batch 张量并行），跨调用并行只有锁竞争没有吞吐收益——这里把
+    /// `analyzer` 的全部触达收拢为进程内（每引擎）串行，消除该死锁类。
+    infer_lock: Mutex<()>,
 }
 
 impl OcrEngine {
@@ -90,6 +99,7 @@ impl OcrEngine {
         let mut t = crate::timing::StageTimer::new();
         let engine = Arc::new(OcrEngine {
             analyzer: Arc::new(build_analyzer(tier, layout)?),
+            infer_lock: Mutex::new(()),
         });
         t.stage("model-load");
         // 注意：build_analyzer 返回 OARStructure（predict_images 在其上），非 Builder。
@@ -98,12 +108,15 @@ impl OcrEngine {
     }
 
     /// 对一组页面图跑 OCR，返回每页 `StructureResult`（页序保序，契约由断言守恒）。
-    /// `threads` 控制**页级并发**：多页切成 chunk 用 rayon 并行 `predict_images`，
-    /// 共享 `&self.analyzer`（已证 `Sync`）。
+    ///
+    /// P0-1b：不再用 rayon 页级并行调 `predict_images`——oar 每模型单 session，
+    /// 并发调用只在 session 锁上 convoy（且有死锁实证，见 `infer_lock` 文档）。
+    /// 改为**串行**逐 chunk 推理（chunk 划分与旧实现逐字节一致，保 crop 批次
+    /// 组成不变 → 输出不变，golden 零漂移）；吞吐由 ORT intra-op 池在单次 run
+    /// 内的 batch 并行承担。
     ///
     /// P7：`timings` 非空时按 chunk 记录 OCR 耗时（key = chunk 起始页 idx，
-    /// 粒度 = chunk_size 页）。P3 流水线落地后改为单页 key（届时单页喂 OCR，
-    /// per-page 自然可得）。chunk 粒度定位拖尾区间已足够。
+    /// 粒度 = chunk_size 页）。
     pub fn predict(
         &self,
         images: Vec<RgbImage>,
@@ -117,38 +130,73 @@ impl OcrEngine {
         let threads = threads.max(1);
         let chunk_size = n.div_ceil(threads);
         // chunk 起始页 idx（计时 key）：0, chunk_size, 2*chunk_size, ...
-        let per_chunk: Vec<Vec<_>> = images
-            .into_par_iter()
-            .chunks(chunk_size)
-            .enumerate()
-            .map(|(ci, chunk)| {
-                let start = Instant::now();
-                let r = self.analyzer.predict_images(chunk);
-                if let Some(t) = timings {
-                    t.record(
-                        ci * chunk_size,
-                        crate::timing::PageStage::Ocr,
-                        start.elapsed().as_secs_f64() * 1000.0,
-                    );
-                }
-                r
-            })
-            .collect();
-
         let mut out = Vec::with_capacity(n);
-        for group in per_chunk {
+        for (ci, chunk) in images.chunks(chunk_size).enumerate() {
+            let start = Instant::now();
+            let group = {
+                let _infer = self
+                    .infer_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                self.analyzer.predict_images(chunk.to_vec())
+            };
+            if let Some(t) = timings {
+                t.record(
+                    ci * chunk_size,
+                    crate::timing::PageStage::Ocr,
+                    start.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
             for r in group {
-                out.push(r.map_err(|e| runtime(None, format!("OCR 推理失败: {e}")))?);
+                out.push(r.map_err(|e| runtime(Stage::Ocr, None, format!("OCR 推理失败: {e}")))?);
             }
         }
         if out.len() != n {
             // 库模式不 panic 宿主：页序契约破坏改为显式 Err（CLI 会打印退出，库调用方可捕获）。
             return Err(runtime(
+                Stage::Ocr,
                 None,
                 format!("OCR 输出页数 {} != 输入 {}（页序契约破坏）", out.len(), n),
             ));
         }
         Ok(out)
+    }
+
+    /// 单页推理共享入口（P0-1）：pipeline 逐页路径与 `predict` 批量路径共用同一
+    /// analyzer、同一错误包装与同一计时约定（`PageStage::Ocr`、ms、key=页号）。
+    ///
+    /// `doc_idx`/`page_idx` 仅用于错误定位（复合键 label），与 pipeline 的
+    /// `(doc_idx, page_idx)` 一致；单文档调用方传 `doc_idx=0`。
+    pub(crate) fn predict_one(
+        &self,
+        img: RgbImage,
+        doc_idx: usize,
+        page_idx: usize,
+        timings: Option<&crate::timing::PageTimings>,
+    ) -> Result<oar_ocr::domain::structure::StructureResult> {
+        let start = Instant::now();
+        let r = {
+            // P0-1b：引擎级串行化（见 infer_lock 文档）——pipeline 多 worker 并发
+            // 进来时在此排队，analyzer 内部的单 session 锁永不受竞态触达。
+            let _infer = self
+                .infer_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.analyzer.predict_images(vec![img])
+        };
+        if let Some(t) = timings {
+            t.record(
+                page_idx,
+                crate::timing::PageStage::Ocr,
+                start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        let label = format!("doc {doc_idx} page {page_idx}");
+        match r.into_iter().next() {
+            Some(Ok(s)) => Ok(s),
+            Some(Err(e)) => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 推理失败: {e}"))),
+            None => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 返回空结果"))),
+        }
     }
 
     /// 释放全部缓存的引擎（仅弃缓存自身 Arc 引用；外部仍持有的句柄继续有效）。
@@ -210,7 +258,7 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // 改变 OCR 行为（旋转页结果变正），golden 需 UPDATE=1 重基线（预期召回提升）。
         .with_document_orientation(model_path(spec.doc_ori))
         .build()
-        .map_err(|e| runtime(None, format!("构建 OCR 分析器失败: {e}")))
+        .map_err(|e| runtime(Stage::Ocr, None, format!("构建 OCR 分析器失败: {e}")))
 }
 
 /// 全库唯一 OCR 入口（PDF/OFD 两通路共用）：用 oar-ocr 对渲染图做版面+文本+表格分析。
@@ -229,6 +277,7 @@ pub fn ocr_images(
     timings: Option<&crate::timing::PageTimings>,
 ) -> Result<Vec<oar_ocr::domain::structure::StructureResult>> {
     // A：OCR 入口已知页级并行度，提交进程级线程池（消除超额订阅）。
-    init_runtime(threads);
+    // P2：ort_intra 未显式时按 auto 语义构造（0 = 自动 cores/page_parallel）。
+    init_runtime(&crate::convert::ParallelConfig { page_parallel: threads, ort_intra: 0 });
     OcrEngine::build(tier, layout)?.predict(images, threads, timings)
 }

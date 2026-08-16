@@ -13,7 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::PathBuf;
 
-use anydoc_ocr::{ConvertOptions, ForceFlags, batch::BatchConverter, convert_to_markdown};
+use anydoc_ocr::{ConvertRequest, ForceFlags, ParallelConfig, RenderConfig, batch::BatchConverter, convert_to_markdown};
 
 /// (相对 CARGO_MANIFEST_DIR 的样本路径, 是否需 OCR)
 fn samples() -> Vec<(&'static str, bool)> {
@@ -54,8 +54,14 @@ fn hash_of(s: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
+/// 并发首次触达 OCR/pdfium 懒初始化会触发原生库 abort（SIGTRAP，3/3 复现；
+/// 单测试逐个跑均通过）。根因待 P1.5 统一 warmup 路径根治，此处串行化两测试
+/// 绕开并行热身竞态（详见 designs/anydoc-ocr-arch-refactor.md 附录附注 2）。
+static SERIAL_WARMUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn batch_matches_single_doc_output() {
+    let _serial = SERIAL_WARMUP.lock().unwrap_or_else(|p| p.into_inner());
     // 验证策略：每个样本先单文档跑 convert_to_markdown 拿基准 hash；
     // 再把所有样本一次性送 BatchConverter::convert_many，每文档输出 hash 应与基准一致。
     // 不一致即跨文档 pipeline 串档或丢页。
@@ -64,9 +70,9 @@ fn batch_matches_single_doc_output() {
     let dir = snapshot_dir();
     std::fs::create_dir_all(&dir).expect("mkdir snapshots");
 
-    let opts = ConvertOptions {
-        dpi: 100.0,
-        threads: 4,
+    let opts = ConvertRequest {
+        render: RenderConfig { dpi: 100.0 },
+        parallel: ParallelConfig { page_parallel: 4, ..Default::default() },
         ..Default::default()
     };
 
@@ -103,19 +109,20 @@ fn batch_matches_single_doc_output() {
 
     // 批处理：所有样本一次性送入 BatchConverter
     let converter = BatchConverter::new(opts.clone(), ForceFlags::default());
-    let results = converter.convert_many(&paths);
+    let outcomes = converter.convert_many(&paths);
     assert_eq!(
-        results.len(),
+        outcomes.len(),
         paths.len(),
         "[batch_golden] 批处理结果数 {} != 输入文档数 {}",
-        results.len(),
+        outcomes.len(),
         paths.len()
     );
 
     let mut failures = Vec::new();
     let mut checked = 0usize;
-    for (i, (path, result)) in paths.iter().zip(results).enumerate() {
-        let md = match result {
+    for (i, outcome) in outcomes.iter().enumerate() {
+        let path = &outcome.path;
+        let md = match &outcome.result {
             Ok(m) => m,
             Err(e) => {
                 failures.push(format!("{}: 批处理失败: {e}", path.display()));
@@ -197,11 +204,12 @@ fn batch_matches_single_doc_output() {
 /// 并计入成功。修复后该槽位必须走 `Err` 通道。
 #[test]
 fn batch_isolates_corrupt_pdf_as_err() {
+    let _serial = SERIAL_WARMUP.lock().unwrap_or_else(|p| p.into_inner());
     use std::io::Write;
 
-    let opts = ConvertOptions {
-        dpi: 100.0,
-        threads: 4,
+    let opts = ConvertRequest {
+        render: RenderConfig { dpi: 100.0 },
+        parallel: ParallelConfig { page_parallel: 4, ..Default::default() },
         ..Default::default()
     };
     // force_ocr 让伪 PDF 直接进 ocr_paths，绕过 text_layer 预分流
@@ -232,28 +240,28 @@ fn batch_isolates_corrupt_pdf_as_err() {
 
     let paths = vec![valid.clone(), bogus.clone()];
     let converter = BatchConverter::new(opts, force);
-    let results = converter.convert_many(&paths);
+    let outcomes = converter.convert_many(&paths);
 
-    assert_eq!(results.len(), 2, "[batch_fail] 结果数应等于输入文档数");
+    assert_eq!(outcomes.len(), 2, "[batch_fail] 结果数应等于输入文档数");
 
     // 第一个（有效 multipage.pdf）应成功——错误隔离：单文档失败不炸整批
     assert!(
-        results[0].is_ok(),
+        outcomes[0].result.is_ok(),
         "[batch_fail] 有效文档应成功，got: {:?}",
-        results[0].as_ref().err()
+        outcomes[0].result.as_ref().err()
     );
 
     // 第二个（损坏 PDF）必须是 Err——不得伪装成 Ok(空串)
     assert!(
-        results[1].is_err(),
+        outcomes[1].result.is_err(),
         "[batch_fail] 损坏 PDF 必须走 Err 通道，got Ok(len={})",
-        results[1].as_ref().unwrap().len()
+        outcomes[1].result.as_ref().unwrap().len()
     );
     // ADR-0006 §3：损坏 PDF 走 `code()=="malformed"` 分类。
     // force_ocr 路径下 text_layer_markdown 仍做加密预检 → 返 `Err(Malformed)`
     // （pdf-inspector 对 `%PDF`+垃圾返 InvalidStructure）→ batch.rs §5 直接标错。
     // 非 force_ocr 路径下走同一 text_layer 入口，错误码一致。
-    let e = results[1].as_ref().err().unwrap();
+    let e = outcomes[1].result.as_ref().err().unwrap();
     assert_eq!(
         e.code(),
         "malformed",

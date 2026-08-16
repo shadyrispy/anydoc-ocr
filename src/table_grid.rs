@@ -12,7 +12,7 @@
 use crate::region::Region;
 
 /// 文字层表格单元格（文本 + 几何，用于合并单元格 span 推断）。
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableCell {
     pub text: String,
     pub x: f32,
@@ -21,6 +21,7 @@ pub struct TableCell {
 }
 
 /// 文字层表格网格（行×列）。
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableGrid {
     pub cols: usize,
     pub header: Vec<TableCell>,
