@@ -251,7 +251,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertOptions) -> CResult<String> {
             }
             Ok(())
         };
-        let results = crate::pipeline::PagePipeline::new(
+        let (results, _render_errors) = crate::pipeline::PagePipeline::new(
             render_fn,
             engine,
             opts.threads,

@@ -79,25 +79,13 @@ impl BatchConverter {
             let just_paths: Vec<PathBuf> = ocr_paths.iter().map(|(_, p)| p.clone()).collect();
             match crate::pdf::convert_pdf_ocr(&just_paths, &self.opts) {
                 Ok(md_per_doc) => {
-                    // convert_pdf_ocr 返回 Vec<(doc_idx, md)> 按 doc_idx 升序；
-                    // doc_idx 与 just_paths 索引一一对应，回填到原始 paths 槽位。
+                    // convert_pdf_ocr 返回 Vec<(doc_idx, Result<String>)> 按 doc_idx
+                    // 升序；每文档独立 Result。doc_idx 与 just_paths 索引一一对应，
+                    // 回填到原始 paths 槽位。Err doc 带真实 detail（ADR 候选 3）——
+                    // 不再需要"槽位缺失→猜 Err(详见 stderr)"的兜底。
                     for (doc_idx, md) in md_per_doc {
                         let (orig_idx, _) = &ocr_paths[doc_idx];
-                        slots[*orig_idx] = Some(Ok(md));
-                    }
-                    // pipeline 整体 Ok 但某 doc_idx 缺失 = 该 doc 在 render_cross_doc_fn
-                    // 内打开失败被 `eprintln + continue` 跳过（render.rs），或所有页
-                    // 渲染失败被 pipeline.rs 过滤。ADR-0005 错误隔离：每文档独立 Result，
-                    // 失败必须走 Err 通道（不能伪装成 Ok(空串) 导致 main.rs 计入成功 +
-                    // 写出空 .md 文件，造成静默数据丢失）。
-                    // ADR-0006：错误类型 ConvertError，归 Malformed（运行时错误）。
-                    for (orig_idx, _) in &ocr_paths {
-                        if slots[*orig_idx].is_none() {
-                            slots[*orig_idx] = Some(Err(runtime(
-                                None,
-                                "文档 OCR 缺失：所有页渲染失败或文档无法打开（详见 stderr）",
-                            )));
-                        }
+                        slots[*orig_idx] = Some(md);
                     }
                 }
                 Err(e) => {

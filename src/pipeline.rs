@@ -93,7 +93,15 @@ impl<F: RenderFn> PagePipeline<F> {
     /// - 渲染失败页 → 该 idx 缺失（调用方容错）
     /// - OCR 失败页 → run() 返回 Err（调用方按页回退文字层/报错）
     /// - 渲染线程 panic/致命错误 → channel 关闭，run() 返回 Err
-    pub fn run(self) -> Result<Vec<((usize, usize), oar_ocr::domain::structure::StructureResult)>> {
+    ///
+    /// 返回 `(成功页, 渲染错误列表)`——渲染失败（单页或整文档）不再被静默丢弃，
+    /// 调用方可回填结构化错误（ADR 候选 3：错误 detail 走 Result 通道而非 stderr）。
+    pub fn run(
+        self,
+    ) -> Result<(
+        Vec<((usize, usize), oar_ocr::domain::structure::StructureResult)>,
+        Vec<((usize, usize), ConvertError)>,
+    )> {
         let bound = self.threads * Self::BOUND_MULT;
         let (tx, rx) = mpsc::sync_channel(bound);
 
@@ -108,7 +116,12 @@ impl<F: RenderFn> PagePipeline<F> {
         let results: std::sync::Mutex<
             std::collections::BTreeMap<(usize, usize), Result<oar_ocr::domain::structure::StructureResult>>,
         > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        // 渲染失败（单页 / 整文档）的错误，按 idx 收集供调用方回填。
+        let render_errors: std::sync::Mutex<
+            std::collections::BTreeMap<(usize, usize), ConvertError>,
+        > = std::sync::Mutex::new(std::collections::BTreeMap::new());
         let results_ref = &results;
+        let render_errors_ref = &render_errors;
         let engine_ref = &self.engine;
         let timings_ref = self.timings.as_deref();
 
@@ -118,7 +131,7 @@ impl<F: RenderFn> PagePipeline<F> {
                 let (idx, img) = match item {
                     Ok((idx, img)) => (idx, img),
                     Err((idx, e)) => {
-                        eprintln!("[pipeline] render error page {idx:?}: {e}");
+                        render_errors_ref.lock().unwrap().insert(idx, e);
                         continue;
                     }
                 };
@@ -162,6 +175,7 @@ impl<F: RenderFn> PagePipeline<F> {
                 Err(e) => return Err(e),
             }
         }
-        Ok(out)
+        let errs = render_errors.into_inner().unwrap().into_iter().collect();
+        Ok((out, errs))
     }
 }
