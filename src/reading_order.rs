@@ -215,7 +215,7 @@ pub(crate) fn norm_membership(
     tx >= ix0 && tx <= ix1 && ty >= iy0 && ty <= iy1
 }
 
-/// ADR-0011：块驱动阅读序（收敛自 gfm_adapter）。三级降级链：
+/// ADR-0011：块驱动阅读序。三级降级链：
 /// 1. `LayoutElement::order_index` 排序（模型阅读序，对齐 MinerU `index`）
 /// 2. `RegionBlock::order_index` + `element_indices`（PP-DocBlockLayout 列级分组）
 /// 3. 现有 `order_text_regions`（区域驱动兜底，行为等价现状）
@@ -226,11 +226,6 @@ pub(crate) fn norm_membership(
 ///
 /// 这是 OCR 通路入口，与 `order_text_regions`（文字层通路入口）同级。
 pub fn order_structure(page: &StructureResult, regions: &[Region]) -> Vec<String> {
-    block_driven_order(page, regions)
-}
-
-/// ADR-0009 D1：块驱动核心实现（见 `order_structure` 文档）。
-fn block_driven_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
     if regions.is_empty() {
         return Vec::new();
     }
@@ -244,30 +239,38 @@ fn block_driven_order(page: &StructureResult, regions: &[Region]) -> Vec<String>
     if !has_order {
         return fallback_order(page, regions);
     }
-    blocks.sort_by(|a, b| {
-        match (a.order_index, b.order_index) {
-            (Some(i), Some(j)) => i.cmp(&j),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a
-                .bbox
-                .y_min()
-                .partial_cmp(&b.bbox.y_min())
-                .unwrap_or(std::cmp::Ordering::Equal),
-        }
+    blocks.sort_by(|a, b| match (a.order_index, b.order_index) {
+        (Some(i), Some(j)) => i.cmp(&j),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a
+            .bbox
+            .y_min()
+            .partial_cmp(&b.bbox.y_min())
+            .unwrap_or(std::cmp::Ordering::Equal),
     });
 
     let scale = page_scale(page);
-    let mut out: Vec<String> = Vec::new();
     let mut consumed: Vec<bool> = vec![false; regions.len()];
-    for blk in &blocks {
+    let mut out = assemble_blocks(&blocks, regions, scale, &mut consumed);
+    append_leftover(page, regions, scale, &consumed, &mut out);
+    out
+}
+
+/// 块级装配（消除 block_driven_order / fallback_order / leftover 的循环重复）：
+/// 对每个块收集中心点落在 bbox 内的未消费 regions → 块内列检测 + 段落合并。
+fn assemble_blocks<'a>(
+    blocks: &[&'a LayoutElement],
+    regions: &'a [Region],
+    scale: (f32, f32, f32, f32),
+    consumed: &mut [bool],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for blk in blocks {
         let inner_idx: Vec<usize> = regions
             .iter()
             .enumerate()
-            .filter(|(i, r)| {
-                !consumed[*i]
-                    && norm_membership(r.center_x(), r.y_min, scale, &blk.bbox)
-            })
+            .filter(|(i, r)| !consumed[*i] && norm_membership(r.center_x(), r.y_min, scale, &blk.bbox))
             .map(|(i, _)| i)
             .collect();
         if inner_idx.is_empty() {
@@ -277,11 +280,20 @@ fn block_driven_order(page: &StructureResult, regions: &[Region]) -> Vec<String>
             consumed[i] = true;
         }
         let inner: Vec<Region> = inner_idx.iter().map(|&i| regions[i].clone()).collect();
-        let lines = order_within_block(&inner);
-        out.extend(merge_into_paragraphs(&lines));
+        out.extend(merge_into_paragraphs(&order_within_block(&inner)));
     }
-    // 未被任何块消费的 regions（bbox 不匹配，模型漏检）：追加到末尾，按 y 排序。
-    // 但排除落在噪声块内的 region（避免页眉/页码混入 leftover）。
+    out
+}
+
+/// 未被任何块消费的 regions（bbox 不匹配，模型漏检）：追加到末尾，按 y 排序。
+/// 排除落在噪声块内的 region（避免页眉/页码混入 leftover）。
+fn append_leftover(
+    page: &StructureResult,
+    regions: &[Region],
+    scale: (f32, f32, f32, f32),
+    consumed: &[bool],
+    out: &mut Vec<String>,
+) {
     let noise_bboxes: Vec<&oar_ocr::processors::BoundingBox> = page
         .layout_elements
         .iter()
@@ -300,16 +312,11 @@ fn block_driven_order(page: &StructureResult, regions: &[Region]) -> Vec<String>
         .map(|(_, r)| r)
         .collect();
     if !leftover.is_empty() {
-        leftover.sort_by(|a, b| {
-            a.y_min
-                .partial_cmp(&b.y_min)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        leftover.sort_by(|a, b| a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal));
         let lines: Vec<(f32, String)> =
             leftover.iter().map(|r| (r.y_min, r.text.clone())).collect();
         out.extend(merge_into_paragraphs(&lines));
     }
-    out
 }
 
 /// ADR-0009 D2：三级降级链——order_index 全 None 时调用。
@@ -341,27 +348,7 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
                             .unwrap_or(std::cmp::Ordering::Equal),
                     }
                 });
-                for el in &els {
-                    let inner_idx: Vec<usize> = regions
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, r)| {
-                            !consumed[*i]
-                                && norm_membership(r.center_x(), r.y_min, scale, &el.bbox)
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    if inner_idx.is_empty() {
-                        continue;
-                    }
-                    for &i in &inner_idx {
-                        consumed[i] = true;
-                    }
-                    let inner: Vec<Region> =
-                        inner_idx.iter().map(|&i| regions[i].clone()).collect();
-                    let lines = order_within_block(&inner);
-                    out.extend(merge_into_paragraphs(&lines));
-                }
+                out.extend(assemble_blocks(&els, regions, scale, &mut consumed));
             }
             if !out.is_empty() {
                 return out;
