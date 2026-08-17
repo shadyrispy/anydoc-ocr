@@ -20,13 +20,17 @@ use crate::models::{OcrLayout, OcrTier, spec_for};
 /// 进程级 ORT 线程池已提交守卫（仅首次 OCR 触达 ORT 前生效一次）。
 static ORT_INIT: Once = Once::new();
 
-/// 消除 rayon 页级并行 × ORT 默认 intra 的线程超额订阅（Ticket A）。
+/// 消除线程超额订阅 / 修正单 run 线程数（Ticket A + P0-1b 修正）。
 ///
-/// ORT 默认 `intra_threads` = 全核；而 `predict` 又用 rayon 按 `parallel` 页并行，
-/// 二者相乘在 8 核飞腾上为 4×8=32 线程风暴。这里提交进程级 ORT 线程池，
-/// 令 `intra = max(1, cores / parallel)`，使总线程≈核心数、无超额订阅。
+/// 历史演变：最初 ORT 默认 intra=全核 × rayon 页级并行 = 线程风暴（8 核上 4×8=32）；
+/// P0-1b 后推理已**引擎级串行**（`infer_lock`，见该字段文档），跨 run 并行不复存在，
+/// 单次 run 应独占全部核心。若仍按 `cores/page_parallel` 分配，串行推理 + intra=1
+/// 反而把机器降为单核使用（3 核实测 OCR 慢 1.6x，2026-08-17 A/B）。
 ///
-/// P2：`cfg.ort_intra > 0` 时用显式值；`0` = 自动（cores/page_parallel）。
+/// 故 auto 式 = `cores`（留 1 核给渲染/主线程的诉求由 OS 调度自然满足——渲染与
+/// OCR 不重叠的时段极少，channel 流水本就以 OCR 为瓶颈）。
+///
+/// P2：`cfg.ort_intra > 0` 时用显式值；`0` = 自动（cores）。
 /// `ANYDOC_ORT_INTRA_THREADS` 仍可强制覆盖（调试用，优先级最高）。
 /// ORT 环境为进程全局、首次初始化者生效；已在别处初始化则本调用被忽略（幂等）。
 ///
@@ -38,13 +42,12 @@ pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let parallel = cfg.page_parallel.max(1).min(cores);
         let intra = std::env::var("ANYDOC_ORT_INTRA_THREADS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&n| n > 0)
             .or(if cfg.ort_intra > 0 { Some(cfg.ort_intra) } else { None })
-            .unwrap_or_else(|| (cores / parallel).max(1));
+            .unwrap_or(cores);
         // 配置失败不得掀翻宿主进程（本 crate 亦作为库被集成）：告警后回落 ORT 默认线程池。
         let opts = match ort::environment::GlobalThreadPoolOptions::default()
             .with_intra_threads(intra)
