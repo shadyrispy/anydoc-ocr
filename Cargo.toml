@@ -29,3 +29,10 @@ lto = true
 codegen-units = 1
 # 保留符号便于 perf 火焰图定位热点（可选）。
 # debug = 1
+
+# 性能 patch（2026-08-17）：oar-ocr-core 的 6 处 resize 走 image crate 标量实现
+# （零 SIMD/单线程），是 OCR 预处理瓶颈（表格页 intra 满核后仅 1.04x 的主因）。
+# 本地副本换 fast_image_resize（NEON SIMD，ARMv8.0 可用），filter 语义不变。
+# 升级 oar-ocr 时 rebase 本目录（diff 仅 utils/image.rs + Cargo.toml 两文件）。
+[patch.crates-io]
+oar-ocr-core = { path = "third_party/oar-ocr-core" }
