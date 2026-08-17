@@ -243,7 +243,7 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         OcrLayout::Doc => (spec.layout, spec.layout_name),
         OcrLayout::Table => ("picodet_layout_1x_table.onnx", "PicoDet-Layout-1x-Table"),
     };
-    OARStructureBuilder::new(model_path(layout_model))
+    let mut builder = OARStructureBuilder::new(model_path(layout_model))
         .layout_model_name(layout_name)
         .with_ocr(
             model_path(spec.det),
@@ -259,7 +259,19 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // P1：文档方向矫正（0°/90°/180°/270°）——扫描件旋转/歪斜时 det/rec 召回关键。
         // 模型三档已定义（pp-lcnet_x1_0_doc_ori），此前未接入。在版面前自动矫正，
         // 改变 OCR 行为（旋转页结果变正），golden 需 UPDATE=1 重基线（预期召回提升）。
-        .with_document_orientation(model_path(spec.doc_ori))
+        .with_document_orientation(model_path(spec.doc_ori));
+    // rec 行批旋钮：上游 CPU 默认 tiny=16 / small+medium=4。A/B 实测（2026-08-17，
+    // 3 核沙箱 ×9 样本 ×3 轮）：small 4/8/16/32 与 tiny 16/32/64 全部持平（±2% 噪声内），
+    // 证伪"加大行批提速"——intra=cores 后单 op 已满核，批大小只改矩阵形状不改 FLOPs，
+    // per-run 固定开销占比过小。旋钮留给目标机（飞腾 ARMv8.0）按机型复核。
+    if let Some(n) = std::env::var("ANYDOC_REC_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+    {
+        builder = builder.region_batch_size(n);
+    }
+    builder
         .build()
         .map_err(|e| runtime(Stage::Ocr, None, format!("构建 OCR 分析器失败: {e}")))
 }
