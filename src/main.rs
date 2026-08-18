@@ -60,11 +60,13 @@ fn main() -> Result<()> {
     } else {
         cli.threads
     };
-    let opts = anydoc_ocr::ConvertOptions {
-        ocr_tier: cli.ocr_tier,
-        ocr_layout: cli.ocr_layout,
-        threads,
-        dpi: cli.dpi,
+    let opts = anydoc_ocr::ConvertRequest {
+        render: anydoc_ocr::RenderConfig { dpi: cli.dpi },
+        ocr: anydoc_ocr::OcrConfig {
+            tier: cli.ocr_tier,
+            layout: cli.ocr_layout,
+        },
+        parallel: anydoc_ocr::ParallelConfig { page_parallel: threads, ort_intra: 0 },
         quality_route: cli.quality_route,
     };
     let force = anydoc_ocr::ForceFlags {
@@ -110,7 +112,7 @@ fn exit_with_hint(e: &ConvertError) -> ! {
 /// 目录批处理：递归收集文档 → BatchConverter 转换 → 逐文件写出。
 fn run_batch(
     input_dir: &PathBuf,
-    opts: &anydoc_ocr::ConvertOptions,
+    opts: &anydoc_ocr::ConvertRequest,
     force: anydoc_ocr::ForceFlags,
     output: &Option<PathBuf>,
 ) -> Result<()> {
@@ -120,35 +122,41 @@ fn run_batch(
         return Ok(());
     }
     let output_dir = output.as_ref().ok_or_else(|| {
-        anydoc_ocr::ConvertError::Malformed {
-            part: None,
-            detail: "目录输入需要 --output 指定输出目录".to_string(),
-        }
+        anydoc_ocr::ConvertError::new(
+            anydoc_ocr::ErrorKind::Unsupported,
+            anydoc_ocr::Stage::Output,
+            "目录输入需要 --output 指定输出目录",
+        )
     })?;
     std::fs::create_dir_all(output_dir)?;
 
-    eprintln!("[batch] 发现 {} 个文档，输出到 {}", paths.len(), output_dir.display());
+    eprintln!(
+        "[batch] 发现 {} 个文档，输出到 {}",
+        paths.len(),
+        output_dir.display()
+    );
     let converter = anydoc_ocr::batch::BatchConverter::new(opts.clone(), force);
-    let results = converter.convert_many(&paths);
+    // P1.10：convert_many 返回 Vec<DocOutcome>（path + 独立 Result），按输入顺序
+    let outcomes = converter.convert_many(&paths);
     let mut ok = 0usize;
     let mut fail = 0usize;
-    for (i, (path, result)) in paths.iter().zip(results).enumerate() {
-        let prefix = format!("[batch] ({}/{})", i + 1, paths.len());
-        match result {
+    for (i, outcome) in outcomes.iter().enumerate() {
+        let prefix = format!("[batch] ({}/{})", i + 1, outcomes.len());
+        match &outcome.result {
             Ok(md) => {
-                let out_path = output_dir.join(output_stem(input_dir, path));
+                let out_path = output_dir.join(output_stem(input_dir, &outcome.path));
                 if let Some(parent) = out_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&out_path, md)?;
-                eprintln!("{prefix} {} → {}", path.display(), out_path.display());
+                eprintln!("{prefix} {} → {}", outcome.path.display(), out_path.display());
                 ok += 1;
             }
             Err(e) => {
                 // ADR-0006 §7：按 e.code() 精准提示（ConvertError 直接有 code() 方法，
                 // 无需 downcast）。code() 返稳定字符串，main 据此给"下一步建议"。
-                let hint = error_hint(&e);
-                eprintln!("{prefix} {} 失败: {e}\n  提示: {hint}", path.display());
+                let hint = error_hint(e);
+                eprintln!("{prefix} {} 失败: {e}\n  提示: {hint}", outcome.path.display());
                 fail += 1;
             }
         }
@@ -157,19 +165,20 @@ fn run_batch(
     Ok(())
 }
 
-/// 按 `ConvertError::code()` 给用户精准提示（ADR-0006 §7）。
-/// code() 返稳定字符串（encrypted/malformed/missingPart/...），main 据此给下一步建议。
+/// 按 `ConvertError::kind` 给用户精准提示（P1.9：提示语从 code() 字符串匹配
+/// 迁移到 kind 枚举匹配——`Runtime` 拆出后不再与 `Malformed` 共用一条模糊文案）。
 fn error_hint(e: &ConvertError) -> &'static str {
-    match e.code() {
-        "encrypted" => "文档已加密，需提供密码或解密后重试",
-        // ADR-0006 审计跟进 S3：`runtime()` 把 ORT/pdfium 失败也归 Malformed（§3 既定，
-        // 不能 fork 加变体）。提示文案覆盖两类原因 + 指向 detail，不单押"文档损坏"，
-        // 避免对"找不到 libpdfium.so"等环境错误误导归因。
-        "malformed" => "文档损坏或运行时错误（如 ORT/pdfium 未配置）— 详见错误详情，检查文件完整性或运行环境",
-        "missingPart" => "文档结构不完整（缺必需部件），可能源文件生成不完整",
-        "resourceLimit" => "超出安全限制（可能解压炸弹或文档过大）",
-        "unsupported" => "格式不支持或需 OCR 但 ORT/pdfium 环境未配置",
-        "io" => "文件读写错误（路径不存在/权限不足/磁盘满）",
+    use anydoc_ocr::ErrorKind;
+    match e.kind {
+        ErrorKind::Encrypted => "文档已加密，需提供密码或解密后重试",
+        ErrorKind::Malformed => "文档损坏或结构不可用 — 检查文件完整性",
+        ErrorKind::Runtime => {
+            "运行时依赖失败（ORT/pdfium 未配置或推理出错）— 检查运行环境与模型文件"
+        }
+        ErrorKind::MissingPart => "文档结构不完整（缺必需部件），可能源文件生成不完整",
+        ErrorKind::ResourceLimit => "超出安全限制（可能解压炸弹或文档过大）",
+        ErrorKind::Unsupported => "格式不支持",
+        ErrorKind::Io => "文件读写错误（路径不存在/权限不足/磁盘满）",
         _ => "未知错误，详见错误详情",
     }
 }

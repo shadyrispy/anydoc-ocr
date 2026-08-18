@@ -17,10 +17,12 @@
 
 use std::path::PathBuf;
 
-use anydoc_ocr::{convert_to_markdown, ConvertOptions, ForceFlags};
+use anydoc_ocr::{ConvertRequest, ForceFlags, convert_to_markdown};
 
 fn sample(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/samples").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/samples")
+        .join(name)
 }
 
 /// 期望转换失败且 `code()` 匹配；样本缺失则跳过（不阻塞其他环境）。
@@ -29,7 +31,7 @@ fn expect_code(path: &PathBuf, expected_code: &str, label: &str) {
         eprintln!("[err_cls] skip {label}: {} 缺失", path.display());
         return;
     }
-    let opts = ConvertOptions::default();
+    let opts = ConvertRequest::default();
     match convert_to_markdown(path, &opts, ForceFlags::default()) {
         Ok(md) => panic!(
             "[err_cls] {label} 应失败但成功（len={}）\n--- 输出前 200 字 ---\n{}",
@@ -79,15 +81,12 @@ fn batch_intercepts_encrypted_pdf() {
         eprintln!("[err_cls] skip batch_intercepts_encrypted_pdf: encrypted.pdf 缺失");
         return;
     }
-    let opts = ConvertOptions::default();
+    let opts = ConvertRequest::default();
     let converter = BatchConverter::new(opts, ForceFlags::default());
-    let results = converter.convert_many(&[encrypted.clone()]);
-    assert_eq!(results.len(), 1, "[err_cls] batch 应返回 1 个结果");
-    match &results[0] {
-        Ok(md) => panic!(
-            "[err_cls] 加密 PDF 不应成功转换（len={}）",
-            md.len()
-        ),
+    let outcomes = converter.convert_many(&[encrypted.clone()]);
+    assert_eq!(outcomes.len(), 1, "[err_cls] batch 应返回 1 个结果");
+    match &outcomes[0].result {
+        Ok(md) => panic!("[err_cls] 加密 PDF 不应成功转换（len={}）", md.len()),
         Err(e) => {
             assert_eq!(
                 e.code(),

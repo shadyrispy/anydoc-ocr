@@ -1,77 +1,64 @@
 //! 批处理入口（ADR-0005）：跨文档复用 OCR 引擎 + 跨文档流水线。
 //!
-//! `BatchConverter` 持 `ConvertOptions`，`convert_many` 内部对每个 path 做预分流：
-//! - PDF：先试 `pdf::text_layer_markdown`（文字型快速路径，~0.03s/文档）；
-//!   命中即出结果，未命中（图片型）收集到 `ocr_paths`
-//! - 非 PDF（OFD/docx/xlsx/pptx）：委托 `convert_to_markdown`，per-doc 跑
-//!   （ADR-0005：OFD 第一遍页型判定复杂，暂不接入跨文档 pipeline）
+//! P1.10 后 `BatchConverter` 内部走统一 convert 调度层
+//! （[`crate::convert::route_doc`]，与单文档 [`crate::convert_to_markdown`]
+//! 共用同一预分流）：文字层快速路径、加密/损坏预检、图片型 PDF 判定只此一处；
+//! 跨文档 pipeline（`pdf::convert_pdf_ocr`）成为 convert 的实现细节。
 //!
-//! 收集到的图片型 PDF paths 一次性送入 `pdf::convert_pdf_ocr`——跨文档 render↔OCR
-//! pipeline，文档边界 OCR 池空转消除 + 小文档 setup 摊薄。engine 复用由
-//! `OcrEngine::build` 的 `static CACHE` 自动命中（同进程内同 key 只建一次）。
+//! 收集到的图片型 PDF paths 一次性送入跨文档 render↔OCR pipeline——文档边界
+//! OCR 池空转消除 + 小文档 setup 摊薄。engine 复用由 `OcrEngine::build` 的
+//! `static CACHE` 自动命中（同进程内同 key 只建一次）。
 //!
-//! 错误隔离：单个文档失败不炸整批，`Vec<Result<String>>` 每文档独立 Result。
+//! 错误隔离：单个文档失败不炸整批，[`DocOutcome`] 每文档独立 Result。
 //! 跨文档 pipeline 整体失败 → 该批 ocr_paths 内每文档标 Err，其他文档不受影响。
 
 use std::path::{Path, PathBuf};
 
-use crate::convert_to_markdown;
+use crate::convert::{DocRoute, ForceFlags, convert_per_doc, route_doc};
 use crate::detect::DocKind;
-use crate::error::{Result, runtime};
-use crate::{ConvertOptions, ForceFlags};
+use crate::error::{Result, Stage, runtime};
+use crate::ConvertRequest;
+
+/// 单文档转换结果（P1.10 固化返回结构）：输入路径 + 独立 Result，按输入顺序返回。
+#[derive(Debug)]
+pub struct DocOutcome {
+    /// 输入文档路径（与 `convert_many` 入参一一对应，免去调用方 zip）
+    pub path: PathBuf,
+    /// 该文档的转换结果（错误隔离：单文档失败不影响其他文档）
+    pub result: Result<String>,
+}
 
 /// 批处理转换器：跨文档复用 OCR 引擎（ADR-0005）。
 pub struct BatchConverter {
-    opts: ConvertOptions,
+    opts: ConvertRequest,
     force: ForceFlags,
 }
 
 impl BatchConverter {
-    pub fn new(opts: ConvertOptions, force: ForceFlags) -> Self {
+    pub fn new(opts: ConvertRequest, force: ForceFlags) -> Self {
         Self { opts, force }
     }
 
-    /// 批量转换：每文档独立 Result（错误隔离），OCR 引擎跨文档复用。
+    /// 批量转换：每文档独立 [`DocOutcome`]（错误隔离），OCR 引擎跨文档复用。
     ///
-    /// 预分流策略（ADR-0005 候选 2 + ADR-0006 错误分类）：
-    /// 1. PDF：调 `text_layer_markdown`——`Ok(Some)` 出结果，`Ok(None)` 入 `ocr_paths`，
-    ///    `Err`（Encrypted/Malformed）直接标错不送 OCR（ADR-0006 §5：加密/损坏 PDF
-    ///    送 OCR 也读不了，且会丢失错误分类）
-    /// 2. PDF + force_ocr：仍调 `text_layer_markdown` 做加密预检——`Ok`（含 None）
-    ///    送 OCR，`Err` 直接标错（ADR-0006 §6：force_ocr 不绕过加密检查）
-    /// 3. 非 PDF：委托 `convert_to_markdown`（OFD 内部仍 per-doc 流水线）
-    /// 4. `ocr_paths` 一次性送入 `convert_pdf_ocr` 跨文档 pipeline
-    pub fn convert_many(&self, paths: &[PathBuf]) -> Vec<Result<String>> {
+    /// 预分流走统一调度层 `route_doc`（与单文档入口共用，P1.10）：
+    /// 1. PDF 文字层探针——`Done(Ok)` 出结果，`Done(Err)`（加密/损坏）直接标错
+    ///    不送 OCR（ADR-0006 §5/§6），`Ocr`（图片型/force）收集到 `ocr_paths`
+    /// 2. `ocr_paths` 一次性送入 `convert_pdf_ocr` 跨文档 pipeline
+    /// 3. 非 PDF（OFD/docx/xlsx/pptx）走 `convert_per_doc` per-doc 转换
+    pub fn convert_many(&self, paths: &[PathBuf]) -> Vec<DocOutcome> {
         // 每文档槽位：None = 待填充，Some(r) = 已完成。
         // `ConvertError` 非 Clone，故用 `(0..n).map(|_| None).collect()` 避开 Clone 约束。
         let mut slots: Vec<Option<Result<String>>> = (0..paths.len()).map(|_| None).collect();
 
-        // 1) PDF 预分流：文字型快速路径 + 收集图片型 paths + 加密/损坏 Err 直接标错
+        // 1) 统一调度预分流：文字型快速路径 + 加密/损坏标错 + 图片型收集
         let mut ocr_paths: Vec<(usize, PathBuf)> = Vec::new();
+        let mut perdoc: Vec<(usize, DocKind)> = Vec::new();
         for (i, path) in paths.iter().enumerate() {
-            if crate::detect::detect(path) != DocKind::Pdf {
-                continue;
-            }
-            match crate::pdf::text_layer_markdown(path, &self.opts) {
-                Ok(Some(md)) => {
-                    // 命中文字层：force_ocr 时忽略文字层结果送 OCR，否则出结果
-                    if self.force.pdf_force_ocr {
-                        ocr_paths.push((i, path.clone()));
-                    } else {
-                        slots[i] = Some(Ok(md));
-                    }
-                }
-                Ok(None) => {
-                    // 图片型 PDF：送 OCR pipeline
-                    ocr_paths.push((i, path.clone()));
-                }
-                Err(e) => {
-                    // ADR-0006 §5：加密/损坏 PDF 直接标错，不送 ocr_paths
-                    // （加密 PDF 送 OCR 也读不了，损坏 PDF 浪费 OCR 资源，
-                    //   且绕一大圈会丢失 Encrypted/Malformed 分类）。
-                    // force_ocr 同样不绕过（ADR-0006 §6）。
-                    slots[i] = Some(Err(e));
-                }
+            match route_doc(path, &self.opts, &self.force) {
+                DocRoute::Done(r) => slots[i] = Some(r),
+                DocRoute::Ocr => ocr_paths.push((i, path.clone())),
+                DocRoute::PerDoc(kind) => perdoc.push((i, kind)),
             }
         }
 
@@ -92,26 +79,28 @@ impl BatchConverter {
                 Err(e) => {
                     // pipeline 整体失败（绑定/ORT 致命错误）→ 该批 ocr_paths 全标 Err
                     for (orig_idx, _) in &ocr_paths {
-                        slots[*orig_idx] = Some(Err(runtime(
-                            None,
-                            format!("跨文档 OCR 失败: {e}"),
-                        )));
+                        slots[*orig_idx] =
+                            Some(Err(runtime(Stage::Ocr, None, format!("跨文档 OCR 失败: {e}"))));
                     }
                 }
             }
         }
 
         // 3) 非 PDF 文档（OFD/docx/xlsx/pptx）per-doc 转换
-        for (i, path) in paths.iter().enumerate() {
-            if slots[i].is_none() {
-                slots[i] = Some(convert_to_markdown(path, &self.opts, self.force));
-            }
+        for (i, kind) in perdoc {
+            slots[i] = Some(convert_per_doc(&paths[i], kind, &self.opts, &self.force));
         }
 
-        // 4) 收集结果（所有槽位此时应已填充）
-        slots
-            .into_iter()
-            .map(|s| s.expect("batch slot must be filled by step 3"))
+        // 4) 收集结果（所有槽位此时应已填充；防御式兜底而非 panic——P0-2）
+        paths
+            .iter()
+            .zip(slots)
+            .map(|(path, s)| DocOutcome {
+                path: path.clone(),
+                result: s.unwrap_or_else(|| {
+                    Err(runtime(Stage::Convert, None, "内部错误：批处理槽位未填充"))
+                }),
+            })
             .collect()
     }
 }
@@ -163,7 +152,5 @@ fn is_supported_doc(path: &Path) -> bool {
 
 fn is_temp_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name.ends_with(".tmp")
-        || name.ends_with(".crdownload")
-        || name.starts_with("~$")
+    name.ends_with(".tmp") || name.ends_with(".crdownload") || name.starts_with("~$")
 }

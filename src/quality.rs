@@ -33,15 +33,10 @@ pub enum QualityRoute {
 /// PP-OCR 识别置信度通常 0.9+，清晰件均值远高于 0.6；污染/小字件均值显著下滑。
 pub const CONFIDENCE_UPGRADE_THRESHOLD: f32 = 0.6;
 
-/// 首页 OCR 结果是否需要升级到 higher tier（ADR-0007 后验门控）。
-///
-/// 调用方拿 tiny 跑首页得到 `StructureResult` 后调用；返回 `true` → 升级 small
-/// 重跑，`false` → 维持 tiny。无 `text_regions` 或置信度全缺视为"无法确认可信"，
-/// 保守返回 `true`（宁可升级，避免低质量静默）。
-pub fn needs_upgrade(page: &StructureResult) -> bool {
-    let Some(regs) = &page.text_regions else {
-        return true;
-    };
+/// 探针页文本区域平均置信度；无 `text_regions` 或置信度全缺 → `None`
+/// （调用方保守处理：视为不可信）。
+pub fn mean_confidence(page: &StructureResult) -> Option<f32> {
+    let regs = page.text_regions.as_ref()?;
     let mut sum: f32 = 0.0;
     let mut n: usize = 0;
     for r in regs {
@@ -50,10 +45,25 @@ pub fn needs_upgrade(page: &StructureResult) -> bool {
             n += 1;
         }
     }
-    if n == 0 {
-        return true;
-    }
-    (sum / n as f32) < CONFIDENCE_UPGRADE_THRESHOLD
+    (n > 0).then(|| sum / n as f32)
+}
+
+/// 首页 OCR 结果是否需要升级到 higher tier（ADR-0007 后验门控）。
+///
+/// 判定经 P1.6 信号目录：`fallback::probe_signals` 产出 `LowConfidenceProbe`
+/// （均值低于阈值或不可读，保守升级）→ 升级。该信号只驱动 tier 升级，不参与
+/// 文字层/OCR 路由（`fallback::decide` 显式忽略它）。
+pub fn needs_upgrade(page: &StructureResult) -> bool {
+    crate::fallback::probe_signals(page).contains(&crate::fallback::FallbackSignal::LowConfidenceProbe)
+}
+
+/// 页级"需要按页重试"判定（T2）。与 [`needs_upgrade`] 同一信号
+/// （`fallback::probe_signals` 的 `LowConfidenceProbe`），但语义化为**单页**判定：
+/// 该页 OCR 结果不可靠 → 用更高档局部重跑（而非全篇升级）。
+///
+/// 复用而非新逻辑：均值<阈值 / 无 text_regions / 置信度全缺均保守判"需重试"。
+pub fn page_needs_retry(page: &StructureResult) -> bool {
+    needs_upgrade(page)
 }
 
 #[cfg(test)]
@@ -71,13 +81,7 @@ mod tests {
         let mut page = StructureResult::new("t", 0);
         let regs: Vec<TextRegion> = confs
             .iter()
-            .map(|&c| {
-                TextRegion::with_recognition(
-                    box11(),
-                    Some(Arc::from("字")),
-                    c,
-                )
-            })
+            .map(|&c| TextRegion::with_recognition(box11(), Some(Arc::from("字")), c))
             .collect();
         page.text_regions = Some(regs);
         page
@@ -115,5 +119,16 @@ mod tests {
         // 均值 (0.9+0.7)/2 = 0.8 >= 0.6 → 不升级
         let page2 = page_with(&[Some(0.9), Some(0.7)]);
         assert!(!needs_upgrade(&page2));
+    }
+
+    #[test]
+    fn page_needs_retry_mirrors_upgrade() {
+        // 页级重试判定与升级判定同信号：低置信度页需重试，高置信度页不重试
+        let bad = page_with(&[Some(0.2), Some(0.4)]);
+        assert!(page_needs_retry(&bad));
+        let good = page_with(&[Some(0.95), Some(0.92)]);
+        assert!(!page_needs_retry(&good));
+        // 无文本区域保守判重试
+        assert!(page_needs_retry(&StructureResult::new("t", 0)));
     }
 }

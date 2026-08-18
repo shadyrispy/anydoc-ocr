@@ -5,12 +5,33 @@
 //! `text` 为区域文本。表网格通路接收的 `(x, y, w, h, text)` 块用
 //! [`Region::from_top_left`] 转换后存入同一类型（`h = y_max - y_min`）。
 //!
+//! P1.5 DocIR：Region 扩展 [`kind`](RegionKind)（版面语义）与
+//! [`confidence`](Region::confidence)（OCR 识别置信度；文字层源恒 `None`），
+//! 成为三源统一的版面级区块载体。
+//!
 //! 整宽判定阈值集中于此，消除 `reading_order` 内 0.92/0.08 的重复魔法数。
+
+use crate::table_grid::TableGrid;
 
 /// 整宽判定：区域跨度须 > 此比例 × 页宽（剔除通栏正文长条）。
 pub const FULL_WIDTH_THRESHOLD: f32 = 0.92;
 /// 整宽判定：区域左缘须 < 此比例 × 页宽（贴近左页边）。
 pub const EDGE_MARGIN: f32 = 0.08;
+
+/// 区块版面语义（P1.5）：标注 Region 在 DocIR 装配/后处理中的角色。
+/// 渲染层按 kind 分流（正文行/表格 HTML/网格表/成品块），不依赖来源类型。
+#[derive(Clone, Debug, PartialEq)]
+pub enum RegionKind {
+    /// 正文文本行：producer 已完成阅读顺序还原与标题前缀注入，`text` 即最终行。
+    Body,
+    /// 网格重建表（文字层网格 / OCR Image 块补救）：跨页表合并 pass 的对象。
+    Grid(TableGrid),
+    /// OCR 识别表：`text` = 已 simplify 的 `<table>…</table>` HTML。
+    TableHtml,
+    /// 已渲染块：`text` = producer 产出的成品 markdown 片段（**含精确分隔符**，
+    /// 渲染层原样追加，不二次加工——保证与旧 emitter 通路字节一致）。
+    PreRendered,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
@@ -19,6 +40,10 @@ pub struct Region {
     pub y_min: f32,
     pub y_max: f32,
     pub text: String,
+    /// 版面语义（P1.5）：构造函数默认 [`RegionKind::Body`]。
+    pub kind: RegionKind,
+    /// 识别置信度（P1.5）：OCR 源为 `Some(score)`；文字层源无此概念（`None`）。
+    pub confidence: Option<f32>,
 }
 
 impl Region {
@@ -29,6 +54,8 @@ impl Region {
             y_min,
             y_max,
             text: text.into(),
+            kind: RegionKind::Body,
+            confidence: None,
         }
     }
 
@@ -40,7 +67,21 @@ impl Region {
             y_min: y,
             y_max: y + h,
             text: text.into(),
+            kind: RegionKind::Body,
+            confidence: None,
         }
+    }
+
+    /// 附加版面语义（builder）。
+    pub fn with_kind(mut self, kind: RegionKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// 附加识别置信度（builder，OCR 源）。
+    pub fn with_confidence(mut self, confidence: Option<f32>) -> Self {
+        self.confidence = confidence;
+        self
     }
 
     pub fn width(&self) -> f32 {

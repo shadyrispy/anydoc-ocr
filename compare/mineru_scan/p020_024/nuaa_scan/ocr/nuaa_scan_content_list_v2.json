@@ -1,0 +1,3373 @@
+[
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)满足后续产品和服务提供过程的需要；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                131,
+                500,
+                147
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c)包括或引用监视和测量的要求，适当时，包括接收准则；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                150,
+                635,
+                165
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d)规定产品和服务特性，这些特性对于预期目的、安全和正常提供是必需的；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                167,
+                771,
+                184
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 按照 GJB 909 要求，制定关键件(特性)、重要件(特性)项目明细表，并在产品和服务设计文件和工艺文件上进行相应标识；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                185,
+                907,
+                218
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 规定产品使用所必需的保障方案和保障资源要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                221,
+                584,
+                237
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g) 包括产品规范、工艺总方案、工艺规程，使用手册，诊断指南、产品和服务安全使用培训教程等，以及根据顾客要求按照GJB6600制作的交互式电子技术手册；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                239,
+                907,
+                274
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h) 包括通用质量特性设计报告；"
+                    }
+                ]
+            },
+            "bbox": [
+                179,
+                276,
+                431,
+                291
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "i) 包括风险分析报告(含风险控制措施)."
+                    }
+                ]
+            },
+            "bbox": [
+                179,
+                294,
+                499,
+                309
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留有关设计和开发输出的成文信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                312,
+                515,
+                327
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.3.6 设计和开发更改"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                146,
+                329,
+                332,
+                345
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对产品和服务在设计和开发期间以及后续所做的更改进行适当的识别、评审和控制，以确保这些更改对满足要求不会产生不利影响。"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                347,
+                907,
+                381
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留下列方面的成文信息："
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                384,
+                431,
+                399
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 设计和开发更改；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                401,
+                344,
+                417
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)评审的结果；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                420,
+                312,
+                436
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 更改的授权；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                438,
+                310,
+                453
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 为防止不利影响而采取的措施。"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                455,
+                448,
+                471
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "设计更改应符合技术状态管理要求，计算机软件的更改应符合软件配置管理要求。组织应跟踪设计更改的实施，对重要的设计更改应进行系统分析和验证，并按规定履行审批程序。"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                473,
+                907,
+                508
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.3.7 新产品试制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                144,
+                510,
+                297,
+                526
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对新产品试制过程进行控制，控制内容包括："
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                528,
+                573,
+                544
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 在产品试制前进行产品试制准备状态检查，满足GJB 1710的要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                546,
+                719,
+                562
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 进行工艺评审，满足GJB 1269 的要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                563,
+                512,
+                579
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 编制首件鉴定目录，进行首件鉴定，满足GJB 908的要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                582,
+                660,
+                598
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 在产品试制完成后进行产品质量评审，满足GJB 907 的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                600,
+                675,
+                617
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留试制过程和采取任何措施的记录(见7.5.3)。"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                619,
+                605,
+                634
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应邀请顾客参加其关注的产品生产准备状态检查、首件鉴定和产品质量评审。"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                637,
+                796,
+                653
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：新产品试制，可包括工程样机制造、定型前的小批量生产。"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                656,
+                593,
+                670
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.3.8 设计和开发的试验控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                142,
+                672,
+                381,
+                687
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对试验过程实施控制，确保试验结果的有效性。组织应："
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                691,
+                658,
+                705
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a）编制并评审试验大纲或试验计划，包括试验目的、内容、条件、方法、程序、职责、受试产品技术状态、质量要求、结果评定准则等。对顾客关注的试验，其试验大纲或试验计划应经顾客同意；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                709,
+                904,
+                760
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 做好试验前的准备，并实施准备状态检查；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                762,
+                537,
+                777
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 按照试验大纲或试验计划组织试验；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                780,
+                485,
+                795
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d)按规定的程序和试验鉴定有关要求收集、整理数据和原始信息，分析、评价试验结果，保证试验数据的完整性和准确性；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                797,
+                904,
+                832
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 对试验发现的故障和缺陷，采取有效的纠正措施，并再次进行试验或验证(见10.2)；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                834,
+                852,
+                851
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 保留试验过程、结果及任何必要措施的记录(见7.5.3)；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                852,
+                636,
+                868
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g)对用于试验的计算机软件进行验证和确认，并实施软件配置控制；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                869,
+                709,
+                885
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h) 在有资质并得到顾客认可的试验机构进行鉴定试验。"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                887,
+                606,
+                903
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                147,
+                100,
+                289,
+                115
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "12"
+                    }
+                ]
+            },
+            "bbox": [
+                142,
+                911,
+                163,
+                923
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应邀请顾客参加其关注的试验，通报试验结果，试验过程的变更应征得其同意。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                128,
+                786,
+                144
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.4 外部提供的过程、产品和服务的控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                116,
+                146,
+                439,
+                162
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.4.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                117,
+                163,
+                217,
+                180
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确保外部提供的过程、产品和服务符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                149,
+                182,
+                537,
+                199
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在下列情况下，组织应确定对外部提供的过程、产品和服务实施的控制："
+                    }
+                ]
+            },
+            "bbox": [
+                148,
+                201,
+                688,
+                218
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a)外部供方的产品和服务将构成组织自身的产品和服务的一部分；"
+                    }
+                ]
+            },
+            "bbox": [
+                148,
+                219,
+                654,
+                236
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)外部供方代表组织直接将产品和服务提供给顾客："
+                    }
+                ]
+            },
+            "bbox": [
+                148,
+                237,
+                553,
+                252
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 组织决定由外部供方提供过程或部分过程。"
+                    }
+                ]
+            },
+            "bbox": [
+                148,
+                255,
+                503,
+                270
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应基于外部供方按照要求提供过程、产品和服务的能力，确定并实施外部供方的评价、选择、绩效监视以及再评价的准则。对于这些活动和由评价引发的任何必要的措施，组织应保留成文信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                274,
+                873,
+                308
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应根据评价的结果编制合格供方名录，作为选择外部供方和采购的依据。在合格供方名录外选择外部供方时，应按规定履行审批手续。组织应要求外部供方对其直接和次级外部供方采取适当的控制，以确保其提供的产品和服务满足要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                311,
+                875,
+                361
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应邀请顾客参加其关注的外部供方评价和选择。"
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                364,
+                535,
+                380
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "选择、评价外部供方时，应确保有效地识别并控制风险(见8.1)。"
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                382,
+                631,
+                397
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：合格供方名录应明确外部供方提供的过程、产品和服务的范围。"
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                401,
+                582,
+                416
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.4.2 控制类型和程度"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                114,
+                418,
+                299,
+                433
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确保外部提供的过程、产品和服务不会对组织稳定地向顾客交付合格产品和服务的能力产生不利影响。"
+                    }
+                ]
+            },
+            "bbox": [
+                112,
+                437,
+                873,
+                470
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应："
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                146,
+                471,
+                212,
+                486
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 确保外部提供的过程保持在其质量管理体系的控制之中；"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                490,
+                601,
+                507
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 规定对外部供方的控制及其输出结果的控制；"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                508,
+                516,
+                526
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 考虑："
+                    }
+                ]
+            },
+            "bbox": [
+                146,
+                526,
+                227,
+                542
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1)外部提供的过程、产品和服务对组织稳定地提供满足顾客要求和适用的法律法规要求的能力的潜在影响；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                546,
+                873,
+                578
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2)由外部供方实施控制的有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                580,
+                449,
+                596
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d)确定必要的验证或其他活动，以确保外部提供的过程、产品和服务满足要求："
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                599,
+                752,
+                616
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e)明确验证要求、方法和合格判定准则，按要求实施验证，保留验证的记录；"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                617,
+                735,
+                634
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 在委托外部供方进行验证时，规定委托的要求并保留委托和验证的记录，包括实验室或试验机构的资质信息；"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                636,
+                872,
+                669
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g)在采购非货架软件时，要求并监督外部供方按照软件工程化要求实施控制，保留控制的记录；"
+                    }
+                ]
+            },
+            "bbox": [
+                143,
+                672,
+                868,
+                688
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h)在采购新设计和开发的产品时，对采购项目和外部供方进行充分论证，并按规定审批；"
+                    }
+                ]
+            },
+            "bbox": [
+                143,
+                690,
+                818,
+                706
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "i) 确保采购的新设计和开发的产品，经验证合格后方可使用。"
+                    }
+                ]
+            },
+            "bbox": [
+                144,
+                707,
+                612,
+                724
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.4.3 提供给外部供方的信息"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                109,
+                725,
+                346,
+                741
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确保在与外部供方沟通之前所确定的要求是充分和适宜的。"
+                    }
+                ]
+            },
+            "bbox": [
+                143,
+                744,
+                631,
+                761
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应与外部供方沟通以下要求："
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                762,
+                393,
+                777
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a）需提供的过程、产品和服务；"
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                780,
+                393,
+                795
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 对下列内容的批准："
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                796,
+                326,
+                812
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1）产品和服务；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                814,
+                308,
+                830
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2）方法、过程和设备；"
+                    }
+                ]
+            },
+            "bbox": [
+                175,
+                833,
+                358,
+                847
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3）产品和服务的放行。"
+                    }
+                ]
+            },
+            "bbox": [
+                175,
+                851,
+                358,
+                866
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 能力，包括所要求的人员资格："
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                869,
+                407,
+                884
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 外部供方与组织的互动；"
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                887,
+                358,
+                902
+            ]
+        },
+        {
+            "type": "page_aside_text",
+            "content": {
+                "page_aside_text_content": []
+            },
+            "bbox": [
+                3,
+                4,
+                31,
+                889
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                737,
+                99,
+                877,
+                112
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "13"
+                    }
+                ]
+            },
+            "bbox": [
+                848,
+                914,
+                867,
+                926
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 组织使用的对外部供方绩效的控制和监视；"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                125,
+                537,
+                142
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 组织或其顾客拟在外部供方现场实施的验证或确认活动："
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                144,
+                636,
+                161
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g)在技术协议或合同中，明确外部供方提供产品的功能和性能要求、质量保证要求和保障要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                163,
+                907,
+                181
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h) 外部供方需提供产品和服务的技术质量问题及处理结果报告；"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                181,
+                672,
+                197
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "i) 外部供方需提供产品的技术状态变更、其生产线和工艺或设备发生变化的信息；"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                199,
+                806,
+                215
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "j） 包含对外部供方生产和保持的成文信息的控制要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                216,
+                605,
+                233
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "k) 外部供方应提供的其他信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                181,
+                234,
+                433,
+                250
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5 生产和服务提供"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                147,
+                252,
+                317,
+                267
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.1 生产和服务提供的控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                146,
+                270,
+                383,
+                286
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应在受控条件下进行生产和服务提供。"
+                    }
+                ]
+            },
+            "bbox": [
+                179,
+                289,
+                500,
+                305
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "适用时，受控条件应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                179,
+                306,
+                381,
+                322
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 可获得成文信息，以规定以下内容："
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                324,
+                482,
+                341
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1）拟生产的产品、提供的服务或进行的活动的特性；"
+                    }
+                ]
+            },
+            "bbox": [
+                213,
+                342,
+                618,
+                360
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2） 拟获得的结果。"
+                    }
+                ]
+            },
+            "bbox": [
+                211,
+                360,
+                364,
+                376
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 可获得和使用适宜的监视和测量资源；"
+                    }
+                ]
+            },
+            "bbox": [
+                178,
+                379,
+                499,
+                395
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 在适当阶段实施监视和测量活动，以验证是否符合过程或输出的控制准则以及产品和服务的接收准则；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                398,
+                907,
+                431
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 为过程的运行使用适宜的基础设施，并保持适宜的环境；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                433,
+                633,
+                450
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e)配备胜任的人员，包括所要求的资格；"
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                451,
+                495,
+                468
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 若输出结果不能由后续的监视或测量加以验证，应对生产和服务提供过程实现策划结果的能力进行确认，并定期再确认。确认内容包括："
+                    }
+                ]
+            },
+            "bbox": [
+                176,
+                469,
+                904,
+                504
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 过程评审和批准的准则；"
+                    }
+                ]
+            },
+            "bbox": [
+                211,
+                505,
+                428,
+                521
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 设备认可和人员资格鉴定；"
+                    }
+                ]
+            },
+            "bbox": [
+                210,
+                523,
+                443,
+                540
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3)特定的方法和程序的使用；"
+                    }
+                ]
+            },
+            "bbox": [
+                211,
+                542,
+                443,
+                558
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "4) 记录的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                210,
+                560,
+                341,
+                574
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g) 采取措施防止人为错误；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                578,
+                393,
+                593
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 实施放行、交付和交付后的活动；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                597,
+                460,
+                612
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "i)实施数字化制造过程的控制措施，如：信息格式、数据接口、电子签名、版本控制等；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                614,
+                848,
+                633
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "j） 获得适宜的原材料和辅助材料；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                632,
+                442,
+                648
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "k) 确认和审批生产和服务使用的计算机软件；"
+                    }
+                ]
+            },
+            "bbox": [
+                174,
+                650,
+                527,
+                667
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1)控制温度、湿度、清洁度、静电防护等环境条件；"
+                    }
+                ]
+            },
+            "bbox": [
+                173,
+                668,
+                578,
+                684
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "m)关于预防、探测和排除多余物的规定；"
+                    }
+                ]
+            },
+            "bbox": [
+                173,
+                686,
+                492,
+                702
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "n) 以清楚实用的方式(如文字标准、样件或图示)规定技艺评定准则;"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                704,
+                695,
+                721
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "0) 对首件产品进行自检和专检，并对首件作出标记，保留实测信息；"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                722,
+                695,
+                740
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "p)使用代用器材时需经审批，影响关键或重要特性的器材代用应征得顾客同意，"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                741,
+                779,
+                759
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.2 标识和可追溯性"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                137,
+                758,
+                326,
+                773
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "需要时，组织应采用适当的方法识别输出，以确保产品和服务合格。"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                776,
+                678,
+                793
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应在生产和服务提供的整个过程中按照监视和测量要求识别输出状态。"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                793,
+                729,
+                811
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "当有可追溯要求时，组织应控制输出的唯一性标识，并应保留所需的成文信息以实现可追溯。"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                812,
+                862,
+                831
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应实施产品的批次管理，以确保："
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                830,
+                455,
+                845
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a)按批次建立记录，详细记录投料、加工、装配、调试、检验、交付的数量、质量、操作者和检验者，并按规定保存；"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                849,
+                897,
+                881
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 使产品和服务的批次标记和原始信息保持一致；"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                883,
+                556,
+                900
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                94,
+                292,
+                109
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "14"
+                    }
+                ]
+            },
+            "bbox": [
+                137,
+                906,
+                156,
+                918
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 能追溯产品和服务交付前的情况和交付信息."
+                    }
+                ]
+            },
+            "bbox": [
+                127,
+                128,
+                499,
+                146
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.3 顾客或外部供方的财产"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                94,
+                148,
+                332,
+                165
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应爱护在组织控制下或组织使用的顾客或外部供方的财产。"
+                    }
+                ]
+            },
+            "bbox": [
+                127,
+                163,
+                601,
+                182
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "对组织使用的或构成产品和服务一部分的顾客和外部供方财产，组织应予以识别、验证、保护和防护。"
+                    }
+                ]
+            },
+            "bbox": [
+                94,
+                178,
+                857,
+                219
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "若顾客或外部供方的财产发生丢失、损坏或发现不适用情况，组织应向顾客或外部供方报告，并保留所发生情况的成文信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                95,
+                215,
+                858,
+                255
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：顾客或外部供方的财产可能包括材料、零部件、工具和设备以及场所、知识产权和个人资料。"
+                    }
+                ]
+            },
+            "bbox": [
+                129,
+                252,
+                756,
+                271
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.4 防护"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                97,
+                276,
+                200,
+                291
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应在生产和服务提供期间对输出进行必要的防护，以确保符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                129,
+                289,
+                673,
+                308
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：防护可包括标识、处置、污染控制、静电控制、包装、储存、传输或运输以及保护。"
+                    }
+                ]
+            },
+            "bbox": [
+                131,
+                308,
+                697,
+                327
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.5 交付后的活动"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                99,
+                329,
+                268,
+                346
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应满足与产品和服务相关的交付后活动的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                131,
+                343,
+                521,
+                361
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "在确定所要求的交付后活动的覆盖范围和程度时，组织应考虑："
+                    }
+                ]
+            },
+            "bbox": [
+                132,
+                361,
+                605,
+                379
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a)法律法规要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                132,
+                382,
+                282,
+                399
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)与产品和服务相关的潜在不良的后果；"
+                    }
+                ]
+            },
+            "bbox": [
+                132,
+                399,
+                453,
+                417
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c)产品和服务的性质、使用和预期寿命；"
+                    }
+                ]
+            },
+            "bbox": [
+                132,
+                418,
+                452,
+                434
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 顾客要求："
+                    }
+                ]
+            },
+            "bbox": [
+                134,
+                438,
+                250,
+                453
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 顾客反馈；"
+                    }
+                ]
+            },
+            "bbox": [
+                134,
+                456,
+                250,
+                471
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 对交付后活动采取以下控制措施："
+                    }
+                ]
+            },
+            "bbox": [
+                134,
+                471,
+                420,
+                488
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 按规定完成产品使用和维修的技术培训；"
+                    }
+                ]
+            },
+            "bbox": [
+                168,
+                489,
+                504,
+                505
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 确保与产品使用和维护相关的技术文件得到控制和更新；"
+                    }
+                ]
+            },
+            "bbox": [
+                168,
+                505,
+                623,
+                523
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3) 确保提供技术支持和资源，委派技术服务人员到现场服务；"
+                    }
+                ]
+            },
+            "bbox": [
+                168,
+                524,
+                640,
+                542
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "4)收集、分析产品使用和服务中的信息；"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                543,
+                489,
+                560
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "5)交付后发现问题时，应采取适宜的调查、处理和报告等措施，并验证其有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                169,
+                559,
+                791,
+                576
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注1：交付后活动可包括保证条款所规定的措施、合同义务(如维护服务等)、附加服务(如回收或最终处置等)。"
+                    }
+                ]
+            },
+            "bbox": [
+                131,
+                576,
+                836,
+                596
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注2：交付后活动通常包括现场技术培训、质量问题处理、质量信息收集与处理等工作。"
+                    }
+                ]
+            },
+            "bbox": [
+                131,
+                596,
+                692,
+                614
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.6 更改控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                104,
+                618,
+                238,
+                634
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对生产和服务提供的更改进行必要的评审和控制，以确保持续地符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                136,
+                631,
+                744,
+                648
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留成文信息，包括有关更改评审的结果、授权进行更改的人员以及根据评审所采取的必要措施。"
+                    }
+                ]
+            },
+            "bbox": [
+                102,
+                647,
+                863,
+                687
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应按规定审批生产和服务过程的更改，包括对外部供方生产和服务过程的更改。"
+                    }
+                ]
+            },
+            "bbox": [
+                137,
+                685,
+                759,
+                704
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.7 关键过程"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                105,
+                708,
+                242,
+                724
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应识别关键过程，编制关键过程明细表，实施关键过程控制。关键过程控制内容除符合8.5.1的要求外，还应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                105,
+                719,
+                863,
+                758
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 对关键过程进行标识；"
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                761,
+                339,
+                776
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)设置控制点，对过程参数、产品和服务的关键特性和重要特性进行有效监视和控制；"
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                774,
+                796,
+                793
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 对关键特性和重要特性实施百分之百检验。不能实施百分之百检验的，应规定检验或验证方法并征得顾客同意；"
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                790,
+                863,
+                829
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 运用统计技术，确保过程能力满足要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                830,
+                475,
+                847
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e)保留满足可追溯性要求的记录。"
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                849,
+                408,
+                865
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.6 产品和服务的放行"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                109,
+                868,
+                294,
+                884
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应在适当阶段实施策划的安排，以验证产品和服务的要求已得到满足。"
+                    }
+                ]
+            },
+            "bbox": [
+                141,
+                881,
+                695,
+                900
+            ]
+        },
+        {
+            "type": "page_aside_text",
+            "content": {
+                "page_aside_text_content": []
+            },
+            "bbox": [
+                3,
+                5,
+                31,
+                878
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                715,
+                93,
+                857,
+                108
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "15"
+                    }
+                ]
+            },
+            "bbox": [
+                848,
+                903,
+                867,
+                914
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "除非得到有关授权人员的批准，适用时得到顾客的批准，否则在策划的安排已圆满完成之前，不应向顾客放行产品和交付服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                139,
+                126,
+                904,
+                161
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留有关产品和服务放行的成文信息。成文信息应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                173,
+                162,
+                646,
+                181
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a）符合接收准则的证据；"
+                    }
+                ]
+            },
+            "bbox": [
+                173,
+                180,
+                373,
+                195
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 可追溯到授权放行人员的信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                173,
+                197,
+                442,
+                214
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对交付的产品和服务进行检验、试验，确认其符合接收准则后，方可提交顾客验收。"
+                    }
+                ]
+            },
+            "bbox": [
+                171,
+                216,
+                846,
+                235
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "交付时组织应提供按规定签署的产品和服务合格证明、检验和试验结果文件；必要时，还应提供有关最终产品技术状态更改的执行情况。"
+                    }
+                ]
+            },
+            "bbox": [
+                138,
+                235,
+                898,
+                268
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "交付的产品和服务应经顾客验收合格。组织应按规定要求提供有效技术文件、配套备附件、测量设备和其他保障资源。"
+                    }
+                ]
+            },
+            "bbox": [
+                136,
+                271,
+                898,
+                304
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "当产品和服务未完成所有要求的验证活动需要例外(紧急)放行时，应按规定履行审批手续，征得顾客同意，进行标识并保留记录，确保能追回、更换产品和服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                134,
+                306,
+                898,
+                341
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7 不合格输出的控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                136,
+                342,
+                321,
+                357
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7.1 组织应确保对不符合要求的输出进行识别和控制，以防止非预期的使用或交付。"
+                    }
+                ]
+            },
+            "bbox": [
+                134,
+                360,
+                786,
+                380
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应根据不合格的性质及其对产品和服务符合性的影响采取适当措施。这也适用于在产品交付之后，以及在服务提供期间或之后发现的不合格产品和服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                132,
+                379,
+                895,
+                414
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应通过下列一种或几种途径处置不合格输出："
+                    }
+                ]
+            },
+            "bbox": [
+                166,
+                415,
+                538,
+                432
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 纠正；"
+                    }
+                ]
+            },
+            "bbox": [
+                166,
+                432,
+                247,
+                446
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)隔离、限制、退货或暂停对产品和服务的提供；"
+                    }
+                ]
+            },
+            "bbox": [
+                164,
+                450,
+                553,
+                468
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 告知顾客；"
+                    }
+                ]
+            },
+            "bbox": [
+                166,
+                469,
+                281,
+                483
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d） 获得让步接收的授权。"
+                    }
+                ]
+            },
+            "bbox": [
+                164,
+                486,
+                367,
+                502
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "对不合格输出进行纠正之后应验证其是否符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                163,
+                505,
+                552,
+                522
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应按GJB571的要求形成文件，规定不合格品控制、处置的有关职责和权限，明确不合格品隔离、标识、记录、审理和处置的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                131,
+                524,
+                892,
+                558
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "对于未经顾客授权的让步使用，应征得顾客同意；关键特性不允许让步使用。"
+                    }
+                ]
+            },
+            "bbox": [
+                161,
+                559,
+                737,
+                578
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应建立不合格品审理系统，并保证其独立行使职权。如果改变其审理结论，应由最高管理者签署书面决定。对顾客关注的不合格品审理结论更改，应征得顾客同意。"
+                    }
+                ]
+            },
+            "bbox": [
+                127,
+                578,
+                890,
+                613
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "参与不合格品审理的人员，应经资格确认，由最高管理者授权，并征得顾客同意。"
+                    }
+                ]
+            },
+            "bbox": [
+                161,
+                613,
+                769,
+                633
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "不合格品的审理结论，仅对当时被审理的不合格品有效，不能作为以后审理不合格品的依据，也不影响顾客对产品和服务的判定。"
+                    }
+                ]
+            },
+            "bbox": [
+                126,
+                632,
+                888,
+                664
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7.2 组织应保留下列成文信息："
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                126,
+                667,
+                383,
+                683
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 描述不合格；"
+                    }
+                ]
+            },
+            "bbox": [
+                159,
+                686,
+                291,
+                700
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 描述所采取的措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                158,
+                703,
+                341,
+                719
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 描述获得的让步；"
+                    }
+                ]
+            },
+            "bbox": [
+                158,
+                721,
+                323,
+                736
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 识别处置不合格的授权。"
+                    }
+                ]
+            },
+            "bbox": [
+                158,
+                740,
+                375,
+                755
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9 绩效评价"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                122,
+                763,
+                223,
+                779
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1 监视、测量、分析和评价"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                122,
+                789,
+                358,
+                804
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                122,
+                806,
+                222,
+                822
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确定："
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                824,
+                252,
+                840
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 需要监视和测量什么；"
+                    }
+                ]
+            },
+            "bbox": [
+                154,
+                843,
+                353,
+                859
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b)需要用什么方法进行监视、测量、分析和评价，以确保结果有效；"
+                    }
+                ]
+            },
+            "bbox": [
+                153,
+                861,
+                676,
+                881
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 何时实施监视和测量；"
+                    }
+                ]
+            },
+            "bbox": [
+                153,
+                879,
+                351,
+                894
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C-2017"
+                    }
+                ]
+            },
+            "bbox": [
+                143,
+                94,
+                284,
+                107
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "16"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                905,
+                139,
+                917
+            ]
+        }
+    ]
+]

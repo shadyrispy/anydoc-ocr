@@ -14,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::PathBuf;
 
-use anydoc_ocr::{ConvertOptions, ForceFlags, convert_to_markdown};
+use anydoc_ocr::{ConvertRequest, ForceFlags, ParallelConfig, RenderConfig, convert_to_markdown};
 
 /// (相对 CARGO_MANIFEST_DIR 的样本路径, 是否需 OCR 引擎)
 fn samples() -> Vec<(&'static str, bool)> {
@@ -76,10 +76,11 @@ fn golden_outputs_are_stable() {
     let dir = snapshot_dir();
     std::fs::create_dir_all(&dir).expect("mkdir snapshots");
 
-    // dpi 必须显式设（ConvertOptions::default 的 dpi=0 会使 OCR 渲染失效）
-    let opts = ConvertOptions {
-        dpi: 100.0,
-        threads: 4,
+    // P2 后 ConvertRequest::default 的 dpi 已是 100.0（旧 dpi=0 陷阱已修）；
+    // 此处仍显式设以钉死 golden 基线的渲染参数
+    let opts = ConvertRequest {
+        render: RenderConfig { dpi: 100.0 },
+        parallel: ParallelConfig { page_parallel: 4, ..Default::default() },
         ..Default::default()
     };
 

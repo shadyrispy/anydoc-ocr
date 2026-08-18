@@ -22,3 +22,5 @@ third_party/dl/
 /*.html
 # 临时评估对比脚本
 /scripts/compare_accuracy*.py
+third_party/oar-ocr-core/.cargo-ok
+third_party/oar-ocr-core/Cargo.lock

@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::error::{Result, runtime};
+use crate::error::{Result, Stage, runtime};
 use pdfium_render::prelude::*;
 
 /// 将 PDF 指定页按 `dpi` 渲染为 `RgbImage`。
@@ -34,15 +34,20 @@ pub fn render_pdf_pages(
         Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
         Err(e) => {
             return Err(runtime(
+                Stage::Render,
                 None,
                 format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
             ));
         }
     };
 
-    let doc = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|e| runtime(None, format!("PDFium 加载 PDF 失败: {}: {e}", path.display())))?;
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
+        runtime(
+            Stage::Render,
+            None,
+            format!("PDFium 加载 PDF 失败: {}: {e}", path.display()),
+        )
+    })?;
 
     // 空 = 全渲；非空 = 仅渲指定索引（排序去重后集合，O(1) 判定）
     let target: Option<BTreeSet<u32>> = if page_indices.is_empty() {
@@ -81,7 +86,10 @@ fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
                 if image_count > 1 {
                     return None; // 多个 image object → 回退渲染
                 }
-                result = obj.as_image_object().and_then(|io| io.get_raw_image().ok()).map(|i| i.to_rgb8());
+                result = obj
+                    .as_image_object()
+                    .and_then(|io| io.get_raw_image().ok())
+                    .map(|i| i.to_rgb8());
             }
             PdfPageObjectType::Text => {} // 隐藏文字层（OCR 生成），不影响图像
             PdfPageObjectType::Path => path_count += 1,
@@ -107,8 +115,42 @@ fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
 pub fn render_cross_doc_fn(
     paths: Vec<std::path::PathBuf>,
     dpi: f32,
-) -> impl FnOnce(std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>) -> crate::error::Result<()> + Send + 'static
-{
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
+    render_docs_filtered(paths, dpi, Box::new(|_, _| true))
+}
+
+/// 按页子集渲染（T2 按页重试用）：只渲染 `subset` 指定的 `(doc_idx, page_idx)` 页，
+/// 供更高档局部重跑失败页。复用与全量渲染同一核心循环（`render_docs_filtered`），
+/// 保证直提 image object / 回退光栅化 / 错误结构化等语义一致。
+pub fn render_cross_doc_subset_fn(
+    paths: Vec<std::path::PathBuf>,
+    dpi: f32,
+    subset: Vec<(usize, usize)>,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
+    let keep: std::collections::HashSet<(usize, usize)> = subset.into_iter().collect();
+    render_docs_filtered(paths, dpi, Box::new(move |d, p| keep.contains(&(d, p))))
+}
+
+/// 渲染核心：逐 doc open + 逐页渲染，`keep(doc_idx, page_idx)` 为 false 的页跳过。
+/// 被 [`render_cross_doc_fn`]（全量）与 [`render_cross_doc_subset_fn`]（子集）共用，
+/// 保证两种路径的 PDFium 绑定、直提/光栅化回退、错误结构化完全一致。
+fn render_docs_filtered(
+    paths: Vec<std::path::PathBuf>,
+    dpi: f32,
+    keep: Box<dyn Fn(usize, usize) -> bool + Send + Sync>,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
     move |tx| {
         let so = locate_pdfium()?;
         let pdfium = match Pdfium::bind_to_library(&so) {
@@ -116,6 +158,7 @@ pub fn render_cross_doc_fn(
             Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
             Err(e) => {
                 return Err(runtime(
+                    Stage::Render,
                     None,
                     format!("绑定 libpdfium.so 失败（设置 PDFIUM_LIB_DIR 或随包 lib/）: {so}: {e}"),
                 ));
@@ -131,14 +174,18 @@ pub fn render_cross_doc_fn(
                     let _ = tx.send(Err((
                         (doc_idx, usize::MAX),
                         runtime(
-                            Some(&format!("doc {doc_idx}")),
-                            format!("打开 {} 失败: {e}", path.display()),
+                            Stage::Render,
+                            None,
+                            format!("打开 doc {doc_idx}（{}）失败: {e}", path.display()),
                         ),
                     )));
                     continue;
                 }
             };
             for (i, page) in doc.pages().iter().enumerate() {
+                if !keep(doc_idx, i) {
+                    continue;
+                }
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
                 // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
                 if let Some(img) = try_extract_page_image(&page, dpi) {
@@ -153,8 +200,9 @@ pub fn render_cross_doc_fn(
                     let _ = tx.send(Err((
                         (doc_idx, i),
                         runtime(
-                            Some(&format!("doc {doc_idx} page {i}")),
-                            format!("PDF {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
+                            Stage::Render,
+                            Some(i),
+                            format!("PDF doc {doc_idx} 第 {i} 页渲染尺寸异常: w={w} h={h}"),
                         ),
                     )));
                     continue;
@@ -170,8 +218,9 @@ pub fn render_cross_doc_fn(
                             let _ = tx.send(Err((
                                 (doc_idx, i),
                                 runtime(
-                                    Some(&format!("doc {doc_idx} page {i}")),
-                                    format!("bitmap 转 image 失败: {e}"),
+                                    Stage::Render,
+                                    Some(i),
+                                    format!("doc {doc_idx} bitmap 转 image 失败: {e}"),
                                 ),
                             )));
                         }
@@ -180,7 +229,8 @@ pub fn render_cross_doc_fn(
                         let _ = tx.send(Err((
                             (doc_idx, i),
                             runtime(
-                                Some(&format!("doc {doc_idx} page {i}")),
+                                Stage::Render,
+                                Some(i),
                                 format!("渲染 doc{doc_idx} 第 {i} 页失败: {e}"),
                             ),
                         )));
@@ -234,8 +284,9 @@ fn locate_pdfium() -> Result<String> {
         return Ok(dev.to_string_lossy().into_owned());
     }
     Err(runtime(
+        Stage::Render,
         None,
-        "找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）".to_string(),
+        "找不到 libpdfium.so（设置 PDFIUM_LIB_DIR 或将其置于可执行文件旁 lib/）",
     ))
 }
 
@@ -260,16 +311,25 @@ fn render_document(
             // （表格归属错页）。0 尺寸页本就无法渲染（PDF 规范页尺寸须 >0），
             // 显式报错，由调用方容错回退（文字层）而非产出错位结果。
             return Err(runtime(
-                Some(&format!("page {i}")),
+                Stage::Render,
+                Some(i),
                 format!("PDF 第 {i} 页渲染尺寸异常: w={w} h={h}"),
             ));
         }
-        let bitmap = page
-            .render(w, h, None)
-            .map_err(|e| runtime(Some(&format!("page {i}")), format!("渲染第 {i} 页失败: {e}")))?;
-        let img = bitmap
-            .as_image()
-            .map_err(|e| runtime(Some(&format!("page {i}")), format!("bitmap 转 image 失败: {e}")))?;
+        let bitmap = page.render(w, h, None).map_err(|e| {
+            runtime(
+                Stage::Render,
+                Some(i),
+                format!("渲染第 {i} 页失败: {e}"),
+            )
+        })?;
+        let img = bitmap.as_image().map_err(|e| {
+            runtime(
+                Stage::Render,
+                Some(i),
+                format!("bitmap 转 image 失败: {e}"),
+            )
+        })?;
         out.push(img.to_rgb8());
     }
     Ok(out)

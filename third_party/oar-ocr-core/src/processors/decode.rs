@@ -1,0 +1,635 @@
+//! Text decoding utilities for OCR (Optical Character Recognition) systems.
+//!
+//! This module provides implementations for decoding text recognition results,
+//! particularly focused on CTC (Connectionist Temporal Classification) decoding.
+//! It includes structures and methods for converting model predictions into
+//! readable text strings with confidence scores.
+
+use rayon::prelude::*;
+use regex::Regex;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+/// Decoded batch outputs along with positional metadata.
+pub type PositionedDecodeResult = (
+    Vec<String>,
+    Vec<f32>,
+    Vec<Vec<f32>>,
+    Vec<Vec<usize>>,
+    Vec<usize>,
+);
+
+static ALPHANUMERIC_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-zA-Z0-9 :*./%+-]").expect("static regex: alphanumeric decoder pattern")
+});
+
+/// Argmax over a 1-D prediction row, returning `(index, value)`.
+///
+/// Contiguous rows (the common row-major case for the per-timestep logits) are
+/// routed through the SIMD kernel in [`crate::processors::simd`]; a scalar scan
+/// handles non-contiguous views. Tie-breaking matches [`Iterator::max_by`]
+/// (the last maximal index wins), so decoded output is unchanged.
+#[inline]
+fn argmax_row(row: ndarray::ArrayView1<f32>) -> Option<(usize, f32)> {
+    match row.as_slice() {
+        Some(slice) => crate::processors::simd::argmax(slice),
+        None => row
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+    }
+}
+
+/// A base decoder for text recognition that handles character mapping and basic decoding operations.
+///
+/// This struct is responsible for converting model predictions into readable text strings.
+/// It maintains a character dictionary for mapping indices to characters and provides
+/// methods for decoding text with optional duplicate removal and confidence scoring.
+///
+/// # Fields
+/// * `reverse` - Flag indicating whether to reverse the text output
+/// * `dict` - A mapping from characters to their indices in the character list
+/// * `character` - A list of characters in the vocabulary, indexed by their position
+pub struct BaseRecLabelDecode {
+    reverse: bool,
+    dict: HashMap<char, usize>,
+    character: Vec<char>,
+}
+
+impl BaseRecLabelDecode {
+    /// Creates a new `BaseRecLabelDecode` instance.
+    ///
+    /// # Arguments
+    /// * `character_str` - An optional string containing the character vocabulary.
+    ///   If None, a default alphanumeric character set is used.
+    /// * `use_space_char` - Whether to include a space character in the vocabulary.
+    ///
+    /// # Returns
+    /// A new `BaseRecLabelDecode` instance.
+    pub fn new(character_str: Option<&str>, use_space_char: bool) -> Self {
+        let mut character_list: Vec<char> = if let Some(chars) = character_str {
+            chars.chars().collect()
+        } else {
+            "0123456789abcdefghijklmnopqrstuvwxyz".chars().collect()
+        };
+
+        if use_space_char {
+            character_list.push(' ');
+        }
+
+        character_list = Self::add_special_char(character_list);
+
+        let mut dict = HashMap::new();
+        for (i, &char) in character_list.iter().enumerate() {
+            dict.insert(char, i);
+        }
+
+        Self {
+            reverse: false,
+            dict,
+            character: character_list,
+        }
+    }
+
+    /// Creates a new `BaseRecLabelDecode` instance from a list of strings.
+    ///
+    /// # Arguments
+    /// * `character_list` - An optional slice of strings containing the character vocabulary.
+    ///   Only the first character of each string is used. If None, a default alphanumeric
+    ///   character set is used.
+    /// * `use_space_char` - Whether to include a space character in the vocabulary.
+    ///
+    /// # Returns
+    /// A new `BaseRecLabelDecode` instance.
+    pub fn from_string_list(character_list: Option<&[String]>, use_space_char: bool) -> Self {
+        let mut chars: Vec<char> = if let Some(list) = character_list {
+            list.iter().filter_map(|s| s.chars().next()).collect()
+        } else {
+            "0123456789abcdefghijklmnopqrstuvwxyz".chars().collect()
+        };
+
+        if use_space_char {
+            chars.push(' ');
+        }
+
+        chars = Self::add_special_char(chars);
+
+        let mut dict = HashMap::new();
+        for (i, &char) in chars.iter().enumerate() {
+            dict.insert(char, i);
+        }
+
+        Self {
+            reverse: false,
+            dict,
+            character: chars,
+        }
+    }
+
+    /// Reverses the alphanumeric parts of a string while keeping non-alphanumeric parts in place.
+    ///
+    /// # Arguments
+    /// * `pred` - The input string to process.
+    ///
+    /// # Returns
+    /// A new string with alphanumeric parts reversed.
+    fn pred_reverse(&self, pred: &str) -> String {
+        let mut pred_re = Vec::new();
+        let mut c_current = String::new();
+
+        for c in pred.chars() {
+            if !ALPHANUMERIC_REGEX.is_match(&c.to_string()) {
+                if !c_current.is_empty() {
+                    pred_re.push(c_current.clone());
+                    c_current.clear();
+                }
+                pred_re.push(c.to_string());
+            } else {
+                c_current.push(c);
+            }
+        }
+
+        if !c_current.is_empty() {
+            pred_re.push(c_current);
+        }
+
+        pred_re.reverse();
+        pred_re.join("")
+    }
+
+    /// Adds special characters to the character list.
+    ///
+    /// This is a placeholder method that currently just returns the input list unchanged.
+    /// It can be overridden in subclasses to add special characters.
+    ///
+    /// # Arguments
+    /// * `character_list` - The input character list.
+    ///
+    /// # Returns
+    /// The character list with any special characters added.
+    fn add_special_char(character_list: Vec<char>) -> Vec<char> {
+        character_list
+    }
+
+    /// Gets a list of token indices that should be ignored during decoding.
+    ///
+    /// # Returns
+    /// A vector containing the indices of tokens to ignore.
+    fn get_ignored_tokens(&self) -> Vec<usize> {
+        vec![self.get_blank_idx()]
+    }
+
+    /// Decodes model predictions into text strings with confidence scores.
+    ///
+    /// # Arguments
+    /// * `text_index` - A slice of vectors containing the predicted character indices.
+    /// * `text_prob` - An optional slice of vectors containing the prediction probabilities.
+    /// * `is_remove_duplicate` - Whether to remove consecutive duplicate characters.
+    ///
+    /// # Returns
+    /// A vector of tuples, each containing a decoded text string and its confidence score.
+    pub fn decode(
+        &self,
+        text_index: &[Vec<usize>],
+        text_prob: Option<&[Vec<f32>]>,
+        is_remove_duplicate: bool,
+    ) -> Vec<(String, f32)> {
+        let mut result_list = Vec::new();
+        let ignored_tokens = self.get_ignored_tokens();
+
+        for (batch_idx, indices) in text_index.iter().enumerate() {
+            let mut selection = vec![true; indices.len()];
+
+            if is_remove_duplicate && indices.len() > 1 {
+                for i in 1..indices.len() {
+                    if indices[i] == indices[i - 1] {
+                        selection[i] = false;
+                    }
+                }
+            }
+
+            for &ignored_token in &ignored_tokens {
+                for (i, &idx) in indices.iter().enumerate() {
+                    if idx == ignored_token {
+                        selection[i] = false;
+                    }
+                }
+            }
+
+            let char_list: Vec<char> = indices
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| selection[*i])
+                .filter_map(|(_, &text_id)| self.character.get(text_id).copied())
+                .collect();
+
+            let conf_list: Vec<f32> = if let Some(probs) = text_prob {
+                if batch_idx < probs.len() {
+                    probs[batch_idx]
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i < selection.len() && selection[*i])
+                        .map(|(_, &prob)| prob)
+                        .collect()
+                } else {
+                    vec![1.0; char_list.len()]
+                }
+            } else {
+                vec![1.0; char_list.len()]
+            };
+
+            let conf_list = if conf_list.is_empty() {
+                vec![0.0]
+            } else {
+                conf_list
+            };
+
+            let mut text: String = char_list.iter().collect();
+
+            if self.reverse {
+                text = self.pred_reverse(&text);
+            }
+
+            let mean_conf = conf_list.iter().sum::<f32>() / conf_list.len() as f32;
+            result_list.push((text, mean_conf));
+        }
+
+        result_list
+    }
+
+    /// Applies the decoder to a tensor of model predictions.
+    ///
+    /// # Arguments
+    /// * `pred` - A 3D tensor containing the model predictions. Accepts any
+    ///   `ndarray` storage (owned `Array3<f32>` or a zero-copy `ArrayView3<f32>`).
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// * A vector of decoded text strings
+    /// * A vector of confidence scores for each text string
+    pub fn apply(&self, pred: &ndarray::Array3<f32>) -> (Vec<String>, Vec<f32>) {
+        if pred.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let batch_size = pred.shape()[0];
+        let mut all_texts = Vec::new();
+        let mut all_scores = Vec::new();
+
+        for batch_idx in 0..batch_size {
+            let preds = pred.index_axis(ndarray::Axis(0), batch_idx);
+
+            let mut sequence_idx = Vec::new();
+            let mut sequence_prob = Vec::new();
+
+            for row in preds.outer_iter() {
+                if let Some((idx, prob)) = argmax_row(row) {
+                    sequence_idx.push(idx);
+                    sequence_prob.push(prob);
+                } else {
+                    sequence_idx.push(0);
+                    sequence_prob.push(0.0);
+                }
+            }
+
+            let text = self.decode(&[sequence_idx], Some(&[sequence_prob]), true);
+
+            for (t, score) in text {
+                all_texts.push(t);
+                all_scores.push(score);
+            }
+        }
+
+        (all_texts, all_scores)
+    }
+
+    /// Gets the index of the blank token.
+    ///
+    /// # Returns
+    /// The index of the blank token (always 0 in this base implementation).
+    fn get_blank_idx(&self) -> usize {
+        0
+    }
+}
+
+/// A decoder for CTC (Connectionist Temporal Classification) based text recognition models.
+///
+/// This struct extends `BaseRecLabelDecode` to provide specialized decoding for CTC models,
+/// which include a blank token that needs to be handled specially during decoding.
+///
+/// # Fields
+/// * `base` - The base decoder that handles character mapping and basic decoding operations
+/// * `blank_index` - The index of the blank token in the character vocabulary
+pub struct CTCLabelDecode {
+    base: BaseRecLabelDecode,
+    blank_index: usize,
+}
+
+impl std::fmt::Debug for CTCLabelDecode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CTCLabelDecode")
+            .field("character_count", &self.base.character.len())
+            .field("reverse", &self.base.reverse)
+            .finish()
+    }
+}
+
+impl CTCLabelDecode {
+    /// Creates a new `CTCLabelDecode` instance.
+    ///
+    /// # Arguments
+    /// * `character_list` - An optional string containing the character vocabulary.
+    ///   If None, a default alphanumeric character set is used.
+    /// * `use_space_char` - Whether to include a space character in the vocabulary.
+    ///
+    /// # Returns
+    /// A new `CTCLabelDecode` instance.
+    pub fn new(character_list: Option<&str>, use_space_char: bool) -> Self {
+        let mut base = BaseRecLabelDecode::new(character_list, use_space_char);
+
+        // Use null char for blank to distinguish from actual space
+        let mut new_character = vec!['\0'];
+        new_character.extend(base.character);
+
+        let mut new_dict = HashMap::new();
+        for (i, &char) in new_character.iter().enumerate() {
+            new_dict.insert(char, i);
+        }
+
+        base.character = new_character;
+        base.dict = new_dict;
+
+        let blank_index = 0;
+
+        Self { base, blank_index }
+    }
+
+    /// Creates a new `CTCLabelDecode` instance from a list of strings.
+    ///
+    /// # Arguments
+    /// * `character_list` - An optional slice of strings containing the character vocabulary.
+    ///   Only the first character of each string is used. If None, a default alphanumeric
+    ///   character set is used.
+    /// * `use_space_char` - Whether to include a space character in the vocabulary.
+    /// * `has_explicit_blank` - Whether the character list already includes a blank token.
+    ///
+    /// # Returns
+    /// A new `CTCLabelDecode` instance.
+    pub fn from_string_list(
+        character_list: Option<&[String]>,
+        use_space_char: bool,
+        has_explicit_blank: bool,
+    ) -> Self {
+        if has_explicit_blank {
+            let base = BaseRecLabelDecode::from_string_list(character_list, use_space_char);
+            Self {
+                base,
+                blank_index: 0,
+            }
+        } else {
+            let mut base = BaseRecLabelDecode::from_string_list(character_list, use_space_char);
+
+            // Use null char for blank to distinguish from actual space
+            let mut new_character = vec!['\0'];
+            new_character.extend(base.character);
+
+            let mut new_dict = HashMap::new();
+            for (i, &char) in new_character.iter().enumerate() {
+                new_dict.insert(char, i);
+            }
+
+            base.character = new_character;
+            base.dict = new_dict;
+
+            Self {
+                base,
+                blank_index: 0,
+            }
+        }
+    }
+
+    /// Gets the index of the blank token.
+    ///
+    /// # Returns
+    /// The index of the blank token.
+    pub fn get_blank_index(&self) -> usize {
+        self.blank_index
+    }
+
+    /// Gets the character list used by this decoder.
+    ///
+    /// # Returns
+    /// A slice containing the characters in the vocabulary.
+    pub fn get_character_list(&self) -> &[char] {
+        &self.base.character
+    }
+
+    /// Gets the number of characters in the vocabulary.
+    ///
+    /// # Returns
+    /// The number of characters in the vocabulary.
+    pub fn get_character_count(&self) -> usize {
+        self.base.character.len()
+    }
+
+    /// Applies the CTC decoder to a tensor of model predictions with character position tracking.
+    ///
+    /// This method handles the special requirements of CTC decoding and additionally tracks
+    /// the timestep positions of each character for word box generation.
+    ///
+    /// # Arguments
+    /// * `pred` - A 3D tensor containing the model predictions. Accepts any
+    ///   `ndarray` storage (owned `Array3<f32>` or a zero-copy `ArrayView3<f32>`).
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// * A vector of decoded text strings
+    /// * A vector of confidence scores for each text string
+    /// * A vector of character positions (normalized 0.0-1.0) for each text string
+    /// * A vector of column indices for each character in each text string
+    /// * A vector of sequence lengths (total columns) for each text string
+    pub fn apply_with_positions<S>(
+        &self,
+        pred: &ndarray::ArrayBase<S, ndarray::Ix3>,
+    ) -> PositionedDecodeResult
+    where
+        S: ndarray::Data<Elem = f32> + Sync,
+    {
+        if pred.is_empty() {
+            return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        }
+
+        let batch_size = pred.shape()[0];
+
+        type PerItem = (String, f32, Vec<f32>, Vec<usize>, usize);
+        let per: Vec<PerItem> = (0..batch_size)
+            .into_par_iter()
+            .map(|batch_idx| {
+                let preds = pred.index_axis(ndarray::Axis(0), batch_idx);
+                let seq_len_usize = preds.shape()[0];
+                let seq_len = seq_len_usize as f32;
+
+                let mut sequence_idx = Vec::with_capacity(seq_len_usize);
+                let mut sequence_prob = Vec::with_capacity(seq_len_usize);
+
+                for row in preds.outer_iter() {
+                    if let Some((idx, prob)) = argmax_row(row) {
+                        sequence_idx.push(idx);
+                        sequence_prob.push(prob);
+                    } else {
+                        sequence_idx.push(self.blank_index);
+                        sequence_prob.push(0.0);
+                    }
+                }
+
+                // Single CTC collapse pass (timestep == sequence position): drop
+                // blanks and consecutive duplicates and map to glyphs in one go,
+                // avoiding the `selection` scratch vector and two extra passes.
+                // `prev_idx` is updated on every step (blanks included), so dedup
+                // runs on the raw indices exactly as before. Pushing char/prob/
+                // timestep together keeps an out-of-vocab index from desyncing
+                // `char_list` from `char_positions` and corrupting word boxes.
+                let mut filtered_prob = Vec::with_capacity(sequence_idx.len());
+                let mut filtered_timesteps = Vec::with_capacity(sequence_idx.len());
+                let mut char_list: Vec<char> = Vec::with_capacity(sequence_idx.len());
+                let mut prev_idx = self.blank_index;
+                for (i, &idx) in sequence_idx.iter().enumerate() {
+                    if idx != self.blank_index
+                        && idx != prev_idx
+                        && let Some(&ch) = self.base.character.get(idx)
+                    {
+                        char_list.push(ch);
+                        filtered_prob.push(sequence_prob[i]);
+                        filtered_timesteps.push(i);
+                    }
+                    prev_idx = idx;
+                }
+
+                let mean_conf = if filtered_prob.is_empty() {
+                    0.0
+                } else {
+                    filtered_prob.iter().sum::<f32>() / filtered_prob.len() as f32
+                };
+
+                // Calculate normalized character positions (0.0 to 1.0)
+                let char_positions: Vec<f32> = filtered_timesteps
+                    .iter()
+                    .map(|&timestep| timestep as f32 / seq_len)
+                    .collect();
+
+                let text: String = char_list.iter().collect();
+                (
+                    text,
+                    mean_conf,
+                    char_positions,
+                    filtered_timesteps,
+                    seq_len_usize,
+                )
+            })
+            .collect();
+
+        let mut all_texts = Vec::with_capacity(batch_size);
+        let mut all_scores = Vec::with_capacity(batch_size);
+        let mut all_positions = Vec::with_capacity(batch_size);
+        let mut all_col_indices = Vec::with_capacity(batch_size);
+        let mut all_seq_lengths = Vec::with_capacity(batch_size);
+        for (text, score, pos, cols, seq_len) in per {
+            all_texts.push(text);
+            all_scores.push(score);
+            all_positions.push(pos);
+            all_col_indices.push(cols);
+            all_seq_lengths.push(seq_len);
+        }
+
+        (
+            all_texts,
+            all_scores,
+            all_positions,
+            all_col_indices,
+            all_seq_lengths,
+        )
+    }
+
+    /// Applies the CTC decoder to a tensor of model predictions.
+    ///
+    /// This method handles the special requirements of CTC decoding:
+    /// 1. Removing blank tokens
+    /// 2. Removing consecutive duplicate characters
+    /// 3. Converting indices to characters
+    /// 4. Calculating confidence scores
+    ///
+    /// # Arguments
+    /// * `pred` - A 3D tensor containing the model predictions. Accepts any
+    ///   `ndarray` storage (owned `Array3<f32>` or a zero-copy `ArrayView3<f32>`).
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// * A vector of decoded text strings
+    /// * A vector of confidence scores for each text string
+    pub fn apply<S>(&self, pred: &ndarray::ArrayBase<S, ndarray::Ix3>) -> (Vec<String>, Vec<f32>)
+    where
+        S: ndarray::Data<Elem = f32> + Sync,
+    {
+        if pred.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let batch_size = pred.shape()[0];
+
+        // Decode each sequence in the batch independently. The argmax over the
+        // (large) vocab dimension for every timestep dominates this work, so we
+        // fan the per-sequence loop out across rayon — order is preserved by
+        // collecting into an indexed Vec.
+        let (all_texts, all_scores): (Vec<String>, Vec<f32>) = (0..batch_size)
+            .into_par_iter()
+            .map(|batch_idx| {
+                let preds = pred.index_axis(ndarray::Axis(0), batch_idx);
+                let seq_len_usize = preds.shape()[0];
+
+                let mut sequence_idx = Vec::with_capacity(seq_len_usize);
+                let mut sequence_prob = Vec::with_capacity(seq_len_usize);
+
+                for row in preds.outer_iter() {
+                    if let Some((idx, prob)) = argmax_row(row) {
+                        sequence_idx.push(idx);
+                        sequence_prob.push(prob);
+                    } else {
+                        sequence_idx.push(self.blank_index);
+                        sequence_prob.push(0.0);
+                    }
+                }
+
+                // Single CTC collapse pass: drop blanks and consecutive duplicates
+                // and map to glyphs in one go, avoiding the `selection` scratch
+                // vector and two extra passes. `prev_idx` is updated on every step
+                // (blanks included), so dedup runs on the raw indices exactly as
+                // before. Only count a prob when its glyph lands in `text`, else an
+                // out-of-vocab index would inflate `mean_conf`.
+                let mut filtered_prob = Vec::with_capacity(sequence_idx.len());
+                let mut text = String::with_capacity(sequence_idx.len());
+                let mut prev_idx = self.blank_index;
+                for (i, &idx) in sequence_idx.iter().enumerate() {
+                    if idx != self.blank_index
+                        && idx != prev_idx
+                        && let Some(&ch) = self.base.character.get(idx)
+                    {
+                        text.push(ch);
+                        filtered_prob.push(sequence_prob[i]);
+                    }
+                    prev_idx = idx;
+                }
+
+                let mean_conf = if filtered_prob.is_empty() {
+                    0.0
+                } else {
+                    filtered_prob.iter().sum::<f32>() / filtered_prob.len() as f32
+                };
+
+                (text, mean_conf)
+            })
+            .unzip();
+
+        (all_texts, all_scores)
+    }
+}
