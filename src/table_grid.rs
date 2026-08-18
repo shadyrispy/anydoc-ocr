@@ -434,6 +434,81 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// T4：结构模型线框重建（可选增强，默认**未接入**生产路径）。
+///
+/// 用 `TableResult.cells` 的 row/col + bbox（SLANet+ 结构模型输出）定义网格，
+/// 按 `(row, col)` 落位单元格，文本优先取 cell 自带 `text`（空则留空，调用方可
+/// 用 OCR `text_regions` 按中心落位补充）。行列数 <2 或无有效 row/col → `None`，
+/// 调用方回退现有几何重建（`reconstruct_table_grid*`）。
+///
+/// 初衷：Wired 有线表无专用模型时，用 structure 输出的线框先验替代纯几何重建。
+/// 坐标约定与 `TableCell` 一致：`y` 越小越靠上；`x/y` 为单元格中心/顶部。
+#[allow(dead_code)] // 待接入：有线表几何增强（2026-08-17 方案 T4，验证后启用）
+pub fn reconstruct_from_structure(
+    cells: &[oar_ocr::domain::structure::TableCell],
+    ocr_texts: &[Region],
+) -> Option<TableGrid> {
+    if cells.is_empty() {
+        return None;
+    }
+    let mut rows_max = 0usize;
+    let mut cols_max = 0usize;
+    for c in cells {
+        if let (Some(r), Some(col)) = (c.row, c.col) {
+            rows_max = rows_max.max(r + 1);
+            cols_max = cols_max.max(col + 1);
+        }
+    }
+    if rows_max < 2 || cols_max < 2 {
+        return None;
+    }
+    let mut grid: Vec<Vec<TableCell>> = (0..rows_max)
+        .map(|_| (0..cols_max).map(|_| empty_cell()).collect())
+        .collect();
+    for c in cells {
+        let (Some(r), Some(col)) = (c.row, c.col) else { continue };
+        let (x0, y0) = (c.bbox.x_min(), c.bbox.y_min());
+        let (x1, y1) = (c.bbox.x_max(), c.bbox.y_max());
+        let text = c.text.clone().unwrap_or_default();
+        grid[r][col] = TableCell {
+            text,
+            x: (x0 + x1) / 2.0,
+            y: y0,
+            h: (y1 - y0).max(1.0),
+        };
+    }
+    // OCR 文本按中心落位补充空格（text 为空且中心落在该 cell 内的 region）
+    if !ocr_texts.is_empty() {
+        for reg in ocr_texts {
+            let (rx, ry) = (reg.center_x(), reg.y_min);
+            for r in 0..rows_max {
+                for col in 0..cols_max {
+                    let cell = &grid[r][col];
+                    if cell.text.is_empty() && cell_hits(cell, rx, ry) {
+                        grid[r][col].text = reg.text.clone();
+                    }
+                }
+            }
+        }
+    }
+    let header = grid.remove(0);
+    let has_header = is_header_row(&header, &grid);
+    Some(TableGrid {
+        cols: cols_max,
+        header,
+        rows: grid,
+        has_header,
+    })
+}
+
+/// T4：region 中心是否落在单元格 bbox 内（x 中心±半宽、y 顶部±高）。
+#[allow(dead_code)] // 待接入：与 reconstruct_from_structure 同批启用
+fn cell_hits(cell: &TableCell, rx: f32, ry: f32) -> bool {
+    // cell.x 为中心，y 为顶部；半宽 = 与邻居的间距未知，用高度作保守半径。
+    let half = (cell.h * 0.5).max(1.0);
+    (rx - cell.x).abs() <= half * 2.0 && (ry - cell.y).abs() <= cell.h + 4.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,5 +888,67 @@ mod tests {
         let g = reconstruct_table_grid(&items, 300.0).expect("grid");
         assert_eq!(g.cols, 3);
         assert_eq!(g.rows.len(), 3, "抖动行仍正确分 3 行（非 6 行）");
+    }
+
+    // ── T4：结构模型线框重建 ──
+
+    fn oar_cell(row: usize, col: usize, x0: f32, y0: f32, x1: f32, y1: f32, text: Option<&str>) -> oar_ocr::domain::structure::TableCell {
+        use oar_ocr::domain::structure::TableCell;
+        use oar_ocr::processors::{BoundingBox, Point};
+        TableCell::new(
+            BoundingBox::new(vec![Point::new(x0, y0), Point::new(x1, y1)]),
+            0.9,
+        )
+        .with_position(row, col)
+        .with_text(text.map(str::to_string).unwrap_or_default())
+    }
+
+    #[test]
+    fn structure_grid_built_from_row_col() {
+        let cells = vec![
+            oar_cell(0, 0, 5.0, 10.0, 15.0, 15.0, Some("编号")),
+            oar_cell(0, 1, 20.0, 10.0, 40.0, 15.0, Some("名称")),
+            oar_cell(1, 0, 5.0, 20.0, 15.0, 25.0, Some("1")),
+            oar_cell(1, 1, 20.0, 20.0, 40.0, 25.0, Some("甲")),
+        ];
+        let g = reconstruct_from_structure(&cells, &[]).expect("grid");
+        assert_eq!(g.cols, 2);
+        assert_eq!(g.header.len(), 2);
+        assert_eq!(g.header[0].text, "编号");
+        assert_eq!(g.header[1].text, "名称");
+        assert_eq!(g.rows.len(), 1);
+        assert_eq!(g.rows[0][1].text, "甲");
+    }
+
+    #[test]
+    fn structure_grid_fills_empty_cells_from_ocr() {
+        let cells = vec![
+            oar_cell(0, 0, 5.0, 10.0, 15.0, 15.0, Some("编号")),
+            oar_cell(0, 1, 20.0, 10.0, 40.0, 15.0, Some("名称")),
+            // 第二行两个空格：文本留待 OCR 填充
+            oar_cell(1, 0, 5.0, 20.0, 15.0, 25.0, None),
+            oar_cell(1, 1, 20.0, 20.0, 40.0, 25.0, None),
+        ];
+        let ocr = vec![
+            Region::from_top_left(5.0, 20.0, 10.0, 5.0, "1"),
+            Region::from_top_left(20.0, 20.0, 20.0, 5.0, "乙"),
+        ];
+        let g = reconstruct_from_structure(&cells, &ocr).expect("grid");
+        assert_eq!(g.rows[0][0].text, "1");
+        assert_eq!(g.rows[0][1].text, "乙");
+    }
+
+    #[test]
+    fn structure_grid_none_without_row_col() {
+        use oar_ocr::domain::structure::TableCell;
+        use oar_ocr::processors::{BoundingBox, Point};
+        // 无 row/col（结构模型未给行列）→ None，回退几何重建
+        let cells = vec![TableCell::new(
+            BoundingBox::new(vec![Point::new(0.0, 0.0), Point::new(10.0, 10.0)]),
+            0.9,
+        )];
+        assert!(reconstruct_from_structure(&cells, &[]).is_none());
+        // 单行（行列 <2）→ None
+        assert!(reconstruct_from_structure(&[], &[]).is_none());
     }
 }

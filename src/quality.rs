@@ -57,6 +57,15 @@ pub fn needs_upgrade(page: &StructureResult) -> bool {
     crate::fallback::probe_signals(page).contains(&crate::fallback::FallbackSignal::LowConfidenceProbe)
 }
 
+/// 页级"需要按页重试"判定（T2）。与 [`needs_upgrade`] 同一信号
+/// （`fallback::probe_signals` 的 `LowConfidenceProbe`），但语义化为**单页**判定：
+/// 该页 OCR 结果不可靠 → 用更高档局部重跑（而非全篇升级）。
+///
+/// 复用而非新逻辑：均值<阈值 / 无 text_regions / 置信度全缺均保守判"需重试"。
+pub fn page_needs_retry(page: &StructureResult) -> bool {
+    needs_upgrade(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +119,16 @@ mod tests {
         // 均值 (0.9+0.7)/2 = 0.8 >= 0.6 → 不升级
         let page2 = page_with(&[Some(0.9), Some(0.7)]);
         assert!(!needs_upgrade(&page2));
+    }
+
+    #[test]
+    fn page_needs_retry_mirrors_upgrade() {
+        // 页级重试判定与升级判定同信号：低置信度页需重试，高置信度页不重试
+        let bad = page_with(&[Some(0.2), Some(0.4)]);
+        assert!(page_needs_retry(&bad));
+        let good = page_with(&[Some(0.95), Some(0.92)]);
+        assert!(!page_needs_retry(&good));
+        // 无文本区域保守判重试
+        assert!(page_needs_retry(&StructureResult::new("t", 0)));
     }
 }

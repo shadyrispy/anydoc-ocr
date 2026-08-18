@@ -27,11 +27,14 @@
 mod blocks;
 mod columns;
 mod lines;
+mod list;
 mod title;
+mod vertical;
 
 pub use blocks::order_structure;
 pub use columns::{detect_column_split, order_text_regions};
 pub use lines::postprocess_lines;
+pub use list::is_isolated_marker;
 pub use title::title_level;
 
 pub(crate) use blocks::{norm_membership, page_scale};
