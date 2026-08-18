@@ -14,7 +14,7 @@ mod render;
 mod text_layer;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use image::RgbImage;
 use ofd_core::{OfdReader, RenderOptions};
@@ -227,34 +227,19 @@ fn ocr_garbled_pages(
     Ok(full_out)
 }
 
-/// 路径 B：图片型页 P3 流水线——render_fn 闭包内重新 open reader + load + 逐页渲染，
-/// 与 OCR 池并发。OfdReader 非 Send → 渲染在专属线程（闭包内 open，不跨线程）。
-fn ocr_pending_pages(
-    pages: &[PageData],
-    path: &Path,
-    route_tier: crate::models::OcrTier,
-    opts: &ConvertRequest,
-    t: &mut StageTimer,
-) -> CResult<BTreeMap<u32, String>> {
-    // (全局页下标 gi, body_idx, page_idx)
-    let pending: Vec<(usize, usize, usize)> = pages
-        .iter()
-        .enumerate()
-        .filter_map(|(gi, d)| match d {
-            PageData::OcrPendingImage { body_idx, page_idx } => Some((gi, *body_idx, *page_idx)),
-            _ => None,
-        })
-        .collect();
-    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
-    if pending.is_empty() {
-        return Ok(full_out);
-    }
-    t.stage("render");
-    let engine = crate::ocr_engine::OcrEngine::build(route_tier, opts.ocr.layout)?;
-    let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
-    let path = path.to_path_buf();
-    let dpi = opts.render.dpi;
-    let render_fn = move |tx: std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>| -> crate::error::Result<()> {
+/// OFD 图片型页渲染闭包（T2 复用）：对 `pending` 列表 `(gi, body_idx, page_idx)`
+/// 逐页渲染（优先直提 image object，回退整页光栅化），产出 `((0, gi), img)`。
+/// 主流程传全部 pending；按页重试传失败页子集——两种路径渲染语义完全一致。
+fn ofd_pending_render_fn(
+    path: PathBuf,
+    pending: Vec<(usize, usize, usize)>,
+    dpi: f32,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
+    move |tx: std::sync::mpsc::SyncSender<crate::pipeline::RenderItem>| -> crate::error::Result<()> {
         let mut reader = OfdReader::open(&path).map_err(from_ofd_error)?;
         let bodies = reader.ofd().doc_bodies.clone();
         for (gi, body_idx, page_idx) in &pending {
@@ -288,8 +273,38 @@ fn ocr_pending_pages(
             }
         }
         Ok(())
-    };
-    let (results, _render_errors) = crate::pipeline::PagePipeline::new(
+    }
+}
+
+/// 路径 B：图片型页 P3 流水线——render_fn 闭包内重新 open reader + load + 逐页渲染，
+/// 与 OCR 池并发。OfdReader 非 Send → 渲染在专属线程（闭包内 open，不跨线程）。
+fn ocr_pending_pages(
+    pages: &[PageData],
+    path: &Path,
+    route_tier: crate::models::OcrTier,
+    opts: &ConvertRequest,
+    t: &mut StageTimer,
+) -> CResult<BTreeMap<u32, String>> {
+    // (全局页下标 gi, body_idx, page_idx)
+    let pending: Vec<(usize, usize, usize)> = pages
+        .iter()
+        .enumerate()
+        .filter_map(|(gi, d)| match d {
+            PageData::OcrPendingImage { body_idx, page_idx } => Some((gi, *body_idx, *page_idx)),
+            _ => None,
+        })
+        .collect();
+    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+    if pending.is_empty() {
+        return Ok(full_out);
+    }
+    t.stage("render");
+    let engine = crate::ocr_engine::OcrEngine::build(route_tier, opts.ocr.layout)?;
+    let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
+    let path = path.to_path_buf();
+    let dpi = opts.render.dpi;
+    let render_fn = ofd_pending_render_fn(path.clone(), pending.clone(), dpi);
+    let (mut results, _render_errors) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.parallel.page_parallel,
@@ -302,6 +317,52 @@ fn ocr_pending_pages(
     .run()?;
     t.stage("ocr");
     timings.report();
+
+    // T2：按页失败重试（仅 quality_route=Auto）。与 PDF 侧同语义——pipeline 后逐页
+    // `page_needs_retry`，低质量页用更高档局部重跑（重渲染失败页 + 更高档 OCR），
+    // 成功页保留。只升一档；更高档仍失败/渲染失败则保留原结果（防循环）。
+    // `pending` 提供 gi → (body_idx, page_idx) 映射供重渲染定位。
+    if opts.quality_route == crate::quality::QualityRoute::Auto {
+        if let Some(higher) = route_tier.next() {
+            let by_gi: std::collections::HashMap<usize, (usize, usize)> =
+                pending.iter().map(|&(gi, b, p)| (gi, (b, p))).collect();
+            let bad: Vec<usize> = results
+                .iter()
+                .filter(|(_, r)| crate::quality::page_needs_retry(r))
+                .map(|((_, gi), _)| *gi)
+                .collect();
+            if !bad.is_empty() {
+                let bad_pending: Vec<(usize, usize, usize)> = bad
+                    .iter()
+                    .filter_map(|&gi| by_gi.get(&gi).map(|&(b, p)| (gi, b, p)))
+                    .collect();
+                if !bad_pending.is_empty() {
+                    let higher_engine =
+                        crate::ocr_engine::OcrEngine::build(higher, opts.ocr.layout)?;
+                    let retry_render_fn = ofd_pending_render_fn(path.clone(), bad_pending, dpi);
+                    let (retry_results, _retry_errors) = crate::pipeline::PagePipeline::new(
+                        retry_render_fn,
+                        higher_engine,
+                        opts.parallel.page_parallel,
+                        if timings.enabled() {
+                            Some(timings.clone())
+                        } else {
+                            None
+                        },
+                    )
+                    .run()?;
+                    let retry_map: std::collections::HashMap<usize, _> =
+                        retry_results.into_iter().map(|((_, gi), r)| (gi, r)).collect();
+                    for ((_, gi), res) in results.iter_mut() {
+                        if let Some(new) = retry_map.get(gi) {
+                            *res = new.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // pipeline 返回 Vec<((doc_idx, page_idx), res)> 按复合键升序。
     // OFD 单文档 doc_idx 恒 0，page_idx = gi 直接映射 full_out；
     // 渲染失败页 gi 缺失 → full_out 无该页 → 第三遍装配跳过（容错）

@@ -12,6 +12,18 @@ pub enum OcrTier {
     Medium,
 }
 
+impl OcrTier {
+    /// 下一档（Tiny→Small→Medium）。最高档返回 `None`——按页重试只升一档、
+    /// 不递归，防无限循环（T2）。
+    pub fn next(self) -> Option<OcrTier> {
+        match self {
+            OcrTier::Tiny => Some(OcrTier::Small),
+            OcrTier::Small => Some(OcrTier::Medium),
+            OcrTier::Medium => None,
+        }
+    }
+}
+
 /// 版面模型选择：默认文档结构 vs 表格专用（检出 Table 才跑 SLANet）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum OcrLayout {
@@ -73,3 +85,16 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier_next_chain() {
+        assert_eq!(OcrTier::Tiny.next(), Some(OcrTier::Small));
+        assert_eq!(OcrTier::Small.next(), Some(OcrTier::Medium));
+        assert_eq!(OcrTier::Medium.next(), None, "最高档不再升级，防循环");
+    }
+}
+
