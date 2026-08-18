@@ -1,4 +1,4 @@
-//! StructureResult → GFM（图片型 PDF/OFD 的 OCR 结果）
+//! StructureResult → DocIR（图片型 PDF/OFD 的 OCR 结果，P1.5 后产 IR 不再直接产 GFM）
 //!
 //! 主路径直接读取 OCR 的 `text_regions`（按阅读顺序拼接），而非依赖
 //! `StructureResult::to_markdown()`。原因：版面模型（PP-DocLayout）常把
@@ -8,14 +8,21 @@
 //!
 //! 阅读顺序由公共模块 `crate::reading_order` 还原（双列感知），与文字层通路共用。
 //!
+//! P1.5：本模块是 OCR 源的 **producer**——`StructureResult` → [`crate::docir::DocIR`]
+//! （source=`Ocr` 的页：正文行 Body / 识别表 TableHtml / Image 补救网格 Grid），
+//! 渲染由 `docir` 统一消费（AC-6），跨页 Grid 合并由
+//! `docir::passes::cross_page_table` 承担（AC-7）。
+//!
 //! ## Image 块表格补救（A'）
 //! 版面模型对"超大表格"（接近整页高、密集多列，如 GJB 标准的附录表）会误判为
 //! `Image`（figure）而非 `Table`，导致 `page.tables` 为空、不出 `<table>`。
 //! 补救：收集 Image 块内的 text_regions → 网格重建（复用 `crate::table_grid`），
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
-use crate::emitter::{DocumentEmitter, FlushFormat};
-use crate::reading_order::{norm_membership, order_structure, page_scale, postprocess_lines, title_level};
-use crate::region::Region;
+use crate::docir::{DocIR, PageSource};
+use crate::reading_order::{
+    norm_membership, order_structure, page_scale, postprocess_lines, title_level,
+};
+use crate::region::{Region, RegionKind};
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};
 
@@ -159,14 +166,15 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
     Some(grid)
 }
 
-/// 多页 StructureResult 转为 GFM 文本。
+/// 多页 StructureResult → DocIR（OCR 源 producer，P1.5）。
 ///
-/// 输出按页分段（`page_outs`），跨页 Image 重建表挂起、在首表页段 flush
+/// 每页产出 source=`Ocr` 的 [`PageIR`]：正文行（阅读顺序 + 标题前缀已应用）为
+/// `Body` 区块、识别表 HTML 为 `TableHtml` 区块、Image 补救重建网格为 `Grid`
+/// 区块。跨页 Grid 合并与 GFM 渲染由调用方经 `DocIR::render()` 统一承担
 /// （与文字层表格的段式装配一致，保证阅读顺序）。
-pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
+pub fn to_docir(pages: &[StructureResult]) -> DocIR {
     let debug = std::env::var("ANYDOC_DEBUG_GFM").is_ok();
-    // 跨页 Image 重建表：挂起 (grid, 首表页)，列数一致续接，否则 flush。
-    let mut emitter = DocumentEmitter::new(FlushFormat::Gfm);
+    let mut doc = DocIR::default();
 
     for (pi, page) in pages.iter().enumerate() {
         // 仅接受通过伪表格过滤的表格：被拒绝的误判表格既不入 HTML，也不
@@ -227,13 +235,10 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 if in_img {
                     continue;
                 }
-                regions.push(Region::new(
-                    b.x_min(),
-                    b.x_max(),
-                    b.y_min(),
-                    b.y_max(),
-                    t.to_string(),
-                ));
+                regions.push(
+                    Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string())
+                        .with_confidence(r.confidence),
+                );
             }
         }
         if debug && pi < 7 {
@@ -251,40 +256,40 @@ pub fn structure_results_to_gfm(pages: &[StructureResult]) -> String {
                 );
             }
         }
-        // 本页正文行 + layout 表格 HTML。对齐 GFM 块语义：标题（# 开头）
-        // 与表格前后空行，正文行段落内单换行。
-        let mut seg = String::new();
-        // ADR-0009：块驱动阅读序 + 段落合并（已合并），postprocess 做连字符/全角归一
-        let lines = postprocess_lines(order_structure(page, &regions));
-        for t in apply_title_prefixes(lines, page) {
-            let is_heading = t.starts_with('#');
-            if is_heading && !seg.is_empty() && !seg.ends_with("\n\n") {
-                seg.push('\n');
-            }
-            seg.push_str(&t);
-            seg.push('\n');
-            if is_heading {
-                seg.push('\n');
-            }
-        }
+        // 本页正文行（标题前缀已应用，# 前缀由 docir 渲染层识别空行语义）+
+        // layout 表格 HTML。ADR-0009：块驱动阅读序 + 段落合并，postprocess 做
+        // 连字符/全角归一，最后依据版面 title 块注入 markdown 标题前缀。
+        let mut out: Vec<Region> =
+            apply_title_prefixes(postprocess_lines(order_structure(page, &regions)), page)
+                .into_iter()
+                .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
+                .collect();
         for table in &tables {
             if let Some(html) = &table.html_structure {
-                if !seg.ends_with("\n\n") {
-                    seg.push_str("\n\n");
-                }
-                seg.push_str(&simplify_table_html(html));
+                out.push(
+                    Region::new(0.0, 0.0, 0.0, 0.0, simplify_table_html(html))
+                        .with_kind(RegionKind::TableHtml),
+                );
             }
         }
-
-        // Image 跨页表处理：同列续接 / 换表 flush / 表格中断 flush
-        match img_grid {
-            Some(g) => emitter.emit_grid(g, pi as u32),
-            None => emitter.flush_pending(),
+        // Image 跨页表（Grid）：同列续接 / 换表定格 / 表格中断由 pass 承担
+        if let Some(g) = img_grid {
+            out.push(Region::new(0.0, 0.0, 0.0, 0.0, String::new()).with_kind(RegionKind::Grid(g)));
         }
-        emitter.push_segment(pi as u32, &seg);
+        doc.push_page(pi as u32, PageSource::Ocr, out);
     }
-    emitter.flush_pending();
-    emitter.finish()
+    doc
+}
+
+/// 多页 StructureResult → GFM 文本（OCR 源便捷入口，P1.5）。
+///
+/// `to_docir` 产 IR → 跨页表合并 pass → 统一渲染。批量 OCR 主路径
+/// （`convert_pdf_ocr` / 质量探针 / OFD 整页 OCR）经此获得与旧 emitter
+/// 通路字节一致的输出（golden 守护，AC-8）。
+pub fn to_markdown(pages: &[StructureResult]) -> String {
+    let mut doc = to_docir(pages);
+    crate::docir::passes::cross_page_table::run(&mut doc);
+    doc.render()
 }
 
 /// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
@@ -519,7 +524,7 @@ mod tests {
         let p1 = page_with_image_grid(&[("1", "甲"), ("2", "乙")], (0.0, 0.0, 50.0, 50.0));
         // 页2：page_with_image_grid 自动生成重复表头 + 续行
         let p2 = page_with_image_grid(&[("3", "丙")], (0.0, 0.0, 50.0, 40.0));
-        let out = structure_results_to_gfm(&[p1, p2]);
+        let out = to_markdown(&[p1, p2]);
         assert_eq!(out.matches("<table>").count(), 1, "跨页合并为 1 表");
         assert!(out.contains("丙"), "续行在");
         assert_eq!(out.matches("编号").count(), 1, "表头去重（仅 1 次表头）");

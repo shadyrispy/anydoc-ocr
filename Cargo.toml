@@ -4,22 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# 版本按 spec 风险 #13 精确锁定（上游 API 变动风险）
-anydoc = "=0.1.9"
+# 版本策略（P0-4，spec ADR 附录）：深耦合（行为镜像/特性镜像/RC/0.x 演进期）锁 "="，
+# 纯 Rust 工具库统一 "^"（patch/minor 可吸收，Cargo.lock 锁定实际版本）。
+anydoc = "=0.1.9"          # 行为镜像其私有 map_error（error.rs），锁死
 clap = { version = "4", features = ["derive"] }
-image = "0.25.10"
+image = "^0.25.10"
 # 末页表探针零拷贝映射（T11）：已由 fontdb 传递引入，提升为直接依赖不增编译单元
-memmap2 = "0.9.11"
+memmap2 = "^0.9.11"
 oar-ocr = { version = "=0.9.1", default-features = false, features = ["auto-download", "simd"] }
 # 直接依赖 ort（与 oar-ocr-core 锁定的 =2.0.0-rc.13 同版本、特性完全镜像），
 # 仅为拿到进程级线程池 API（A：消除 rayon×ORT 线程超额订阅）。特性与上游一致，
 # Cargo 自动合一、不引入第二份、不改链接行为（仍走 ORT_LIB_PATH）。
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "copy-dylibs"] }
-ofd-core = "=0.3.0"
+ofd-core = "=0.3.0"        # 0.x 演进期，错误映射逐变体（error.rs），锁死
 pdf-inspector = "^1.14.2"
-pdfium-render = "0.9.3"
-rayon = "1.12.0"
-tempfile = "3.27.0"
+pdfium-render = "^0.9.3"
+rayon = "^1.12.0"
+tempfile = "^3.27.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
@@ -28,3 +29,10 @@ lto = true
 codegen-units = 1
 # 保留符号便于 perf 火焰图定位热点（可选）。
 # debug = 1
+
+# 性能 patch（2026-08-17）：oar-ocr-core 的 6 处 resize 走 image crate 标量实现
+# （零 SIMD/单线程），是 OCR 预处理瓶颈（表格页 intra 满核后仅 1.04x 的主因）。
+# 本地副本换 fast_image_resize（NEON SIMD，ARMv8.0 可用），filter 语义不变。
+# 升级 oar-ocr 时 rebase 本目录（diff 仅 utils/image.rs + Cargo.toml 两文件）。
+[patch.crates-io]
+oar-ocr-core = { path = "third_party/oar-ocr-core" }

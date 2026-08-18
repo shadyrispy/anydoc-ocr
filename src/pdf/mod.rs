@@ -18,7 +18,7 @@
 //! （>=3 行各自拆成 >=3 个 x 分离段，双列正文每行仅 2 段不误报）；首/末页
 //! 曾无条件入集，Ticket B 已移除（无证据召回，代价是整页渲染+版面 OCR），末页
 //! 表格改由 `probe_last_page_table` 兜底。可疑页整文档懒渲染一次后批量跑版面
-//! OCR（用 `opts.ocr_layout`，默认 Doc 含 table 类，能识别封面/版权栏等），
+//! OCR（用 `opts.ocr.layout`，默认 Doc 含 table 类，能识别封面/版权栏等），
 //! 以 `LayoutElementType::Table` 确认后才输出 `<table>` HTML（MinerU 对齐：
 //! 表格只出自识别模型，不来自文字层），未确认页回落文字层；页序混排保序，
 //! OCR 失败回落该页文字层。`--pdf-force-ocr` 仍为整文档 OCR。
@@ -35,29 +35,35 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::timing::StageTimer;
-use crate::{ConvertOptions, Result, gfm_adapter};
+use crate::{ConvertRequest, Result, gfm_adapter};
 
 pub mod render;
 mod text_layer;
 pub(crate) use text_layer::text_layer_markdown;
 
-pub fn convert_pdf(path: &Path, opts: &ConvertOptions, pdf_force_ocr: bool) -> Result<String> {
+pub fn convert_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> Result<String> {
     let mut t = StageTimer::new();
-    // 文字型：pdf-inspector 提取 + 自建阅读顺序；非文字型/失败回退 OCR。
-    // pdf_force_ocr 强制把文字型当图片渲染后 OCR（图片型校准）。
-    if !pdf_force_ocr
-        && let Some(md) = text_layer_markdown(path, opts)?
-    {
-        return Ok(md);
+    // P1.10：文字层预分流统一走 convert::route_pdf（单文档与 BatchConverter
+    // 共用同一判定；force_ocr 路径含加密预检 ADR-0006 §6）。
+    match crate::convert::route_pdf(path, opts, pdf_force_ocr) {
+        crate::convert::PdfRoute::Done(r) => r,
+        crate::convert::PdfRoute::Ocr => {
+            t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
+            convert_pdf_ocr_single(path, opts)
+        }
     }
-    // 图片型：跨文档 OCR pipeline（ADR-0005 候选 2）。单文档委托为 &[path]。
+}
+
+/// 已完成预分流（Ocr 路由）的单文档入口：直接进跨文档 pipeline（`&[path]` 委托）。
+///
+/// P1.10：供 `convert_to_markdown` 的 `DocRoute::Ocr` 分支调用——跨文档 pipeline
+/// 是 convert 的实现细节，调用方不再自行组 `&[path]`。
+pub(crate) fn convert_pdf_ocr_single(path: &Path, opts: &ConvertRequest) -> Result<String> {
     let path_buf = path.to_path_buf();
     let mut out = convert_pdf_ocr(std::slice::from_ref(&path_buf), opts)?;
-    t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
     // 单文档：唯一 doc 的 Result 直接透传（Err 能带真实 detail，ADR 候选 3）。
     match out.pop().map(|(_, r)| r) {
-        Some(Ok(md)) => Ok(md),
-        Some(Err(e)) => Err(e),
+        Some(r) => r,
         None => Ok(String::new()),
     }
 }
@@ -72,34 +78,48 @@ pub fn convert_pdf(path: &Path, opts: &ConvertOptions, pdf_force_ocr: bool) -> R
 ///
 /// 跨文档 render 闭包逐 doc open + 逐页渲染，OCR 池跨文档消费，文档边界不停顿。
 /// pipeline 返回 `(成功页, 渲染错误)` 按复合键升序，此处按 doc_idx 分组（同组内
-/// page_idx 升序）逐 doc 跑 `structure_results_to_gfm`。
+/// page_idx 升序）逐 doc 跑 `gfm_adapter::to_markdown`（内部产 DocIR → 跨页表
+/// pass → 统一渲染，P1.5）。
 pub(crate) fn convert_pdf_ocr(
     paths: &[PathBuf],
-    opts: &ConvertOptions,
+    opts: &ConvertRequest,
 ) -> Result<Vec<(usize, Result<String>)>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
+    // F2：pipeline 主路径直接 `OcrEngine::build`，不经 `ocr_images`，须在此先提交
+    // 进程级 ORT 线程池（Ticket A）：任何 ONNX session 创建前调用才生效。
+    crate::ocr_engine::init_runtime(&opts.parallel);
     // ADR-0007：质量路由（后验置信度门控）。Auto 时 tiny 渲染+OCR 首文档首页，
-    // 平均置信度低于阈值 → 升级 small 全篇重跑；Off 用显式 opts.ocr_tier。
+    // 平均置信度低于阈值 → 升级 small 全篇重跑；Off 用显式 opts.ocr.tier。
     // 探针失败不阻断，回退显式参数。dpi 始终由用户显式控制（后验只升级 tier，
     // 不再改 dpi）。
     let tier = if opts.quality_route == crate::quality::QualityRoute::Auto {
         probe_first_doc_confidence(&paths[0], opts)?
-            .map(|needs| if needs { crate::models::OcrTier::Small } else { crate::models::OcrTier::Tiny })
-            .unwrap_or(opts.ocr_tier)
+            .map(|needs| {
+                if needs {
+                    crate::models::OcrTier::Small
+                } else {
+                    crate::models::OcrTier::Tiny
+                }
+            })
+            .unwrap_or(opts.ocr.tier)
     } else {
-        opts.ocr_tier
+        opts.ocr.tier
     };
-    let dpi = opts.dpi;
-    let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr_layout)?;
+    let dpi = opts.render.dpi;
+    let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr.layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
     let (results, render_errors) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
-        opts.threads,
-        if timings.enabled() { Some(timings.clone()) } else { None },
+        opts.parallel.page_parallel,
+        if timings.enabled() {
+            Some(timings.clone())
+        } else {
+            None
+        },
     )
     .run()?;
     timings.report();
@@ -119,7 +139,7 @@ pub(crate) fn convert_pdf_ocr(
         if let Some(e) = doc_errors.remove(&doc_idx) {
             out.push((doc_idx, Err(e)));
         } else {
-            let md = gfm_adapter::structure_results_to_gfm(&pages);
+            let md = gfm_adapter::to_markdown(&pages);
             out.push((doc_idx, Ok(md)));
         }
     }
@@ -149,11 +169,23 @@ fn classify_doc_errors(
 /// ADR-0007（后验）：tiny 渲染+OCR 首文档首页 → 平均置信度 → 是否升级 small。
 /// 返回 `Some(true)` 升级、`Some(false)` 维持 tiny；探针失败（渲染/OCR）返回 Ok(None)，
 /// 调用方回退显式参数。探针仅 1 页 tiny，开销最小。
-fn probe_first_doc_confidence(path: &Path, opts: &ConvertOptions) -> Result<Option<bool>> {
-    let imgs = render::render_pdf_pages(path, opts.dpi, &[0])?;
+///
+/// F1：任何一步失败（坏 PDF/缺页/模型缺失）都吞掉返回 Ok(None)，不得使整批 OCR 挂掉。
+fn probe_first_doc_confidence(path: &Path, opts: &ConvertRequest) -> Result<Option<bool>> {
+    let imgs = match render::render_pdf_pages(path, opts.render.dpi, &[0]) {
+        Ok(imgs) => imgs,
+        Err(_) => return Ok(None),
+    };
     // 探针固定用 tiny：本就是要判定 tiny 是否够用
-    let engine = crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr_layout)?;
-    let pages = engine.predict(imgs, 1, None)?;
+    let engine =
+        match crate::ocr_engine::OcrEngine::build(crate::models::OcrTier::Tiny, opts.ocr.layout) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
+    let pages = match engine.predict(imgs, 1, None) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
     let Some(page) = pages.first() else {
         return Ok(None);
     };
@@ -170,9 +202,9 @@ mod tests {
     #[test]
     fn classify_doc_errors_sentinel_marks_whole_doc() {
         let errs = vec![
-            ((0, usize::MAX), runtime(Some("doc 0"), "打开 0 失败")),
-            ((1, 0), runtime(Some("doc 1 page 0"), "单页渲染失败")),
-            ((2, usize::MAX), runtime(Some("doc 2"), "打开 2 失败")),
+            ((0, usize::MAX), runtime(crate::error::Stage::Render, None, "打开 0 失败")),
+            ((1, 0), runtime(crate::error::Stage::Render, Some(0), "单页渲染失败")),
+            ((2, usize::MAX), runtime(crate::error::Stage::Render, None, "打开 2 失败")),
         ];
         let doc_errors = classify_doc_errors(errs);
         // 哨兵页 doc 标记为 Err

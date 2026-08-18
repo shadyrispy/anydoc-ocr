@@ -12,7 +12,7 @@
 use crate::region::Region;
 
 /// 文字层表格单元格（文本 + 几何，用于合并单元格 span 推断）。
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableCell {
     pub text: String,
     pub x: f32,
@@ -21,6 +21,7 @@ pub struct TableCell {
 }
 
 /// 文字层表格网格（行×列）。
+#[derive(Clone, Debug, PartialEq)]
 pub struct TableGrid {
     pub cols: usize,
     pub header: Vec<TableCell>,
@@ -222,11 +223,14 @@ fn relative_row_tol(items: &[Region], page_w: f32) -> f32 {
         pitch = diffs[diffs.len() / 2];
     }
     // 下限 4.0（原硬编码，保小尺度 PDF pt 行为）；上限随页宽，防超大容差误合并。
-    // f32::clamp 在 min>max / 任一 NaN 时 panic：页宽极小（<13.33）或 pitch 为
-    // NaN（退化页行距全同）会触发，先夹紧上限并滤 NaN。
+    // F4：`f32::clamp` 在 min>max / 任一 NaN 时 panic——页宽极小（<13.33）或 pitch 为
+    // NaN（退化页行距全同）会触发。先滤 NaN 再手动 clamp（避免 panic 路径）。
     let upper = (0.3 * page_w).max(4.0);
-    let tol = (0.5 * pitch).clamp(4.0, upper);
-    if tol.is_nan() { 4.0 } else { tol }
+    let tol = 0.5 * pitch;
+    if tol.is_nan() || upper.is_nan() {
+        return 4.0;
+    }
+    tol.clamp(4.0, upper)
 }
 
 /// 首行是否真表头（保守判定）。false-positive（数据行当表头）比 false-negative

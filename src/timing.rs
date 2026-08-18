@@ -103,7 +103,10 @@ impl PageTimings {
             }
         }
         eprintln!("[timing] ── per-page (ms) ──");
-        eprintln!("[timing] {:>6} {:>10} {:>10} {:>10}", "page", "render", "ocr", "total");
+        eprintln!(
+            "[timing] {:>6} {:>10} {:>10} {:>10}",
+            "page", "render", "ocr", "total"
+        );
         let mut render_vals: Vec<f64> = Vec::new();
         let mut ocr_vals: Vec<f64> = Vec::new();
         let mut total_vals: Vec<f64> = Vec::new();
@@ -115,7 +118,11 @@ impl PageTimings {
             total_vals.push(t);
         }
         eprintln!("[timing] ── histogram ──");
-        for (label, vals) in [("render", &render_vals), ("ocr", &ocr_vals), ("total", &total_vals)] {
+        for (label, vals) in [
+            ("render", &render_vals),
+            ("ocr", &ocr_vals),
+            ("total", &total_vals),
+        ] {
             let (p50, p95, max) = percentiles(vals);
             eprintln!(
                 "[timing] {:<6} p50={:>7.1}  p95={:>7.1}  max={:>7.1}  (n={})",

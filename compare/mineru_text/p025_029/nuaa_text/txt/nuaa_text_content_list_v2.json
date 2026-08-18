@@ -1,0 +1,2717 @@
+[
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "5) 交付后发现问题时，应采取适宜的调查、处理和报告等措施，并验证其有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                166,
+                90,
+                833,
+                106
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注1：交付后活动可包括保证条款所规定的措施、合同义务(如维护服务等)、附加服务(如回收或最终处置等)。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                112,
+                877,
+                129
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注2：交付后活动通常包括现场技术培训、质量问题处理、质量信息收集与处理等工作。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                134,
+                721,
+                149
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.6 更改控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                150,
+                223,
+                166
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对生产和服务提供的更改进行必要的评审和控制，以确保持续地符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                172,
+                774,
+                188
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留成文信息，包括有关更改评审的结果、授权进行更改的人员以及根据评审所采取的必要措施。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                193,
+                910,
+                231
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应按规定审批生产和服务过程的更改，包括对外部供方生产和服务过程的更改。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                236,
+                793,
+                252
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.5.7 关键过程"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                254,
+                223,
+                270
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应识别关键过程，编制关键过程明细表，实施关键过程控制。关键过程控制内容除符合 8.5.1的要求外，还应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                276,
+                912,
+                313
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 对关键过程进行标识；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                319,
+                329,
+                334
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 设置控制点，对过程参数、产品和服务的关键特性和重要特性进行有效监视和控制；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                340,
+                821,
+                357
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 对关键特性和重要特性实施百分之百检验。不能实施百分之百检验的，应规定检验或验证方法并征得顾客同意；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                362,
+                910,
+                399
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 运用统计技术，确保过程能力满足要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                404,
+                473,
+                420
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 保留满足可追溯性要求的记录。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                426,
+                401,
+                441
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.6 产品和服务的放行"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                444,
+                278,
+                459
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应在适当阶段实施策划的安排，以验证产品和服务的要求已得到满足。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                466,
+                721,
+                483
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "除非得到有关授权人员的批准，适用时得到顾客的批准，否则在策划的安排已圆满完成之前，不应向顾客放行产品和交付服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                488,
+                912,
+                526
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留有关产品和服务放行的成文信息。成文信息应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                530,
+                628,
+                547
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 符合接收准则的证据；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                552,
+                327,
+                567
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 可追溯到授权放行人员的信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                573,
+                401,
+                589
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对交付的产品和服务进行检验、试验，确认其符合接收准则后，方可提交顾客验收。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                595,
+                848,
+                610
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "交付时组织应提供按规定签署的产品和服务合格证明、检验和试验结果文件；必要时，还应提供有关最终产品技术状态更改的执行情况。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                616,
+                909,
+                653
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "交付的产品和服务应经顾客验收合格。组织应按规定要求提供有效技术文件、配套备附件、测量设备和其他保障资源。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                659,
+                910,
+                697
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "当产品和服务未完成所有要求的验证活动需要例外(紧急)放行时，应按规定履行审批手续，征得顾客同意，进行标识并保留记录，确保能追回、更换产品和服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                701,
+                910,
+                739
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7 不合格输出的控制"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                741,
+                280,
+                756
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7.1 组织应确保对不符合要求的输出进行识别和控制，以防止非预期的使用或交付。"
+                    }
+                ]
+            },
+            "bbox": [
+                82,
+                762,
+                774,
+                779
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应根据不合格的性质及其对产品和服务符合性的影响采取适当措施。这也适用于在产品交付之后，以及在服务提供期间或之后发现的不合格产品和服务。"
+                    }
+                ]
+            },
+            "bbox": [
+                82,
+                783,
+                910,
+                823
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应通过下列一种或几种途径处置不合格输出："
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                826,
+                519,
+                843
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 纠正；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                847,
+                200,
+                864
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 隔离、限制、退货或暂停对产品和服务的提供；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                869,
+                527,
+                885
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 告知顾客；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                890,
+                236,
+                907
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                773,
+                49,
+                912,
+                64
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "17"
+                    }
+                ]
+            },
+            "bbox": [
+                890,
+                928,
+                912,
+                940
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 获得让步接收的授权。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                90,
+                329,
+                106
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "对不合格输出进行纠正之后应验证其是否符合要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                111,
+                539,
+                128
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应按GJB 571的要求形成文件，规定不合格品控制、处置的有关职责和权限，明确不合格品隔离、标识、记录、审理和处置的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                133,
+                902,
+                171
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "对于未经顾客授权的让步使用，应征得顾客同意；关键特性不允许让步使用。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                175,
+                739,
+                192
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应建立不合格品审理系统，并保证其独立行使职权。如果改变其审理结论，应由最高管理者签署书面决定。对顾客关注的不合格品审理结论更改，应征得顾客同意。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                197,
+                910,
+                235
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "参与不合格品审理的人员，应经资格确认，由最高管理者授权，并征得顾客同意。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                239,
+                774,
+                256
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "不合格品的审理结论，仅对当时被审理的不合格品有效，不能作为以后审理不合格品的依据，也不影响顾客对产品和服务的判定。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                261,
+                910,
+                299
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "8.7.2 组织应保留下列成文信息："
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                304,
+                354,
+                320
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 描述不合格；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                325,
+                253,
+                342
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 描述所采取的措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                346,
+                307,
+                363
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 描述获得的让步；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                368,
+                290,
+                384
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 识别处置不合格的授权。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                388,
+                346,
+                406
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9 绩效评价"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                415,
+                184,
+                432
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1 监视、测量、分析和评价"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                444,
+                332,
+                460
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                461,
+                186,
+                478
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确定："
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                484,
+                226,
+                500
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 需要监视和测量什么；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                505,
+                327,
+                522
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 需要用什么方法进行监视、测量、分析和评价，以确保结果有效；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                527,
+                673,
+                545
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 何时实施监视和测量；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                548,
+                327,
+                565
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 何时对监视和测量的结果进行分析和评价。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                570,
+                492,
+                586
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应评价质量管理体系的绩效和有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                591,
+                465,
+                608
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留适当的成文信息，以作为结果的证据。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                612,
+                519,
+                629
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1.2 顾客满意"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                630,
+                223,
+                647
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应监视顾客对其需求和期望已得到满足的程度的感受。组织应确定获取、监视和评审该信息的方法。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                652,
+                910,
+                690
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对顾客抱怨或投诉实施改进，并将处理结果及时通报顾客。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                695,
+                647,
+                712
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：监视顾客感受的例子可包括顾客调查、顾客对交付产品或服务的反馈、顾客座谈、市场占有率分析、顾客赞扬、担保索赔和经销商报告。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                718,
+                902,
+                755
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.1.3 分析与评价"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                756,
+                242,
+                771
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应分析和评价通过监视和测量获得的适当的数据和信息。"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                777,
+                610,
+                794
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "应利用分析结果评价："
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                800,
+                300,
+                815
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 产品和服务的符合性；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                821,
+                327,
+                837
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 顾客满意程度；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                843,
+                272,
+                858
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 质量管理体系的绩效和有效性；"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                864,
+                400,
+                880
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 策划是否得到有效实施；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                884,
+                344,
+                902
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                85,
+                49,
+                226,
+                65
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "18"
+                    }
+                ]
+            },
+            "bbox": [
+                122,
+                928,
+                144,
+                940
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 应对风险和机遇所采取措施的有效性；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                89,
+                458,
+                108
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 外部供方的绩效；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                110,
+                294,
+                129
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g) 质量管理体系改进的需求；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                131,
+                366,
+                150
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h) 质量经济性。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                153,
+                260,
+                172
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "分析和评价结果应用于体系、过程、产品和服务的改进。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                174,
+                578,
+                193
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：数据分析方法可包括统计技术。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                197,
+                369,
+                214
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.2 内部审核"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                213,
+                208,
+                231
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "9.2.1 组织应按照策划的时间间隔进行内部审核，以提供有关质量管理体系的下列信息："
+                    }
+                ]
+            },
+            "bbox": [
+                80,
+                235,
+                793,
+                255
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 是否符合："
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                257,
+                240,
+                275
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 组织自身的质量管理体系要求；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                277,
+                438,
+                296
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 本标准的要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                299,
+                312,
+                318
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 是否得到有效的实施和保持。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                320,
+                384,
+                339
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.2.2 组织应："
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                343,
+                211,
+                361
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 依据有关过程的重要性、对组织产生影响的变化和以往的审核结果，策划、制定、实施和保持审核方案，审核方案包括频次、方法、职责、策划要求和报告；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                364,
+                912,
+                403
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 规定每次审核的审核准则和范围；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                407,
+                421,
+                425
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 选择审核员并实施审核，以确保审核过程客观公正；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                427,
+                568,
+                446
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 确保将审核结果报告给相关管理者；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                448,
+                438,
+                467
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 及时采取适当的纠正和纠正措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                471,
+                421,
+                489
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 保留成文信息，作为实施审核方案以及审核结果的证据。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                491,
+                603,
+                510
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确保内部审核员具有相应的能力。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                514,
+                448,
+                532
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：相关指南参见GB/T 19011。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                536,
+                337,
+                553
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.3 管理评审"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                553,
+                206,
+                570
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.3.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                571,
+                189,
+                589
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "最高管理者应按照策划的时间间隔对组织的质量管理体系进行评审，以确保其持续的适宜性、充分性和有效性，并与组织的战略方向保持一致。"
+                    }
+                ]
+            },
+            "bbox": [
+                80,
+                593,
+                914,
+                633
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "产品和服务发生重大质量事故，组织的质量管理体系发生重大变化，组织应及时进行专题管理评审。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                636,
+                904,
+                655
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.3.2 管理评审输入"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                654,
+                262,
+                671
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "策划和实施管理评审时应考虑下列内容："
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                675,
+                448,
+                694
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 以往管理评审所采取措施的情况；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                697,
+                421,
+                716
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 与质量管理体系相关的内外部因素的变化；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                718,
+                494,
+                737
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 下列有关质量管理体系绩效和有效性的信息，包括其趋势："
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                739,
+                621,
+                758
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 顾客满意和有关相关方的反馈；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                762,
+                436,
+                780
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 质量目标的实现程度；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                782,
+                363,
+                801
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3) 过程绩效以及产品和服务的合格情况；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                804,
+                492,
+                823
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "4) 不合格及纠正措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                825,
+                344,
+                844
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "5) 监视和测量结果；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                846,
+                327,
+                865
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "6) 审核结果；"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                868,
+                272,
+                887
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "7) 外部供方的绩效。"
+                    }
+                ]
+            },
+            "bbox": [
+                152,
+                889,
+                327,
+                908
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                771,
+                49,
+                914,
+                65
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "19"
+                    }
+                ]
+            },
+            "bbox": [
+                890,
+                928,
+                912,
+                941
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 资源的充分性；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                87,
+                275,
+                108
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 应对风险和机遇所采取措施的有效性(见6.1)；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                110,
+                522,
+                129
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 改进的机会；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                131,
+                258,
+                150
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "g) 质量经济性分析情况；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                153,
+                332,
+                172
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "h) 重大质量问题的归零情况。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                173,
+                368,
+                192
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "9.3.3 管理评审输出"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                192,
+                262,
+                210
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "管理评审的输出应包括与下列事项相关的决定和措施："
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                213,
+                559,
+                233
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 改进的机会；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                235,
+                258,
+                254
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 质量管理体系所需的变更；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                256,
+                366,
+                275
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 资源需求；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                277,
+                238,
+                296
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 顾客提出的改进要求。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                299,
+                332,
+                318
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应保留成文信息，作为管理评审结果的证据。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                320,
+                522,
+                340
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应对管理评审输出落实情况进行跟踪、验证。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                342,
+                522,
+                361
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "10 改进"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                369,
+                161,
+                388
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "10.1 总则"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                84,
+                396,
+                179,
+                415
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应确定并选择改进机会，并采取必要措施，以满足顾客要求和增强顾客满意。"
+                    }
+                ]
+            },
+            "bbox": [
+                114,
+                419,
+                776,
+                439
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "这应包括："
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                440,
+                213,
+                459
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 改进产品和服务，以满足要求并应对未来的需求和期望；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                461,
+                603,
+                480
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 纠正、预防或减少不利影响；"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                483,
+                386,
+                502
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 改进质量管理体系的绩效和有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                504,
+                440,
+                523
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：改进的例子可包括纠正、纠正措施、持续改进、突破性变革、创新和重组。"
+                    }
+                ]
+            },
+            "bbox": [
+                110,
+                527,
+                667,
+                545
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "10.2 不合格和纠正措施"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                82,
+                545,
+                292,
+                562
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "10.2.1 当出现不合格时，包括来自投诉的不合格，组织应："
+                    }
+                ]
+            },
+            "bbox": [
+                82,
+                565,
+                568,
+                585
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 对不合格做出应对，并在适用时："
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                587,
+                423,
+                606
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 采取措施以控制和纠正不合格；"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                609,
+                438,
+                628
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 处置后果。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                630,
+                275,
+                649
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 通过下列活动，评价是否需要采取措施，以消除产生不合格的原因，避免其再次发生或者在其他场合发生："
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                650,
+                915,
+                691
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1) 评审和分析不合格；"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                693,
+                347,
+                713
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2) 确定不合格的原因；"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                716,
+                347,
+                733
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3) 确定是否存在或可能发生类似的不合格。"
+                    }
+                ]
+            },
+            "bbox": [
+                151,
+                736,
+                510,
+                755
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "c) 实施所需的措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                758,
+                292,
+                776
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "d) 评审所采取的纠正措施的有效性；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                780,
+                421,
+                798
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "e) 需要时，更新在策划期间确定的风险和机遇；"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                801,
+                512,
+                820
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "f) 需要时，变更质量管理体系。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                823,
+                386,
+                840
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "纠正措施应与不合格所产生的影响相适应。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                844,
+                467,
+                862
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "当产品和服务发生严重、重大质量问题时，组织应实施问题的技术归零和管理归零。"
+                    }
+                ]
+            },
+            "bbox": [
+                117,
+                865,
+                796,
+                883
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "当确认不合格是外部供方的原因所致时，组织应要求外部供方采取纠正和纠正措施，并评价措施的"
+                    }
+                ]
+            },
+            "bbox": [
+                119,
+                887,
+                914,
+                906
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                49,
+                228,
+                65
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "20"
+                    }
+                ]
+            },
+            "bbox": [
+                122,
+                928,
+                146,
+                940
+            ]
+        }
+    ],
+    [
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                85,
+                91,
+                154,
+                105
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应按照GJB 841建立并运行产品和服务的故障报告分析和纠正措施系统，并将与最终产品和服务质量有关的问题和纠正措施及其结果向顾客通报。"
+                    }
+                ]
+            },
+            "bbox": [
+                85,
+                112,
+                910,
+                149
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "注：技术归零的五条要求：定位准确、机理清楚、问题复现、措施有效、举一反三；管理归零的五条要求：过程清楚、责任明确、措施落实、严肃处理、完善规章。"
+                    }
+                ]
+            },
+            "bbox": [
+                115,
+                156,
+                909,
+                192
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "10.2.2 组织应保留成文信息，作为下列事项的证据："
+                    }
+                ]
+            },
+            "bbox": [
+                85,
+                197,
+                509,
+                212
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "a) 不合格的性质以及随后所采取的措施；"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                218,
+                455,
+                233
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "b) 纠正措施的结果。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                241,
+                290,
+                255
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "10.3 持续改进"
+                    }
+                ],
+                "level": 2
+            },
+            "bbox": [
+                85,
+                257,
+                213,
+                273
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应持续改进质量管理体系的适宜性、充分性和有效性。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                280,
+                591,
+                295
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应考虑分析和评价的结果以及管理评审的输出，以确定是否存在需求或机遇，这些需求或机遇应作为持续改进的一部分加以应对。"
+                    }
+                ]
+            },
+            "bbox": [
+                84,
+                301,
+                910,
+                338
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "组织应制定、实施质量管理体系年度改进计划，并对完成情况进行评价。"
+                    }
+                ]
+            },
+            "bbox": [
+                121,
+                344,
+                700,
+                359
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "GJB 9001C—2017"
+                    }
+                ]
+            },
+            "bbox": [
+                773,
+                51,
+                912,
+                64
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "21"
+                    }
+                ]
+            },
+            "bbox": [
+                890,
+                929,
+                910,
+                940
+            ]
+        }
+    ]
+]
