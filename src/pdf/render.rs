@@ -120,6 +120,37 @@ pub fn render_cross_doc_fn(
 ) -> crate::error::Result<()>
 + Send
 + 'static {
+    render_docs_filtered(paths, dpi, Box::new(|_, _| true))
+}
+
+/// 按页子集渲染（T2 按页重试用）：只渲染 `subset` 指定的 `(doc_idx, page_idx)` 页，
+/// 供更高档局部重跑失败页。复用与全量渲染同一核心循环（`render_docs_filtered`），
+/// 保证直提 image object / 回退光栅化 / 错误结构化等语义一致。
+pub fn render_cross_doc_subset_fn(
+    paths: Vec<std::path::PathBuf>,
+    dpi: f32,
+    subset: Vec<(usize, usize)>,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
+    let keep: std::collections::HashSet<(usize, usize)> = subset.into_iter().collect();
+    render_docs_filtered(paths, dpi, Box::new(move |d, p| keep.contains(&(d, p))))
+}
+
+/// 渲染核心：逐 doc open + 逐页渲染，`keep(doc_idx, page_idx)` 为 false 的页跳过。
+/// 被 [`render_cross_doc_fn`]（全量）与 [`render_cross_doc_subset_fn`]（子集）共用，
+/// 保证两种路径的 PDFium 绑定、直提/光栅化回退、错误结构化完全一致。
+fn render_docs_filtered(
+    paths: Vec<std::path::PathBuf>,
+    dpi: f32,
+    keep: Box<dyn Fn(usize, usize) -> bool + Send + Sync>,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
     move |tx| {
         let so = locate_pdfium()?;
         let pdfium = match Pdfium::bind_to_library(&so) {
@@ -152,6 +183,9 @@ pub fn render_cross_doc_fn(
                 }
             };
             for (i, page) in doc.pages().iter().enumerate() {
+                if !keep(doc_idx, i) {
+                    continue;
+                }
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
                 // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
                 if let Some(img) = try_extract_page_image(&page, dpi) {

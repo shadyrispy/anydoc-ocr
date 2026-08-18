@@ -71,7 +71,27 @@ pub(crate) fn norm_membership(
 /// 返回段落列表（已是合并后的行）。
 ///
 /// 这是 OCR 通路入口，与 `order_text_regions`（文字层通路入口）同级。
+///
+/// T3：入口先抽竖排正文（`vertical::order_vertical` 检测窄高条簇，按右→左/自上而下
+/// 排序），竖排段落优先输出；其余 regions 走原块驱动排序（`order_structure_block_driven`）。
+/// 无竖排时 mask 全 false，行为与原实现等价。
 pub fn order_structure(page: &StructureResult, regions: &[Region]) -> Vec<String> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let (mut out, vertical_mask) = super::vertical::order_vertical(regions);
+    let horiz: Vec<Region> = regions
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !vertical_mask[*i])
+        .map(|(_, r)| r.clone())
+        .collect();
+    out.extend(order_structure_block_driven(page, &horiz));
+    out
+}
+
+/// 原块驱动排序主体（T3 重构：被 [`order_structure`] 包装竖排处理）。
+fn order_structure_block_driven(page: &StructureResult, regions: &[Region]) -> Vec<String> {
     if regions.is_empty() {
         return Vec::new();
     }

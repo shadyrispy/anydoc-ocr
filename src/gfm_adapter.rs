@@ -20,7 +20,8 @@
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
 use crate::docir::{DocIR, PageSource};
 use crate::reading_order::{
-    norm_membership, order_structure, page_scale, postprocess_lines, title_level,
+    is_isolated_marker, norm_membership, order_structure, page_scale, postprocess_lines,
+    title_level,
 };
 use crate::region::{Region, RegionKind};
 use crate::table_grid::{self, TableGrid};
@@ -210,7 +211,15 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
 
         // 收集文本区域（剔除落在 layout 表格内的，避免与表格 HTML 重复；
         // Image 块文本保留在正文中——重建失败时它应正常输出，重建成功时由
-        // 跨页表覆盖首表页段，不再作为正文重复）
+        // 跨页表覆盖首表页段，不再作为正文重复）。
+        // T6：页眉/页脚块（layout 已检出）在 region 收集层剔除——与
+        // `order_structure` 的 noise 剔除同一语义，前移做双保险，防路径变化。
+        let noise_bboxes: Vec<&oar_ocr::processors::BoundingBox> = page
+            .layout_elements
+            .iter()
+            .filter(|el| el.element_type.is_header() || el.element_type.is_footer())
+            .map(|el| &el.bbox)
+            .collect();
         let mut regions: Vec<Region> = Vec::new();
         if let Some(regs) = &page.text_regions {
             for r in regs {
@@ -235,6 +244,13 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
                 if in_img {
                     continue;
                 }
+                // 页眉/页脚（layout 已检出）：剔除
+                if noise_bboxes
+                    .iter()
+                    .any(|nb| norm_membership(cx, cy, scale, nb))
+                {
+                    continue;
+                }
                 regions.push(
                     Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string())
                         .with_confidence(r.confidence),
@@ -247,6 +263,18 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
                 "[gfm-dbg] page={pi} page_w={pw:.0} n_regions={}",
                 regions.len()
             );
+            for el in &page.layout_elements {
+                if el.element_type.is_header() || el.element_type.is_footer() {
+                    eprintln!(
+                        "[gfm-dbg]   layout {} x0={:.0} x1={:.0} y0={:.0} y1={:.0}",
+                        el.element_type.as_str(),
+                        el.bbox.x_min(),
+                        el.bbox.x_max(),
+                        el.bbox.y_min(),
+                        el.bbox.y_max()
+                    );
+                }
+            }
             for r in &regions {
                 let cx = (r.x_min + r.x_max) / 2.0;
                 let wide = (r.x_max - r.x_min) > 0.6 * pw;
@@ -259,11 +287,21 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
         // 本页正文行（标题前缀已应用，# 前缀由 docir 渲染层识别空行语义）+
         // layout 表格 HTML。ADR-0009：块驱动阅读序 + 段落合并，postprocess 做
         // 连字符/全角归一，最后依据版面 title 块注入 markdown 标题前缀。
-        let mut out: Vec<Region> =
-            apply_title_prefixes(postprocess_lines(order_structure(page, &regions)), page)
-                .into_iter()
-                .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
-                .collect();
+        // T6：列表项配对重组（OCR 通路）——det 常把 `b)` 拆成孤立前缀行 + 内容
+        // 游离行，此处把孤立 marker 与下一内容行合并为一项（与 a) 形态一致）。
+        // T6-②：配对前剔除孤立 ≤1 字符噪声碎片（`馆`），防 marker 误配对。
+        let mut out: Vec<Region> = merge_isolated_markers(
+            apply_title_prefixes(
+                postprocess_lines(order_structure(page, &regions)),
+                page,
+            )
+            .into_iter()
+            .filter(|l| !is_noise_fragment(l))
+            .collect(),
+        )
+        .into_iter()
+        .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
+        .collect();
         for table in &tables {
             if let Some(html) = &table.html_structure {
                 out.push(
@@ -290,6 +328,70 @@ pub fn to_markdown(pages: &[StructureResult]) -> String {
     let mut doc = to_docir(pages);
     crate::docir::passes::cross_page_table::run(&mut doc);
     doc.render()
+}
+
+/// T6：OCR 通路列表项配对重组——孤立列表前缀行 + 下一内容行 → 合并为一项。
+///
+/// det 常把 `b)` 拆成孤立前缀窄条 + 内容宽条两个 region，阅读顺序输出为
+/// `b)` 行 + 内容行（游离）。此处将孤立 marker（[`is_isolated_marker`]）与
+/// 后续第一个有效内容行合并：`b)` + `本部分强调...` → `b) 本部分强调...`，
+/// 与 `a) 完整项` 形态一致。
+///
+/// 配对时**跳过纯数字短行**（页码，如 `52`）——det 常把页码检出为独立窄条，
+/// 排在 marker 与内容之间；直接配对会把页码吞进列表项（`c) 52`）。跳过的行
+/// 保留输出（置于配对项之前，近似原位置）。
+///
+/// 不配对情形：下一行是 marker / `#` 标题（避免跨项/跨标题配对）。
+/// 仅 OCR 通路消费（`to_docir`）；文字层通路不经此函数（T6 防回归约束）。
+fn merge_isolated_markers(lines: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut iter = lines.into_iter().peekable();
+    while let Some(mut cur) = iter.next() {
+        if is_isolated_marker(&cur) {
+            let mut skipped: Vec<String> = Vec::new();
+            let mut paired: Option<String> = None;
+            while let Some(next) = iter.peek() {
+                let nxt = next.trim_start();
+                if nxt.starts_with('#') || is_isolated_marker(nxt) {
+                    break; // 标题/下一个 marker：不跨过配对
+                }
+                if is_page_number(nxt) {
+                    skipped.push(iter.next().expect("peeked"));
+                    continue; // 跳过页码，继续找内容
+                }
+                paired = Some(iter.next().expect("peeked"));
+                break;
+            }
+            out.extend(skipped);
+            if let Some(content) = paired {
+                let content = content.trim_start();
+                cur = format!("{cur} {content}");
+            }
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// 纯数字短行（页码）：trim 后为 1-4 位数字。配对列表项时跳过，避免把页码吞进项。
+fn is_page_number(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.len() <= 4 && t.chars().all(|c| c.is_ascii_digit())
+}
+
+/// 孤立噪声碎片（T6-②）：trim 后 ≤1 字符、非 marker、非标题的独立行——
+/// 如页眉残片「馆」。layout 漏检的碎字符在[列表配对]前剔除，避免被 marker
+/// 误配对（`c) 馆`）。单字符正文行罕见（"注"/"图"等多带标点或上下文），
+/// 且 bullet 单字符（`-`/`•`）是 marker 不受影响，误删风险可控。
+fn is_noise_fragment(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with('#') {
+        return false;
+    }
+    if t.chars().count() > 1 {
+        return false;
+    }
+    !is_isolated_marker(t)
 }
 
 /// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
@@ -352,6 +454,107 @@ mod tests {
     use oar_ocr::domain::TextRegion;
     use oar_ocr::domain::structure::{LayoutElement, TableCell, TableType};
     use oar_ocr::processors::BoundingBox;
+
+    // ── T6：列表项配对重组 ──
+
+    #[test]
+    fn merge_isolated_marker_with_next_content() {
+        // b) 孤立前缀 + 内容行 → 合并为一项（与 a) 形态一致）
+        let lines = vec![
+            "a) 本部分更加强调性能要求".into(),
+            "b)".into(),
+            "本部分强调规范的内容只包括".into(),
+            "c)".into(),
+            "本部分将原《规范的编写》移入附录".into(),
+        ];
+        let out = merge_isolated_markers(lines);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], "a) 本部分更加强调性能要求");
+        assert_eq!(out[1], "b) 本部分强调规范的内容只包括");
+        assert_eq!(out[2], "c) 本部分将原《规范的编写》移入附录");
+    }
+
+    #[test]
+    fn merge_keeps_heading_untouched() {
+        // 孤立 marker 后是标题行（# 前缀）→ 不配对，标题不被吞
+        let lines = vec!["b)".into(), "# 4. 总则".into(), "正文".into()];
+        let out = merge_isolated_markers(lines);
+        assert_eq!(out, vec!["b)", "# 4. 总则", "正文"]);
+    }
+
+    #[test]
+    fn merge_no_marker_unchanged() {
+        let lines = vec!["普通正文一行".into(), "普通正文二行".into()];
+        assert_eq!(merge_isolated_markers(lines.clone()), lines);
+    }
+
+    #[test]
+    fn merge_consecutive_markers_not_paired() {
+        // 连续 marker：b) 不把 c) 当内容；但 c) 仍与后续内容行配对
+        let lines = vec!["b)".into(), "c)".into(), "内容".into()];
+        let out = merge_isolated_markers(lines);
+        assert_eq!(out, vec!["b)", "c) 内容"]);
+    }
+
+    #[test]
+    fn merge_skips_page_number_before_content() {
+        // c) 后是页码 52，再后才是内容 → 跳过页码，配对真正内容；页码保留在配对项前
+        let lines = vec![
+            "b)".into(),
+            "本部分强调规范的内容".into(),
+            "c)".into(),
+            "52".into(),
+            "本部分将原《规范的编写》移入附录".into(),
+        ];
+        let out = merge_isolated_markers(lines);
+        assert_eq!(
+            out,
+            vec![
+                "b) 本部分强调规范的内容",
+                "52",
+                "c) 本部分将原《规范的编写》移入附录",
+            ],
+            "跳过 52 配对内容，页码保留"
+        );
+    }
+
+    #[test]
+    fn page_number_detector() {
+        assert!(is_page_number("52"));
+        assert!(is_page_number("  7 "));
+        assert!(!is_page_number(""));
+        assert!(!is_page_number("52a"));
+        assert!(!is_page_number("12345"), ">4 位不算页码");
+        assert!(!is_page_number("本部分强调"));
+    }
+
+    #[test]
+    fn noise_fragment_detector() {
+        assert!(is_noise_fragment("馆"), "单字符噪声残片");
+        assert!(is_noise_fragment(" 馆 "), "允许首尾空白");
+        assert!(!is_noise_fragment(""), "空行保留");
+        assert!(!is_noise_fragment("a)"), "marker 保留");
+        assert!(!is_noise_fragment("-"), "bullet marker 保留");
+        assert!(!is_noise_fragment("# 标题"), "标题保留");
+        assert!(!is_noise_fragment("本部分强调"), "内容保留");
+        assert!(!is_noise_fragment("52"), "数字由 is_page_number 处理");
+    }
+
+    #[test]
+    fn merge_skips_noise_fragment_then_pairs_content() {
+        // 馆（噪声残片）在 c) 与内容之间：merge 前已被过滤 → c) 直接配到内容
+        let lines: Vec<String> = vec![
+            "c)".into(),
+            "馆".into(),
+            "本部分将原《规范的编写》移入附录".into(),
+        ];
+        let filtered: Vec<String> = lines
+            .into_iter()
+            .filter(|l| !is_noise_fragment(l))
+            .collect();
+        let out = merge_isolated_markers(filtered);
+        assert_eq!(out, vec!["c) 本部分将原《规范的编写》移入附录"]);
+    }
 
     fn cell(row: usize, col: usize, text: &str) -> TableCell {
         TableCell::new(BoundingBox::from_coords(0.0, 0.0, 10.0, 10.0), 1.0)

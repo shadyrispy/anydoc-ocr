@@ -111,7 +111,7 @@ pub(crate) fn convert_pdf_ocr(
     let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr.layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
-    let (results, render_errors) = crate::pipeline::PagePipeline::new(
+    let (mut results, render_errors) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.parallel.page_parallel,
@@ -123,6 +123,44 @@ pub(crate) fn convert_pdf_ocr(
     )
     .run()?;
     timings.report();
+
+    // T2：按页失败重试（仅 quality_route=Auto）。首页门控只决定基础档；pipeline
+    // 跑完后逐页 `page_needs_retry`（均值<阈值/无 regions/全缺 → 低质量页），
+    // 用更高档**局部重跑**失败页（重渲染该页 + 更高档 OCR），成功页保留。
+    // - 只升一档（OcrTier::next），更高档仍失败则保留原结果，防循环；
+    // - 重试页渲染失败（pipeline 缺失）→ 保留原结果；
+    // - Off 时行为完全不变（golden 稳定）。
+    if opts.quality_route == crate::quality::QualityRoute::Auto {
+        if let Some(higher) = tier.next() {
+            let bad: Vec<(usize, usize)> = results
+                .iter()
+                .filter(|(_, r)| crate::quality::page_needs_retry(r))
+                .map(|(idx, _)| *idx)
+                .collect();
+            if !bad.is_empty() {
+                let higher_engine = crate::ocr_engine::OcrEngine::build(higher, opts.ocr.layout)?;
+                let retry_render_fn = render::render_cross_doc_subset_fn(paths.to_vec(), dpi, bad);
+                let (retry_results, _retry_errors) = crate::pipeline::PagePipeline::new(
+                    retry_render_fn,
+                    higher_engine,
+                    opts.parallel.page_parallel,
+                    if timings.enabled() {
+                        Some(timings.clone())
+                    } else {
+                        None
+                    },
+                )
+                .run()?;
+                let retry_map: std::collections::HashMap<(usize, usize), _> =
+                    retry_results.into_iter().collect();
+                for (idx, res) in results.iter_mut() {
+                    if let Some(new) = retry_map.get(idx) {
+                        *res = new.clone();
+                    }
+                }
+            }
+        }
+    }
 
     // 按复合键 (doc_idx, page_idx) 升序结果分组——pipeline 已保证页序，
     // 同 doc_idx 组内 page_idx 升序，直接 collect 进 Vec 保序。
