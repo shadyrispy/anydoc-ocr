@@ -189,10 +189,17 @@ fn render_docs_filtered(
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
                 // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
                 if let Some(img) = try_extract_page_image(&page, dpi) {
+                    if std::env::var_os("ANYDOC_RENDER_TRACE").is_some() {
+                        let (w, h) = img.dimensions();
+                        eprintln!("[render] doc{doc_idx} p{i} → 直提 image object ({w}x{h})");
+                    }
                     if tx.send(Ok(((doc_idx, i), img))).is_err() {
                         return Ok(()); // OCR 端退出
                     }
                     continue;
+                }
+                if std::env::var_os("ANYDOC_RENDER_TRACE").is_some() {
+                    eprintln!("[render] doc{doc_idx} p{i} → 回退 PDFium 整页渲染");
                 }
                 let w = (page.width().value * scale) as i32;
                 let h = (page.height().value * scale) as i32;
