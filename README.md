@@ -174,11 +174,13 @@ cargo build --release
 
 ### 单文件分发（自解压安装器）
 
-`./scripts/package-single.sh [auto|aarch64|x86_64]` 产出 1 个自解压安装器，目标机自动检测架构、首次运行一键部署（装 CJK 字体 + `~/.local/bin/anydoc` 命令）：`dist/anydoc-ocr-linux.run`（auto 内嵌双架构）。
+`./scripts/package-single.sh [auto|aarch64|x86_64] [tiny|small]` 产出 1 个自解压安装器，目标机自动检测架构、首次运行一键部署（装 CJK 字体 + `~/.local/bin/anydoc` 命令）。第二参数选内嵌模型档：`small`（~158M）正常版——**同时内嵌 tiny 全套**（表格/方向件共用去重），启动器默认 `--ocr-tier small`，显式传 `--ocr-tier tiny` 即切极速档（模型已在包内，无需联网）；`tiny`（~78M）极简版仅在需要最小体积时单独构建。medium 不内嵌，用 `ANYDOC_MODEL_DIR` 外置。
+
+CI 已自动化：`.github/workflows/release.yml` 在 push `v*` tag 时构建 Linux x86_64/aarch64 × small 共 2 个 `.run`（单包双档）并发布到 GitHub Release（手动触发则进 artifact）。
 
 ```bash
-./anydoc-ocr-linux.run 公文.pdf -o out.md     # 目标机首次运行即部署
-anydoc 公文.ofd -o out.md                     # 之后新终端直接用 anydoc 命令
+./anydoc-ocr-linux-x86_64-small.run 公文.pdf -o out.md   # 目标机首次运行即部署
+anydoc 公文.ofd -o out.md                                 # 之后新终端直接用 anydoc 命令
 ```
 
 ### 运行环境
