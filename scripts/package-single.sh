@@ -5,8 +5,10 @@
 #   auto   (默认) → dist/anydoc-ocr-linux-<tier>.run（内嵌双架构，目标机自动检测）
 #   aarch64       → dist/anydoc-ocr-linux-arm64-<tier>.run（单架构）
 #   x86_64        → dist/anydoc-ocr-linux-x86_64-<tier>.run（单架构）
-#   tier   (默认 tiny)：内嵌模型档。tiny 极速 9 件 ~39M / small 均衡 9 件 ~90M。
-#   （与老用法兼容：单参数调用 = tiny，产物名多出 -tiny 后缀）
+#   tier   (默认 tiny)：内嵌模型档。
+#     tiny  极简版：只嵌 tiny 9 件 ~39M（包 ~78M）
+#     small 正常版：嵌 small + tiny 全 13 件 ~119M（包 ~158M）——默认档 small，
+#           显式 `--ocr-tier tiny` 即切极速档（模型已在包内，无需联网）
 #
 # 产物 = [自解压壳 bash 脚本][tar.gz 数据段]，新机器一键部署：
 #   1. 壳按 uname -m 检测架构，只解压对应架构目录到 $ANYDOC_INSTALL_DIR
@@ -31,18 +33,18 @@ case "$MODE" in
   x86_64)     ARCHES="x86_64";         OUT_SFX="linux-x86_64";;
   *) echo "未知模式: $MODE（支持 auto / aarch64 / x86_64）"; exit 1 ;;
 esac
-# 各档模型清单（spec_for + picodet_table 版面件 + doc_ori；与 build_analyzer 一致）
+# 各档模型清单（spec_for + picodet_table 版面件 + doc_ori；与 build_analyzer 一致）。
+# 两档共用的表格件/方向件各一份；small 档同时内嵌 tiny 全套（共用件自动去重）。
+COMMON_MODELS="picodet_layout_1x_table.onnx slanet_plus.onnx \
+pp-lcnet_x1_0_table_cls.onnx table_structure_dict_ch.txt \
+pp-lcnet_x1_0_doc_ori.onnx"
+TINY_MODELS="pp-doclayout-s.onnx \
+pp-ocrv6_tiny_det.onnx pp-ocrv6_tiny_rec.onnx ppocrv6_tiny_dict.txt"
+SMALL_MODELS="pp-doclayout-m.onnx \
+pp-ocrv6_small_det.onnx pp-ocrv6_small_rec.onnx ppocrv6_dict.txt"
 case "$TIER" in
-  tiny)
-    MODELS="pp-doclayout-s.onnx picodet_layout_1x_table.onnx \
-pp-ocrv6_tiny_det.onnx pp-ocrv6_tiny_rec.onnx ppocrv6_tiny_dict.txt \
-slanet_plus.onnx pp-lcnet_x1_0_table_cls.onnx table_structure_dict_ch.txt \
-pp-lcnet_x1_0_doc_ori.onnx" ;;
-  small)
-    MODELS="pp-doclayout-m.onnx picodet_layout_1x_table.onnx \
-pp-ocrv6_small_det.onnx pp-ocrv6_small_rec.onnx ppocrv6_dict.txt \
-slanet_plus.onnx pp-lcnet_x1_0_table_cls.onnx table_structure_dict_ch.txt \
-pp-lcnet_x1_0_doc_ori.onnx" ;;
+  tiny)  MODELS="$COMMON_MODELS $TINY_MODELS" ;;
+  small) MODELS="$COMMON_MODELS $TINY_MODELS $SMALL_MODELS" ;;
   *) echo "未知档位: $TIER（支持 tiny / small）"; exit 1 ;;
 esac
 OUT="dist/anydoc-ocr-${OUT_SFX}-${TIER}.run"

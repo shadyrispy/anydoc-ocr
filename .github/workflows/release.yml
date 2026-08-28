@@ -1,10 +1,9 @@
-# 单文件自解压安装器构建（Linux x86_64 / aarch64 × tiny / small）
+# 单文件自解压安装器构建（Linux x86_64 / aarch64）
 #
-# 产物（4 件 .run，目标机一键部署，模型内嵌离线可用）：
-#   dist/anydoc-ocr-linux-x86_64-tiny.run    ~72M
-#   dist/anydoc-ocr-linux-x86_64-small.run   ~120M
-#   dist/anydoc-ocr-linux-arm64-tiny.run     ~72M
-#   dist/anydoc-ocr-linux-arm64-small.run    ~120M
+# 产物（2 件 .run，目标机一键部署，模型内嵌离线可用）：
+#   dist/anydoc-ocr-linux-x86_64-small.run   ~158M（small+tiny 双档内嵌，默认 small）
+#   dist/anydoc-ocr-linux-arm64-small.run    ~158M
+# 包内同时内嵌 tiny 全套：显式 `--ocr-tier tiny` 即切极速档，无需联网。
 #
 # 触发：push tag v* 自动出 Release；Actions 页面可手动触发（产物进 artifact）。
 #
@@ -90,15 +89,15 @@ jobs:
       - name: Build aarch64 (cross, release)
         run: ./scripts/build-aarch64.sh
 
-      - name: Package installers (arch × tier)
+      - name: Package installers (small tier only, tiny embedded)
         env:
           OAR_HOME: ${{ github.workspace }}/.oar-home
         run: |
           set -euxo pipefail
+          # 只出 small 正常版（内嵌 tiny 全套，单包双档）：
+          # tiny 单独包不再构建——small 包显式 --ocr-tier tiny 即可覆盖其场景。
           for arch in x86_64 aarch64; do
-            for tier in tiny small; do
-              ./scripts/package-single.sh "$arch" "$tier"
-            done
+            ./scripts/package-single.sh "$arch" "small"
           done
           ls -la dist/*.run
 
