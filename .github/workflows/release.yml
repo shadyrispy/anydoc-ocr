@@ -1,19 +1,19 @@
-# 单文件自解压安装器构建（Linux x86_64 / aarch64）
+# 单文件自解压安装器构建（Linux x86_64 / aarch64，各用原生架构 runner）
 #
 # 产物（2 件 .run，目标机一键部署，模型内嵌离线可用）：
 #   dist/anydoc-ocr-linux-x86_64-small.run   ~158M（small+tiny 双档内嵌，默认 small）
 #   dist/anydoc-ocr-linux-arm64-small.run    ~158M
 # 包内同时内嵌 tiny 全套：显式 `--ocr-tier tiny` 即切极速档，无需联网。
 #
-# 触发：push tag v* 自动出 Release；Actions 页面可手动触发（产物进 artifact）。
+# 架构策略（方案 A）：不再交叉编译。
+#   - x86_64  job → ubuntu-latest         （x64 原生）
+#   - aarch64 job → ubuntu-24.04-arm      （官方 ARM 原生 runner）
+#   先天消除交叉工具链/glibc/native-crate 链接问题。
+#   aarch64 原生构建时 host=target=aarch64-unknown-linux-gnu，自动应用
+#   .cargo/config.toml 的 cortex-a72/+neon/rpath rustflags；
+#   产物落在 target/aarch64-unknown-linux-gnu/release/，与 package-single 路径一致。
 #
-# 说明：
-# - aarch64 用 x64 runner 交叉编译（gcc-aarch64-linux-gnu）。
-#   交叉链接产物的 glibc 下限 = runner 的 glibc（ubuntu-latest=24.04 → 2.39）；
-#   更老的目标机（如麒麟旧版 glibc<2.39）如遇 `GLIBC_2.xx not found`，
-#   需换旧 runner 或 musl 静态方案。
-# - 模型（ONNX，与 CPU 架构无关）：用 x64 二进制跑一次样本触发 auto-download
-#   落到 ~/.oar，两档共用同一缓存，打包脚本按档取件。
+# 触发：push tag v* 自动出 Release；Actions 页面可手动触发（产物进 artifact）。
 name: build-installers
 
 on:
@@ -28,7 +28,7 @@ env:
   ORT_VER: '1.20.1'
 
 jobs:
-  build:
+  build-x86_64:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -36,39 +36,25 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install aarch64 cross toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Fetch native libs (ORT + PDFium, x64 & aarch64)
+      - name: Fetch native libs (ORT + PDFium x64, font)
         run: |
           set -euxo pipefail
-          mkdir -p /tmp/ndl third_party/ort/x64 third_party/ort/aarch64 \
-                   third_party/pdfium/x64/lib third_party/pdfium/aarch64/lib fonts
-          cd /tmp/ndl
-          # ORT 官方预编译（x64 + aarch64）
-          curl -fsSL -o ort-x64.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
-          curl -fsSL -o ort-arm.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-aarch64-${ORT_VER}.tgz"
-          tar xzf ort-x64.tgz
-          tar xzf ort-arm.tgz
-          cp -r "onnxruntime-linux-x64-${ORT_VER}"       "$GITHUB_WORKSPACE/third_party/ort/x64/"
-          cp -r "onnxruntime-linux-aarch64-${ORT_VER}"   "$GITHUB_WORKSPACE/third_party/ort/aarch64/"
-          # PDFium 社区预编译（bblanchon）
-          curl -fsSL -o pdfium-x64.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz
-          curl -fsSL -o pdfium-arm.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz
-          mkdir -p px pa && tar xzf pdfium-x64.tgz -C px && tar xzf pdfium-arm.tgz -C pa
+          mkdir -p third_party/ort/x64 third_party/pdfium/x64/lib fonts
+          cd /tmp/ndl || { mkdir -p /tmp/ndl && cd /tmp/ndl; }
+          curl -fsSL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"
+          tar xzf ort.tgz
+          cp -r "onnxruntime-linux-x64-${ORT_VER}" "$GITHUB_WORKSPACE/third_party/ort/x64/"
+          curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz
+          mkdir -p px && tar xzf pdfium.tgz -C px
           cp px/lib/libpdfium.so "$GITHUB_WORKSPACE/third_party/pdfium/x64/lib/"
-          cp pa/lib/libpdfium.so "$GITHUB_WORKSPACE/third_party/pdfium/aarch64/lib/"
-          # CJK 字体（OFD 中文渲染）
           curl -fsSL -o "$GITHUB_WORKSPACE/fonts/NotoSansCJK-Regular.ttc" \
             https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc
 
-      - name: Build x86_64 (release)
+      - name: Build release (x64 native)
         run: ./scripts/build-x64.sh build --release
 
       - name: Warm model cache (tiny + small, via x64 binary)
@@ -79,36 +65,101 @@ jobs:
           export ORT_LIB_LOCATION="$GITHUB_WORKSPACE/third_party/ort/x64/onnxruntime-linux-x64-${ORT_VER}/lib"
           export PDFIUM_LIB_DIR="$GITHUB_WORKSPACE/third_party/pdfium/x64/lib"
           export LD_LIBRARY_PATH="$ORT_LIB_LOCATION:$PDFIUM_LIB_DIR"
-          # 引擎构建即拉齐该档全部模型（layout/det/rec/dict/table×3/doc_ori）。
-          # picodet_layout_1x_table 仅 --ocr-layout table 加载，需补跑一次（两档共用）。
           target/release/anydoc-ocr tests/samples/image.pdf --ocr-tier tiny  -o /tmp/warm-t.md
           target/release/anydoc-ocr tests/samples/image.pdf --ocr-tier small -o /tmp/warm-s.md
           target/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny --ocr-layout table -o /tmp/warm-tt.md
-          ls -la "$OAR_HOME" | wc -l
 
-      - name: Build aarch64 (cross, release)
-        run: ./scripts/build-aarch64.sh
-
-      - name: Package installers (small tier only, tiny embedded)
+      - name: Package installer (x86_64 × small, tiny embedded)
         env:
           OAR_HOME: ${{ github.workspace }}/.oar-home
         run: |
           set -euxo pipefail
-          # 只出 small 正常版（内嵌 tiny 全套，单包双档）：
-          # tiny 单独包不再构建——small 包显式 --ocr-tier tiny 即可覆盖其场景。
-          for arch in x86_64 aarch64; do
-            ./scripts/package-single.sh "$arch" "small"
-          done
+          ./scripts/package-single.sh x86_64 small
           ls -la dist/*.run
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anydoc-ocr-installers
+          name: anydoc-ocr-linux-x86_64
           path: dist/*.run
           if-no-files-found: error
 
-      - name: Create GitHub Release (tag builds)
+      - name: Create/attach GitHub Release (tag builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.run \
+            --title "anydoc-ocr $GITHUB_REF_NAME" \
+            --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" dist/*.run --clobber
+
+  build-aarch64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Fetch native libs (ORT + PDFium aarch64, font)
+        run: |
+          set -euxo pipefail
+          mkdir -p third_party/ort/aarch64 third_party/pdfium/aarch64/lib fonts
+          cd /tmp/ndl || { mkdir -p /tmp/ndl && cd /tmp/ndl; }
+          curl -fsSL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-aarch64-${ORT_VER}.tgz"
+          tar xzf ort.tgz
+          cp -r "onnxruntime-linux-aarch64-${ORT_VER}" "$GITHUB_WORKSPACE/third_party/ort/aarch64/"
+          curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz
+          mkdir -p pa && tar xzf pdfium.tgz -C pa
+          cp pa/lib/libpdfium.so "$GITHUB_WORKSPACE/third_party/pdfium/aarch64/lib/"
+          curl -fsSL -o "$GITHUB_WORKSPACE/fonts/NotoSansCJK-Regular.ttc" \
+            https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc
+
+      - name: Build release (aarch64 native)
+        env:
+          ORT_LIB_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.20.1/lib
+          ORT_INCLUDE_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.20.1/include
+          PDFIUM_LIB_DIR: ${{ github.workspace }}/third_party/pdfium/aarch64/lib
+          ORT_PREFER_DYNAMIC_LINK: '1'
+        run: |
+          set -euxo pipefail
+          # host=target=aarch64-unknown-linux-gnu 原生交叉免费；
+          # 自动应用 .cargo/config.toml 的 cortex-a72/+neon/rpath。禁 export RUSTFLAGS（会覆盖 config）。
+          cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Warm model cache (tiny + small, via aarch64 binary)
+        env:
+          OAR_HOME: ${{ github.workspace }}/.oar-home
+        run: |
+          set -euxo pipefail
+          export ORT_LIB_LOCATION="$GITHUB_WORKSPACE/third_party/ort/aarch64/onnxruntime-linux-aarch64-${ORT_VER}/lib"
+          export PDFIUM_LIB_DIR="$GITHUB_WORKSPACE/third_party/pdfium/aarch64/lib"
+          export LD_LIBRARY_PATH="$ORT_LIB_LOCATION:$PDFIUM_LIB_DIR"
+          target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image.pdf --ocr-tier tiny  -o /tmp/warm-t.md
+          target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image.pdf --ocr-tier small -o /tmp/warm-s.md
+          target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny --ocr-layout table -o /tmp/warm-tt.md
+
+      - name: Package installer (aarch64 × small, tiny embedded)
+        env:
+          OAR_HOME: ${{ github.workspace }}/.oar-home
+        run: |
+          set -euxo pipefail
+          ./scripts/package-single.sh aarch64 small
+          ls -la dist/*.run
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anydoc-ocr-linux-aarch64
+          path: dist/*.run
+          if-no-files-found: error
+
+      - name: Create/attach GitHub Release (tag builds)
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
