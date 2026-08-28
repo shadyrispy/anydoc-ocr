@@ -8,10 +8,10 @@
 # 触发：push tag v* 自动出 Release；Actions 页面可手动触发（产物进 artifact）。
 #
 # 说明：
-# - aarch64 用 ubuntu-22.04 x64 runner 交叉编译（gcc-aarch64-linux-gnu）。
-#   交叉链接产物的 glibc 下限 = runner 的 glibc（22.04 → 2.35）；更老的
-#   目标机（如麒麟旧版 glibc<2.35）如遇 `GLIBC_2.xx not found`，改用
-#   ubuntu-20.04 runner 或 musl 静态方案。
+# - aarch64 用 x64 runner 交叉编译（gcc-aarch64-linux-gnu）。
+#   交叉链接产物的 glibc 下限 = runner 的 glibc（ubuntu-latest=24.04 → 2.39）；
+#   更老的目标机（如麒麟旧版 glibc<2.39）如遇 `GLIBC_2.xx not found`，
+#   需换旧 runner 或 musl 静态方案。
 # - 模型（ONNX，与 CPU 架构无关）：用 x64 二进制跑一次样本触发 auto-download
 #   落到 ~/.oar，两档共用同一缓存，打包脚本按档取件。
 name: build-installers
@@ -29,7 +29,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
