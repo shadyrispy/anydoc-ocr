@@ -181,24 +181,17 @@ impl<F: RenderFn> PagePipeline<F> {
                         let (idx, img) = match item {
                             Ok((idx, img)) => (idx, img),
                             Err((idx, e)) => {
-                                // 消费者侧统一容忍中毒：某线程 panic 后其余消费者
-                                // 继续把已产出结果收完，错误在收尾处确定性上抛
-                                // （与下方 into_inner 收尾一致），不搞级联二次 panic。
-                                state.render_errors.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, e);
+                                state.render_errors.lock().unwrap().insert(idx, e);
                                 continue;
                             }
                         };
                         if dump_on {
                             let dims = (img.width(), img.height());
-                            state.page_dims.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, dims);
+                            state.page_dims.lock().unwrap().insert(idx, dims);
                         }
                         // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
                         let res = engine.predict_one(img, idx.0, idx.1, timings.as_deref());
-                        state
-                            .results
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .insert(idx, res);
+                        state.results.lock().unwrap().insert(idx, res);
                     })
                     .map_err(|e| runtime(Stage::Ocr, None, format!("启动 OCR 线程失败: {e}")))?,
             );

@@ -45,11 +45,6 @@ pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
             .map(|n| n.get())
             .unwrap_or(4);
         // 显式覆盖（env / cfg）优先；auto 时按池分摊（池=1 → cores，与原一致）。
-        // #1 实测注记（2026-09-26，真实池激活后 A/B）：pool=2/t=4 相对 pool=1
-        // wall 29–35s → 24s，输出逐字节一致。收益主因是跨阶段消费者重叠
-        // （layout/det/rec 属不同模型、独立 session，锁互不冲突）+ 本处 intra
-        // 分摊；代价是 round-robin 把并发打散到各 session 的独立 arena，
-        // 峰值 RSS 1.2GB → 2.0GB（内存换墙钟，默认池=1 不受影响）。
         let explicit = std::env::var("ANYDOC_ORT_INTRA_THREADS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -83,25 +78,17 @@ struct EngineKey {
 static CACHE: LazyLock<Mutex<HashMap<EngineKey, Arc<OcrEngine>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Session 池档位（A1）：`ANYDOC_ORT_SESSION_POOL`，进程首次读取时定格
-/// （此后改环境变量无效，两侧永远一致）。与 vendored oar-ocr-core
-/// `session_pool_size` 读同一变量：core 侧真正建 N 份 session（经
-/// `build_analyzer` 传入的 `ort_session` 配置激活），此处镜像同一档位决定
-/// 能否放开 `infer_lock`。
+/// Session 池档位（A1）：`ANYDOC_ORT_SESSION_POOL`，`OcrEngine::build` 时定格
+/// （build 后改环境变量无效）。与 vendored oar-ocr-core `session_pool_size` 读
+/// 同一变量：core 侧真正建 N 份 session，此处仅决定能否放开 `infer_lock`。
 /// 本 crate 构建未启用 CUDA/TensorRT EP（core 侧那两种 EP 恒回落池 1），CPU 下
 /// 两侧条件严格一致——"放开引擎锁 ⇔ core 真的有多 session"。
-/// #6：OnceLock 定格——`init_runtime`（intra 分摊）与 `build`/`build_analyzer`
-/// 分两处读，若中途有线程改环境变量会出现"intra 按池 A 算、session 按池 B 建"
-/// 的错配；定格后全进程恒同一值。
 fn session_pool_wanted() -> usize {
-    static POOL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *POOL.get_or_init(|| {
-        std::env::var("ANYDOC_ORT_SESSION_POOL")
-            .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .unwrap_or(1)
-            .clamp(1, 8)
-    })
+    std::env::var("ANYDOC_ORT_SESSION_POOL")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8)
 }
 
 /// A1：session 池并发下单次 run 的 intra-op 线程份额。
@@ -363,23 +350,6 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         .filter(|&n| n > 0)
     {
         builder = builder.region_batch_size(n);
-    }
-    // A1/#1：池>1 时必须给 builder 传 ort_session 配置——core 的 session 池只在
-    // `OrtInfer::from_config` 路径激活（adapter `ort_config.is_some()` 分支），
-    // 此前从不传入，`session_pool_size` 恒不可达（池代码形同虚设）。
-    // 传 EP-free 的 Default 配置：execution_providers=None → core 侧池判定
-    // 走 CPU 分支（与本 crate 无 CUDA/TensorRT EP 的构建一致），intra/inter 等
-    // 全部 None → 线程数仍由 init_runtime 提交的 ORT 全局线程池决定，不在此覆盖。
-    // 若未来启用 CUDA EP：core 的 session_pool_size 对 CUDA/TensorRT 恒回落 1
-    // （onnxruntime#4829），与本处池档位一致。
-    // 池=1 时保持 None——默认路径与 golden 行为零变化。
-    if session_pool_wanted() > 1 {
-        // log_severity=3(Error)：对齐普通路径 load_session_with 的
-        // with_log_level(Error)，避免 from_config 分支默认日志等级把 ORT
-        // warning 喷到 stderr。
-        let mut ort_cfg = oar_ocr::core::config::OrtSessionConfig::default();
-        ort_cfg.log_severity_level = Some(3);
-        builder = builder.ort_session(ort_cfg);
     }
     builder
         .build()
