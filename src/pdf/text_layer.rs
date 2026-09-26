@@ -55,6 +55,23 @@ fn no_text_layer(signal: FallbackSignal) -> Result<Option<String>> {
     Ok(Some(String::new()))
 }
 
+/// 轻量元数据（classify，不渲图，~10–50ms）：文档总页数。
+/// 供 route_pdf 两处消费——页数闸（对齐 MinerU `max_pages_per_file=1000`，
+/// `ANYDOC_MAX_PAGES` 可调）与 `--pages` 求值（rN/裁剪需要总页数）。
+/// 错误经 `from_pdf_error` 分类（加密/损坏）；探针内部会重新触达同一错误源，
+/// 分类语义不变。
+pub(crate) fn classify_pages(path: &Path) -> crate::error::Result<u32> {
+    let bytes = open_pdf_bytes(path).ok_or_else(|| {
+        crate::error::ConvertError::io(
+            crate::error::Stage::Extract,
+            std::io::Error::other(format!("打开 PDF 失败: {}", path.display())),
+        )
+    })?;
+    pdf_inspector::classify_pdf_mem(bytes.as_slice())
+        .map(|c| c.page_count)
+        .map_err(crate::error::from_pdf_error)
+}
+
 /// 文字层探针（P1.8 拆阶段 + anydoc 0.2.4 缺页上报）。
 ///
 /// 返回 `None` = 整文档无可用文字层（扫描件/提取失败/坏字体），调用方整篇转 OCR
@@ -64,18 +81,30 @@ fn no_text_layer(signal: FallbackSignal) -> Result<Option<String>> {
 /// 返回 `Some(Hybrid)` = 混合文档：文字层只覆盖部分页，`missing_pages`（1 基）
 /// 即旧通路会**静默丢掉**的扫描页，交由调用方按页补 OCR 后合并（不再丢页）。
 ///
+/// `select` = `--pages` 求值后的 1 基页集合（`None` = 全页，行为与历史逐字节
+/// 一致）：抽取先行裁剪到所选页，缺页判定只在所选页内取交集，未选页不抽取、
+/// 不渲染、不进输出。
+///
 /// 缺页判据（两段式，与 anydoc 0.2.4 同思路但用自家文字层复核）：
 /// inspector 深检报 `pages_needing_ocr`（倾向多报：实测 `multipage.pdf` 8/8 页
 /// 全标 scanned，而自家文字层能完整产正文）→ 仅当**本页在文字层 DocIR 里
 /// 没有任何非空区块**时才算真缺页。这样纯文字文档恒为 Complete。
-pub(crate) fn text_layer_probe(path: &Path, opts: &ConvertRequest) -> Result<Option<TextHit>> {
-    let items = extract_text_items(path)?;
+pub(crate) fn text_layer_probe(
+    path: &Path,
+    opts: &ConvertRequest,
+    select: Option<&BTreeSet<u32>>,
+) -> Result<Option<TextHit>> {
+    let mut items = extract_text_items(path)?;
+    // --pages：抽取后先裁剪（后续浅检/家具/短路/装配全部只在所选页内工作）。
+    if let Some(sel) = select {
+        items.retain(|i| sel.contains(&i.page));
+    }
     // 图片型/扫描件（过滤后 items 空）直接回落 OCR，跳过开销大的 garbled 预检。
     if items.is_empty() {
         // P1.6：空文字层信号（图片型/扫描件）→ 集中决策表裁决（文档级）。
         return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route);
     }
-    let mut hit = LayerHit::default();
+    let mut hit = LayerHit { select: select.cloned(), ..Default::default() };
     if is_garbled_doc(path, &items, &mut hit) {
         return Ok(None);
     }
@@ -84,6 +113,21 @@ pub(crate) fn text_layer_probe(path: &Path, opts: &ConvertRequest) -> Result<Opt
     // by_page 为空 → 无可用文字层，回落 OCR（而非 panic）。
     if by_page.is_empty() {
         // P1.6：家具剔除后空层信号 → 集中决策表裁决（文档级）。
+        return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route);
+    }
+    // 审计 #8 附项（MinerU `MAX_NATIVE_TEXT_CHARS_PER_PAGE` 同语义）：单页原生
+    // 字符超上限（默认 65535）→ 放弃该页文字层抽取，改记入"必 OCR"集合。
+    // 动机同为防卡死：拆行 / 列间隙聚类 / 阅读序 / 表格启发式的耗时全部随整页
+    // items 规模放大；宁可多付该页一次 OCR，也不产被拖慢或劣化的文字层页。
+    // `ANYDOC_NO_HYBRID` 下不短路：该开关语义是"回到旧行为（缺页丢弃、纯文字
+    // 层通路）"，此处旧行为 = 照旧抽取，宁慢不丢。
+    // 全部页都超限时 by_page 空 → 走整文档 OCR（与逐页短路的净效果一致）。
+    let by_page = if hybrid_disabled() {
+        by_page
+    } else {
+        drop_oversized_pages(by_page, crate::limits::native_text_char_cap(), &mut hit)
+    };
+    if by_page.is_empty() {
         return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route);
     }
     let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
@@ -96,7 +140,15 @@ pub(crate) fn text_layer_probe(path: &Path, opts: &ConvertRequest) -> Result<Opt
     let table_out = confirm_table_pages(path, opts, &by_page, &lines_by_page, &page_w);
     let last_table_md = probe_last_page_table(path, last_page, &page_w, &page_h);
     // pass 前的文字层 DocIR（混合时与 OCR 页合并后再统一跑 pass，见 pdf::merge_hybrid）
-    let text = build_text_docir(&by_page, &lines_by_page, &page_w, &table_out, last_page, last_table_md.as_deref());
+    let text = build_text_docir(
+        &by_page,
+        &lines_by_page,
+        &page_w,
+        &table_out,
+        last_page,
+        last_table_md.as_deref(),
+        rich_text_enabled(),
+    );
     if render_of(&text).is_empty() {
         // P1.6：装配输出为空（空层信号，文档级）→ 集中决策表裁决。
         no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route)
@@ -118,6 +170,26 @@ fn hybrid_disabled() -> bool {
 
 /// 开关语义（纯函数，可单测）：变量**存在即关闭**（不限值），未设置默认开启。
 fn hybrid_disabled_from(v: Option<&str>) -> bool {
+    v.is_some()
+}
+
+/// `ANYDOC_RICH_TEXT`：文字层**行内样式**注入开关（借鉴 MinerU 4.0
+/// `prepare/apply_text_evidence`——原生文字通道的 bold/italic/underline/strikeout
+/// 证据物化进 Markdown）。
+///
+/// 与 hybrid 开关同族语义：**变量存在即开启**（不限值），默认关闭——
+/// 默认关闭既守住 golden 字节一致（现网输出零变化），也让精度可 A/B：
+/// pdf-inspector 的 `is_bold` 部分来自字体名启发（`Bold`/`Black`/`-Bd`），
+/// 中文公文里加粗小标题已由标题前缀承担，行内 `**` 的增益需按语料自行判断。
+/// 开启后由 `TextLine::text_with_formatting(true, true, true)` 产出
+/// `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>`（嵌套/相邻样式合并规则
+/// 沿上游实现，本仓不重复造）。
+fn rich_text_enabled() -> bool {
+    rich_text_enabled_from(std::env::var("ANYDOC_RICH_TEXT").ok().as_deref())
+}
+
+/// 开关语义（纯函数，可单测）：变量**存在即开启**（不限值），未设置默认关闭。
+fn rich_text_enabled_from(v: Option<&str>) -> bool {
     v.is_some()
 }
 
@@ -143,17 +215,51 @@ fn empty_route(o: Option<String>) -> Option<TextHit> {
 pub(crate) struct LayerHit {
     page_count: u32,
     needs_ocr: BTreeSet<u32>,
+    /// 审计 #8 附项：字符超限被放弃文字层抽取的页（1 基）。这些页文字层 DocIR
+    /// 里已无区块，无需 inspector 报 needs_ocr 也必须进缺页集合（直接并入）。
+    forced_ocr: BTreeSet<u32>,
+    /// `--pages` 选页集合（1 基，`None` = 全页）：缺页判定只在所选页内取交集
+    /// ——未选页既不出现在文字层 DocIR（被裁剪），也绝不允许被当成缺页送去
+    /// OCR（否则 `missing_pages` 校验永远补不齐，整文档 Err）。
+    select: Option<BTreeSet<u32>>,
+}
+
+/// 单页字符短路（审计 #8 附项）：把整页原生字符数 > `cap` 的页从 `by_page`
+/// 摘除并记入 [`LayerHit::forced_ocr`]，返回剩余页。纯函数（cap 显式传入、
+/// `hit` 唯一可变副作用），可单测。
+fn drop_oversized_pages(
+    mut by_page: BTreeMap<u32, Vec<pdf_inspector::TextItem>>,
+    cap: usize,
+    hit: &mut LayerHit,
+) -> BTreeMap<u32, Vec<pdf_inspector::TextItem>> {
+    let oversized: Vec<u32> = by_page
+        .iter()
+        .filter(|(_, items)| {
+            items.iter().map(|i| i.text.chars().count()).sum::<usize>() > cap
+        })
+        .map(|(&p, _)| p)
+        .collect();
+    for p in oversized {
+        by_page.remove(&p);
+        hit.forced_ocr.insert(p);
+    }
+    by_page
 }
 
 impl LayerHit {
-    /// 缺页 = inspector 报 needs_ocr ∩ 文字层 DocIR 中无非空内容的页（1 基升序）。
+    /// 缺页 = （inspector 报 needs_ocr ∩ 文字层 DocIR 中无非空内容的页 ∩ 选页）
+    /// ∪ 字符短路强制页（1 基升序）。
     ///
     /// 复核基准是**文字层实际产出**（`text` 里该页号是否有非空段），而不是
     /// inspector 的抽取长度——多报的页（如 `multipage.pdf` 全部 8 页）在文字层
     /// 有正文即不算缺页，纯文字文档因此恒空 → Complete → 快速路径行为不变。
+    /// `forced_ocr` 页不享受该复核：文字层已被主动放弃，必然要 OCR。
+    /// `select`（`--pages`）：判定域收缩到所选页，未选页永不进缺页集合。
     fn missing_pages(&self, text: &DocIR) -> Vec<u32> {
-        if self.needs_ocr.is_empty() || self.page_count == 0 {
-            return Vec::new();
+        let in_select = |p: &u32| self.select.as_ref().is_none_or(|s| s.contains(p));
+        let forced: BTreeSet<u32> = self.forced_ocr.iter().copied().filter(&in_select).collect();
+        if (self.needs_ocr.is_empty() && self.forced_ocr.is_empty()) || self.page_count == 0 {
+            return forced.into_iter().collect();
         }
         let mut covered: BTreeSet<u32> = BTreeSet::new();
         for page in &text.pages {
@@ -161,13 +267,18 @@ impl LayerHit {
                 covered.insert(page.page_no);
             }
         }
-        (1..=self.page_count)
-            .filter(|p| self.needs_ocr.contains(p) && !covered.contains(p))
-            .collect()
+        let scan: BTreeSet<u32> = (1..=self.page_count)
+            .filter(|p| self.needs_ocr.contains(p) && !covered.contains(p) && in_select(p))
+            .collect();
+        scan.union(&forced).copied().collect()
     }
 }
 
-/// 本页文字层是否没有任何非空区块（Grid/PreRendered 视为有内容）。
+/// 本页文字层是否没有任何非空区块。
+/// `Grid` 无条件视为有内容（网格表 text 恒为空串，内容在结构体里）；
+/// 其余 kind（含 `PreRendered`/`TableHtml`）按 `text.trim()` 判定——成品块
+/// producer 只对有内容的页落块，trim 判空与"视为有内容"在实际数据上等价，
+/// 但判空更保守（异常空块不会挡住 OCR 兜底）。
 fn page_is_empty(page: &crate::docir::PageIR) -> bool {
     page.regions.iter().all(|r| match &r.kind {
         RegionKind::Grid(_) => false,
@@ -382,6 +493,9 @@ fn confirm_table_pages(
 /// （anydoc 0.2.4 缺页上报）要把 OCR 页按页号并进同一文档后再统一跑
 /// `cross_page_table` pass；纯文字文档由 [`finalize_text_hit`] 走 pass +
 /// 渲染，与旧通路字节一致（golden 守护）。
+///
+/// `rich` = `ANYDOC_RICH_TEXT`：普通正文行改出行内样式文本（见
+/// [`build_body_regions`]）；网格表/成品块不受影响。
 fn build_text_docir(
     by_page: &BTreeMap<u32, Vec<pdf_inspector::TextItem>>,
     lines_by_page: &BTreeMap<u32, Vec<pdf_inspector::extractor::TextLine>>,
@@ -389,6 +503,7 @@ fn build_text_docir(
     table_out: &BTreeMap<u32, String>,
     last_page: u32,
     last_table_md: Option<&str>,
+    rich: bool,
 ) -> DocIR {
     let mut doc = DocIR::default();
     for (page, page_items) in by_page.iter() {
@@ -424,7 +539,7 @@ fn build_text_docir(
         }
 
         // 3) 普通页：文字层行（Body 区块）+ 末页表格探针兜底（成品块）
-        let mut out = build_body_regions(full_lines, *page, page_w);
+        let mut out = build_body_regions(full_lines, *page, page_w, rich);
         // R3 兜底：末页布局未确认但 pdf-inspector 探针提取到表格（版权栏等小表格）
         // → 文字层行后追加管道表，保证表格信息不丢（保留正文行，仅追加结构）。
         if *page == last_page
@@ -441,10 +556,18 @@ fn build_text_docir(
 }
 
 /// 普通页正文行构建：列间隙检测 + 双列拆行 → 阅读顺序 → 标题前缀 → Body 区块。
+///
+/// `rich`（`ANYDOC_RICH_TEXT`）：行文本改由 `TextLine::text_with_formatting`
+/// 产出（bold/italic/underline/strikeout 证据 → `**`/`*`/`<u>`/`<s>`，
+/// MinerU text_evidence 同族语义），标题启发式在剥标记视图上判定（见
+/// [`crate::text_health::apply_title_prefixes_styled`]）。行级后处理
+/// （连字合并/全角归一）作用于带标记文本，样式行恰好处于行断点时启发式
+/// 可能少触发——可接受的精度换区，默认关闭时零影响。
 fn build_body_regions(
     full_lines: &[pdf_inspector::extractor::TextLine],
     page: u32,
     page_w: f32,
+    rich: bool,
 ) -> Vec<Region> {
     // 列间隙检测：行级候选间隙聚类。封面/标题的字母间距是单行现象、每行
     // split_x 各不相同，聚类不到 >=3 行；双列正文的 gutter 在每行同一 x 处
@@ -475,23 +598,24 @@ fn build_body_regions(
                 for item in sorted.drain(..idx) {
                     seg.push(item);
                 }
-                push_line_region(&seg, line, page, &mut regions);
+                push_line_region(&seg, line, page, rich, &mut regions);
                 seg = sorted;
-                push_line_region(&seg, line, page, &mut regions);
+                push_line_region(&seg, line, page, rich, &mut regions);
                 continue;
             }
         }
         seg = sorted;
-        push_line_region(&seg, line, page, &mut regions);
+        push_line_region(&seg, line, page, rich, &mut regions);
     }
 
     // B3-T：标题前缀注入统一于 `text_health::apply_title_prefixes`
     // （空 hints + numbering=true，纯编号启发式，与 OFD 文字层同口径）。
     // 标题（# 开头）前后空行语义由 docir 渲染层统一施加（TextLayerPdf 分支）。
-    crate::text_health::apply_title_prefixes(
+    crate::text_health::apply_title_prefixes_styled(
         &reading_order::postprocess_lines(reading_order::order_text_regions(&regions)),
         &[],
         true,
+        rich,
     )
     .into_iter()
     .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
@@ -721,6 +845,7 @@ fn push_line_region(
     seg: &[pdf_inspector::TextItem],
     template: &pdf_inspector::extractor::TextLine,
     page: u32,
+    rich: bool,
     regions: &mut Vec<Region>,
 ) {
     if seg.is_empty() {
@@ -732,7 +857,14 @@ fn push_line_region(
         page,
         adaptive_threshold: template.adaptive_threshold,
     };
-    let text = line.text().trim().to_string();
+    // rich 开：消费 pdf-inspector 的 is_bold/is_italic/几何装饰标记，产出
+    // `**粗**`/`*斜*`/`<u>`/`<s>`；关：走原 text()，字节级行为不变。
+    let text = if rich {
+        line.text_with_formatting(true, true, true)
+    } else {
+        line.text()
+    };
+    let text = text.trim().to_string();
     if text.is_empty() {
         return;
     }
@@ -758,8 +890,10 @@ fn push_line_region(
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerHit, clustered_row_split, hybrid_disabled_from, is_repeated_furniture, looks_garbled,
+        LayerHit, clustered_row_split, drop_oversized_pages, hybrid_disabled_from,
+        is_repeated_furniture, looks_garbled, rich_text_enabled_from,
     };
+    use std::collections::BTreeMap;
     use crate::docir::{DocIR, PageSource};
     use crate::region::{Region, RegionKind};
     use crate::table_grid::{TableCell, TableGrid};
@@ -1072,7 +1206,7 @@ mod tests {
     }
 
     fn hit_with(page_count: u32, needs_ocr: &[u32]) -> LayerHit {
-        LayerHit { page_count, needs_ocr: needs_ocr.iter().copied().collect() }
+        LayerHit { page_count, needs_ocr: needs_ocr.iter().copied().collect(), forced_ocr: Default::default(), select: None }
     }
 
     /// inspector 多报（实测 `multipage.pdf` 8/8 页全标 scanned）但文字层每页有
@@ -1129,7 +1263,9 @@ mod tests {
         assert!(h.missing_pages(&doc).is_empty());
     }
 
-    /// 无元数据（page_count=0 / needs_ocr 空）→ 恒不缺页。
+    /// 无元数据（page_count=0 / needs_ocr 空）且无字符短路 → 恒不缺页。
+    /// （有短路页时即使无 inspector 元数据，短路页也必进缺页集合——见
+    /// oversized_page_short_circuits_to_ocr。）
     #[test]
     fn missing_pages_without_metadata_is_empty() {
         let doc = DocIR {
@@ -1149,5 +1285,83 @@ mod tests {
         assert!(!hybrid_disabled_from(None));
         assert!(hybrid_disabled_from(Some("1")));
         assert!(hybrid_disabled_from(Some("")));
+    }
+
+    // ── 审计 #8 附项：单页字符短路 ──
+
+    /// 超限页摘除 → 记入 forced_ocr → 缺页集合含之（即使 inspector 未报）；
+    /// 合规页照常走文字层复核，行为不变。
+    #[test]
+    fn oversized_page_short_circuits_to_ocr() {
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(1, vec![ti("正常页正文", 0.0, 10.0)]);
+        by_page.insert(2, vec![ti(&"字".repeat(50), 0.0, 10.0)]); // cap=40 → 超限
+        let mut hit = LayerHit::default();
+        hit.page_count = 2;
+        let kept = drop_oversized_pages(by_page, 40, &mut hit);
+        assert_eq!(kept.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(hit.forced_ocr.iter().copied().collect::<Vec<_>>(), vec![2]);
+
+        let doc = DocIR {
+            pages: kept
+                .iter()
+                .map(|(&p, _)| crate::docir::PageIR {
+                    page_no: p,
+                    regions: vec![body("正文")],
+                    source: PageSource::TextLayerPdf,
+                })
+                .collect(),
+        };
+        // inspector 什么都没报（needs_ocr 空）→ 短路页仍进缺页集合。
+        assert_eq!(hit.missing_pages(&doc), vec![2]);
+    }
+
+    /// 恰好等于上限不触发（`> cap` 语义，与 MinerU 一致）；未超限页零副作用。
+    #[test]
+    fn oversized_page_boundary() {
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(1, vec![ti(&"字".repeat(40), 0.0, 10.0)]);
+        let mut hit = LayerHit::default();
+        hit.page_count = 1;
+        let kept = drop_oversized_pages(by_page, 40, &mut hit);
+        assert!(kept.contains_key(&1));
+        assert!(hit.forced_ocr.is_empty());
+    }
+
+    // ── --pages：选页域收缩（LayerHit.select）──
+
+    /// 未选页即使被 inspector 标 needs_ocr / 字符短路强制，也绝不允许进
+    /// missing_pages——否则 OCR 只覆盖所选页，`got == want` 校验永远补不齐。
+    #[test]
+    fn missing_pages_respects_selection() {
+        let doc = DocIR {
+            pages: vec![crate::docir::PageIR {
+                page_no: 2,
+                regions: vec![],
+                source: PageSource::TextLayerPdf,
+            }],
+        };
+        // 页 1/2/3 都被报 needs_ocr，但只选了 {2} → 缺页只有 2。
+        let mut h = hit_with(3, &[1, 2, 3]);
+        h.select = Some([2u32].into_iter().collect());
+        assert_eq!(h.missing_pages(&doc), vec![2]);
+        // 字符短路页同样受选页域约束：forced={1,3}、select={2} → 空。
+        let mut h2 = hit_with(3, &[]);
+        h2.forced_ocr = [1u32, 3].into_iter().collect();
+        h2.select = Some([2u32].into_iter().collect());
+        assert!(h2.missing_pages(&doc).is_empty());
+        // select=None（未给 --pages）→ 行为与历史一致：forced 全量并入。
+        let mut h3 = hit_with(3, &[]);
+        h3.forced_ocr = [1u32, 3].into_iter().collect();
+        assert_eq!(h3.missing_pages(&doc), vec![1, 3]);
+    }
+
+    /// 富文本开关语义：与 hybrid 开关同族——变量存在即开启，默认关闭
+    /// （守护 golden 字节一致）。
+    #[test]
+    fn rich_text_switch() {
+        assert!(!rich_text_enabled_from(None));
+        assert!(rich_text_enabled_from(Some("1")));
+        assert!(rich_text_enabled_from(Some("")));
     }
 }

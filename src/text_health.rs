@@ -40,6 +40,36 @@ pub fn has_garbled_chars(
     total > min_total && bad * 100 >= total * bad_percent
 }
 
+/// 剥掉行首/行尾的**行内样式标记**（`ANYDOC_RICH_TEXT` 注入的 `**`/`<u>`/`<s>`
+/// 及闭合），仅用于标题启发式的**判定视图**——前缀注入仍作用于原始行，`#`
+/// 前缀检查也走原始行。
+///
+/// 只认这三类**成对且非歧义**的标记，故意不含裸 `*斜体*`（`*` 在正文/脚注里
+/// 常见，误剥风险大于收益）。只做首尾成对剥除（内部标记不动），迭代至不动点；
+/// 不成对的杂散标记原样保留，判定退化为"无标题"，不会误加前缀。
+pub fn strip_inline_style_markers(line: &str) -> String {
+    const PAIRS: [(&str, &str); 3] = [("**", "**"), ("<u>", "</u>"), ("<s>", "</s>")];
+    let mut s = line.trim().to_string();
+    // 每轮尝试剥一对首尾标记；剥得动就继续，剥不动即收敛。
+    loop {
+        let mut stripped: Option<String> = None;
+        for (open, close) in PAIRS {
+            if s.len() >= open.len() + close.len()
+                && s.starts_with(open)
+                && s.ends_with(close)
+            {
+                // 标记全为 ASCII，字节切片安全
+                stripped = Some(s[open.len()..s.len() - close.len()].trim().to_string());
+                break;
+            }
+        }
+        match stripped {
+            Some(next) if next != s => s = next,
+            _ => return s,
+        }
+    }
+}
+
 /// 标题前缀注入（PDF 文字层 / OFD 文字层 / gfm OCR 三通路统一）。
 ///
 /// 规则（按序，命中即返回、跳过后续）：
@@ -57,22 +87,41 @@ pub fn apply_title_prefixes(
     title_hints: &[(String, usize)],
     numbering: bool,
 ) -> Vec<String> {
+    apply_title_prefixes_styled(lines, title_hints, numbering, false)
+}
+
+/// 同 [`apply_title_prefixes`]，`styled = true` 时标题判定改在**剥除行内外
+/// 样式标记后的视图**上做（`ANYDOC_RICH_TEXT` 通路的 `**一、总则**` 仍是标题，
+/// 前缀注入在原始行 → `## **一、总则**`）；`styled = false` 逐字节等价旧行为
+/// （golden 守护）。仅判定视图不同，产出规则全部不变。
+pub fn apply_title_prefixes_styled(
+    lines: &[String],
+    title_hints: &[(String, usize)],
+    numbering: bool,
+    styled: bool,
+) -> Vec<String> {
+    let view = |line: &str| -> String {
+        if styled { strip_inline_style_markers(line) } else { line.to_string() }
+    };
     lines
         .iter()
         .map(|line| {
             if line.trim_start().starts_with('#') {
                 return line.clone();
             }
+            let v = view(line);
             if numbering
-                && line.chars().count() <= TITLE_MAX_CHARS
-                && let Some(lv) = reading_order::title_level(line)
+                && v.chars().count() <= TITLE_MAX_CHARS
+                && let Some(lv) = reading_order::title_level(&v)
             {
                 return format!("{} {}", "#".repeat(lv), line);
             }
-            let lt = line.trim();
-            for (tt, lv) in title_hints {
-                if lt == tt.as_str() || lt.contains(tt.as_str()) || tt.contains(lt) {
-                    return format!("{} {}", "#".repeat(*lv), line);
+            if !title_hints.is_empty() {
+                let lt = v.trim();
+                for (tt, lv) in title_hints {
+                    if lt == tt.as_str() || lt.contains(tt.as_str()) || tt.contains(lt) {
+                        return format!("{} {}", "#".repeat(*lv), line);
+                    }
                 }
             }
             line.clone()
@@ -145,5 +194,44 @@ mod tests {
         let out = apply_title_prefixes(&lines, &[], true);
         assert_eq!(out[0], "# 已带前缀");
         assert_eq!(out[1], "## 一、小节");
+    }
+
+    // ── ANYDOC_RICH_TEXT：样式标记感知的标题判定 ──
+
+    #[test]
+    fn strip_inline_style_markers_pairs_only() {
+        // 首尾成对 **/<u>/<s> 剥除，嵌套迭代至不动点
+        assert_eq!(strip_inline_style_markers("**一、总则**"), "一、总则");
+        assert_eq!(strip_inline_style_markers("<u>重点</u>"), "重点");
+        assert_eq!(strip_inline_style_markers("**<u>双重</u>**"), "双重");
+        // 内部标记不动
+        assert_eq!(strip_inline_style_markers("前**中**后"), "前**中**后");
+        // 不成对/裸斜体（歧义）原样保留
+        assert_eq!(strip_inline_style_markers("**未闭合"), "**未闭合");
+        assert_eq!(strip_inline_style_markers("*斜体*"), "*斜体*");
+        // 纯标记行剥后为空
+        assert_eq!(strip_inline_style_markers("** **"), "");
+    }
+
+    #[test]
+    fn styled_title_judgment_injects_on_original_line() {
+        // styled=true：`**一、总则**` 判定视图命中编号启发式 → 前缀加在原始行，
+        // 样式标记保留（MinerU text_evidence 的 style + heading 可共存语义）。
+        let lines = vec!["**一、总则**".to_string(), "普通**正文**".to_string()];
+        let out = apply_title_prefixes_styled(&lines, &[], true, true);
+        assert_eq!(out[0], "## **一、总则**");
+        assert_eq!(out[1], "普通**正文**");
+        // styled=false：判定视图 = 原始行，`**一、总则**` 以 `*` 开头无编号命中
+        // → 逐字节等价旧行为（不加前缀）。
+        let legacy = apply_title_prefixes_styled(&lines, &[], true, false);
+        assert_eq!(legacy, lines);
+        // 已带 # 前缀的样式行仍跳过（防双重标记，检查走原始行）。
+        let hashed = vec!["# **标题**".to_string()];
+        assert_eq!(apply_title_prefixes_styled(&hashed, &[], true, true), hashed);
+        // hints 匹配也走剥离视图
+        let hint_lines = vec!["<u>附表清单</u>".to_string()];
+        let hints = vec![("附表清单".to_string(), 3)];
+        let out = apply_title_prefixes_styled(&hint_lines, &hints, false, true);
+        assert_eq!(out[0], "### <u>附表清单</u>");
     }
 }

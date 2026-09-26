@@ -49,6 +49,8 @@ enum PageData {
 
 /// OFD → Markdown 总入口（P1.8 拆阶段）：分类 → 质量路由 → OCR → DocIR 装配。
 pub fn convert_ofd(path: &Path, opts: &ConvertRequest, ofd_force_ocr: bool) -> CResult<String> {
+    // 审计 #9：dpi 合法闸（OFD 走 PerDoc 通路、不经 route_pdf，闸在自家入口）。
+    crate::limits::validate_dpi(opts.render.dpi)?;
     let mut t = StageTimer::new();
     // F2：OFD 主路径直接 `OcrEngine::build`（探针/路径 B），不经 `ocr_images`，
     // 须在首个 ONNX session 创建前提交进程级 ORT 线程池（Ticket A）。
@@ -58,7 +60,7 @@ pub fn convert_ofd(path: &Path, opts: &ConvertRequest, ofd_force_ocr: bool) -> C
     let doc_bodies = reader.ofd().doc_bodies.clone();
 
     // 第一遍：逐页判定类型（文字层 / F3 乱码页立即渲染 / 图片型页延迟渲染）。
-    let mut pages = classify_pages(&mut reader, &doc_bodies, opts, ofd_force_ocr)?;
+    let mut pages = classify_pages(&mut reader, path, &doc_bodies, opts, ofd_force_ocr)?;
 
     // 第二遍：OCR（F3 乱码页批量 + 图片型页 P3 流水线），tier 由质量路由决定。
     let has_ocr_pages = pages
@@ -78,13 +80,19 @@ pub fn convert_ofd(path: &Path, opts: &ConvertRequest, ofd_force_ocr: bool) -> C
 /// 预扫描随之删除——省掉一轮跨 doc body 的 load_document。
 fn classify_pages(
     reader: &mut OfdReader<std::fs::File>,
+    path: &Path,
     doc_bodies: &[ofd_core::model::ofd::DocBody],
     opts: &ConvertRequest,
     ofd_force_ocr: bool,
 ) -> CResult<Vec<PageData>> {
     let mut pages: Vec<PageData> = Vec::new();
+    // 页数闸（对齐 MinerU max_pages_per_file）：OFD 不经 route_pdf，闸在分类循环
+    // 内按 body 累计判定，超限在渲染/OCR 之前显式拒绝。多 body 按全文档总页数。
+    let mut total_pages: u64 = 0;
     for (body_idx, body) in doc_bodies.iter().enumerate() {
         let doc = reader.load_document(body).map_err(from_ofd_error)?;
+        total_pages += doc.pages().len() as u64;
+        crate::limits::check_page_count(path, total_pages)?;
         let page_count = doc.pages().len();
         for idx in 0..page_count {
             let page_ref = &doc.pages()[idx];
@@ -252,8 +260,11 @@ fn ofd_pending_render_fn(
                 }
                 continue;
             }
-            // 回退整页渲染（混合页/多图块/直提失败）
-            match reader.render_page_to_image(&doc, *page_idx, &RenderOptions::with_dpi(dpi.into())) {
+            // 回退整页渲染（混合页/多图块/直提失败）。审计 #9：与 render_page
+            // 同闸——按页物理框钳长边（直提路径按原始像素走，dpi 仅控
+            // downscale_to_dpi 内存闸，不经此钳位）。
+            let eff_dpi = render::page_render_dpi(&mut reader, &doc, *page_idx, dpi);
+            match reader.render_page_to_image(&doc, *page_idx, &RenderOptions::with_dpi(eff_dpi.into())) {
                 Ok(rgba) => {
                     let img = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
                     if tx.send(Ok(((0, *gi), img))).is_err() {

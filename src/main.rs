@@ -1,5 +1,5 @@
 //! anydoc-ocr CLI
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anydoc_ocr::ConvertError;
@@ -42,8 +42,14 @@ struct Cli {
     /// 渲染 DPI（图片型 PDF/OFD 走 OCR 时的渲染分辨率）。越低像素越少、渲染与
     /// 文本检测(det)越快，但字号过小会漏检；印刷体公文 100 零精度损失且比 200
     /// 快 33%，80 起脚注/小字开始漏检。实测 上海公报52p: 100 vs 200 恢复率均 99.83%。
+    /// 合法区间 50–400，越界或 NaN 立即报错（不跑半途）。
     #[arg(long, default_value_t = 100.0)]
     dpi: f32,
+    /// 页码选择（仅 PDF）：1 基含端点，逗号分隔，如 "1-5,8"；rN 从末页倒数
+    /// （"r3-r1" = 末三页），"all" = 全部（默认）。排序去重、越界裁剪；
+    /// 与所选页无交集 / 倒序区间 / 非法语法立即报错。语法对齐 MinerU。
+    #[arg(long)]
+    pages: Option<String>,
     /// ADR-0007：质量路由（后验置信度门控）。auto 用 tiny 跑首页 OCR，平均置信度
     /// 低于阈值则升级 small 全篇重跑（污染件更准）；off 用 --ocr-tier 显式值，
     /// 不承担额外首页 OCR 开销（golden 测试固定 off）。默认 off。
@@ -53,6 +59,17 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // 审计 #9：--dpi 早期校验（NaN/Inf / 越界 [50,400] 立即退出）。库路径各通道
+    // 内另有同语义闸（route_pdf / convert_ofd），这里只是 CLI 早失败、省掉
+    // stdin 落盘等前置开销。
+    if let Err(e) = anydoc_ocr::validate_render_dpi(cli.dpi) {
+        exit_with_hint(&e);
+    }
+    // --pages 早期语法校验（同 dpi：非法语法早退，省掉 stdin 落盘等前置开销；
+    // rN/空集需页数判定的在库侧 route_pdf 终审）。
+    if let Err(e) = anydoc_ocr::validate_page_range_syntax(cli.pages.as_deref()) {
+        exit_with_hint(&e);
+    }
     let threads = if cli.threads == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -68,6 +85,7 @@ fn main() -> Result<()> {
         },
         parallel: anydoc_ocr::ParallelConfig { page_parallel: threads, ort_intra: 0 },
         quality_route: cli.quality_route,
+        pages: cli.pages.clone(),
     };
     let force = anydoc_ocr::ForceFlags {
         ofd_force_ocr: cli.ofd_force_ocr,
@@ -91,6 +109,19 @@ fn main() -> Result<()> {
 
     let input = PathBuf::from(&cli.input);
     if input.is_dir() {
+        // --pages 仅单文档合理（MinerU 同口径"Only works for single PDFs"）：
+        // 目录批处理里逐文件套同一页集易生误解，直接早拒。
+        if let Some(raw) = cli
+            .pages
+            .as_deref()
+            .filter(|p| !p.trim().is_empty() && !p.eq_ignore_ascii_case("all"))
+        {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                format!("--pages {raw:?} 仅支持单文档输入，目录批处理不适用"),
+            ));
+        }
         run_batch(&input, &opts, force, &cli.output)?;
     } else {
         let md = match convert_to_markdown(&input, &opts, force) {
@@ -206,9 +237,11 @@ fn write_single(md: &str, output: &Option<PathBuf>) -> Result<()> {
 
 /// stdin 写入临时文件返回路径（NamedTempFile：随机名 + 用完自动删除）；
 /// 返回 Option 持有临时文件句柄，保证转换期间文件存活。
+/// 审计 #8：不再 `read_to_end` 无界读——经 `read_stdin_bounded` 累计超过
+/// `ANYDOC_MAX_INPUT_BYTES`（默认 200 MiB，对齐 MinerU 上传档）立即断读报
+/// `ResourceLimit`，超限时内存不会被管道投喂打满。
 fn resolve_stdin() -> Result<(PathBuf, Option<tempfile::NamedTempFile>)> {
-    let mut buf = Vec::new();
-    std::io::stdin().read_to_end(&mut buf)?;
+    let buf = anydoc_ocr::read_stdin_bounded()?;
     let mut tmp = tempfile::NamedTempFile::new()?;
     Write::write_all(&mut tmp, &buf)?;
     let p = tmp.path().to_path_buf();

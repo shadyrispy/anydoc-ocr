@@ -9,6 +9,7 @@ use image::{RgbImage, RgbaImage};
 use ofd_core::model::graphics::{ImageObject, PageBlock};
 use ofd_core::{LoadedDocument, OfdReader, RenderOptions, parent_dir, resolve_path};
 
+use super::text_layer;
 use crate::ConvertRequest;
 use crate::error::{Result as CResult, Stage, runtime};
 
@@ -34,7 +35,7 @@ pub(crate) fn try_extract_ofd_page_image(
     let mut other_count = 0usize;
     if let Some(content) = &page.content {
         for layer in &content.layers {
-            collect_image_objects(&layer.objects, &mut images, &mut other_count);
+            collect_image_objects(&layer.objects, &mut images, &mut other_count, 0);
         }
     }
     if other_count > 0 || images.len() != 1 {
@@ -72,18 +73,49 @@ pub(crate) fn try_extract_ofd_page_image(
 }
 
 /// 递归收集 ImageObject 引用 + 统计非 ImageObject 的 PageBlock 数量。
+/// 深度超过 `MAX_BLOCK_DEPTH` 的子树不再下探（见 text_layer 常量文档）：
+/// 超限只可能少收集 → 走全页渲染回退，不会把深嵌套里的内容误计掉。
 fn collect_image_objects<'a>(
     blocks: &'a [PageBlock],
     images: &mut Vec<&'a ImageObject>,
     other_count: &mut usize,
+    depth: usize,
 ) {
+    if depth > text_layer::MAX_BLOCK_DEPTH {
+        return;
+    }
     for b in blocks {
         match b {
             PageBlock::Image(img) => images.push(img),
-            PageBlock::Block(g) => collect_image_objects(&g.objects, images, other_count),
+            PageBlock::Block(g) => {
+                collect_image_objects(&g.objects, images, other_count, depth + 1)
+            }
             _ => *other_count += 1,
         }
     }
+}
+
+/// 审计 #9（默认启用）：ofd-core 像素 = mm/25.4×dpi 且只有 20000px 硬错误、
+/// 无钳位，故在调用侧按页物理框把长边钳到 cap（默认 3500px，
+/// `ANYDOC_RENDER_EDGE_CAP`）——等价换算为有效 dpi（[`crate::limits::effective_dpi_mm`]），
+/// 与 PDF 侧 `render_scale` 同一 cap、同一语义。
+/// 页面积解析链与 ofd-core 渲染器一致：本页 Area → 文档默认 PageArea → A4(210×297mm)；
+/// 页装载失败按 A4 处理（渲染调用自身会再报错/兜底，不在此重复判定）。
+pub(crate) fn page_render_dpi(
+    reader: &mut OfdReader<File>,
+    doc: &LoadedDocument,
+    idx: usize,
+    dpi: f32,
+) -> f32 {
+    let area = doc
+        .pages()
+        .get(idx)
+        .and_then(|p| reader.load_page(doc, p).ok())
+        .and_then(|page| page.area)
+        .or_else(|| doc.document.common_data.page_area.as_ref().cloned())
+        .map(|a| a.physical_box)
+        .unwrap_or(ofd_core::StBox::A4_MM);
+    crate::limits::effective_dpi_mm(dpi, area.width.max(area.height))
 }
 
 /// 渲染一页为 RGB 图（图片型分支同参；`dpi` 控制分辨率）。
@@ -93,8 +125,9 @@ pub(crate) fn render_page(
     idx: usize,
     opts: &ConvertRequest,
 ) -> CResult<RgbImage> {
+    let eff_dpi = page_render_dpi(reader, doc, idx, opts.render.dpi);
     let img: RgbaImage = reader
-        .render_page_to_image(doc, idx, &RenderOptions::with_dpi(opts.render.dpi.into()))
+        .render_page_to_image(doc, idx, &RenderOptions::with_dpi(eff_dpi.into()))
         .map_err(|e| {
             runtime(
                 Stage::Render,

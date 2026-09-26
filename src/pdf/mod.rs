@@ -40,7 +40,7 @@ use crate::{ConvertRequest, Result, gfm_adapter};
 
 pub mod render;
 mod text_layer;
-pub(crate) use text_layer::{TextHit, finalize_text_docir, text_layer_probe};
+pub(crate) use text_layer::{TextHit, classify_pages, finalize_text_docir, text_layer_probe};
 
 pub fn convert_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> Result<String> {
     let mut t = StageTimer::new();
@@ -48,9 +48,9 @@ pub fn convert_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> R
     // 共用同一判定；force_ocr 路径含加密预检 ADR-0006 §6）。
     match crate::convert::route_pdf(path, opts, pdf_force_ocr) {
         crate::convert::PdfRoute::Done(r) => r,
-        crate::convert::PdfRoute::Ocr => {
+        crate::convert::PdfRoute::Ocr { pages } => {
             t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
-            convert_pdf_ocr_single(path, opts)
+            convert_pdf_ocr_single(path, opts, pages)
         }
         crate::convert::PdfRoute::Hybrid { text, missing_pages, .. } => {
             t.stage("hybrid");
@@ -63,8 +63,21 @@ pub fn convert_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> R
 ///
 /// P1.10：供 `convert_to_markdown` 的 `DocRoute::Ocr` 分支调用——跨文档 pipeline
 /// 是 convert 的实现细节，调用方不再自行组 `&[path]`。
-pub(crate) fn convert_pdf_ocr_single(path: &Path, opts: &ConvertRequest) -> Result<String> {
-    let mut out = convert_pdf_ocr_docs(vec![OcrDocSpec::scan(path.to_path_buf())], opts)?;
+/// `pages` = `--pages` 选页（`None` = 全页；Some 时仅渲染/识别所选页）。
+pub(crate) fn convert_pdf_ocr_single(
+    path: &Path,
+    opts: &ConvertRequest,
+    pages: Option<std::collections::BTreeSet<u32>>,
+) -> Result<String> {
+    let spec = match pages {
+        None => OcrDocSpec::scan(path.to_path_buf()),
+        Some(sel) => OcrDocSpec {
+            path: path.to_path_buf(),
+            missing_pages: Some(sel.into_iter().collect()),
+            text: None,
+        },
+    };
+    let mut out = convert_pdf_ocr_docs(vec![spec], opts)?;
     // 单文档：唯一 doc 的 Result 直接透传（Err 能带真实 detail，ADR 候选 3）。
     match out.pop().map(|(_, r)| r) {
         Some(r) => r,
@@ -119,6 +132,11 @@ pub(crate) fn merge_hybrid(
     text.pages.retain(|p| !covered.contains(&p.page_no));
     // 2) OCR 页 → 按真实页号入 DocIR（逐页 to_docir 取该页区块，producer
     //    语义与整篇 OCR 一致）
+    // #3 契约：to_docir 对单元素切片恒产出**恰好一页**（pages[0]，页序即输入
+    //    序）——`next()?` 的 None 分支理论上不可达，保留它是防御下游 oar 改版；
+    //    空白扫描页产出的页区块可以为**空**（渲染成功但 OCR 无文本，
+    //    hybrid_pdf_with_blank_page_still_succeeds 锁死该行为：空页照常并入，
+    //    绝不因"无区块"把整篇文档降级 NeedsOcr）。
     for (page_no, res) in pages {
         let doc = gfm_adapter::to_docir(std::slice::from_ref(res));
         let regions = doc.pages.into_iter().next().map(|p| p.regions)?;

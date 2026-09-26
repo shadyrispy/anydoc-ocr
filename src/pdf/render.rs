@@ -163,7 +163,6 @@ fn render_docs_filtered(
                 ));
             }
         };
-        let scale = dpi / 72.0;
         for (doc_idx, path) in paths.iter().enumerate() {
             let doc = match pdfium.load_pdf_from_file(path, None) {
                 Ok(d) => d,
@@ -205,19 +204,13 @@ fn render_docs_filtered(
                 if std::env::var_os("ANYDOC_RENDER_TRACE").is_some() {
                     eprintln!("[render] doc{doc_idx} p{i} → 回退 PDFium 整页渲染");
                 }
-                // ANYDOC_RENDER_EDGE_CAP（MinerU 回归对齐）：docvortex
-                // `page_to_image` 长边上限 3500px（超则整体降 scale），
-                // 高 dpi + 大页面时与 MinerU 像素网格保持一致。
-                let eff_scale = match std::env::var("ANYDOC_RENDER_EDGE_CAP")
-                    .ok()
-                    .and_then(|s| s.parse::<f32>().ok())
-                    .filter(|&c| c > 0.0)
-                {
-                    Some(cap) if page.height().value.max(page.width().value) * scale > cap => {
-                        cap / page.height().value.max(page.width().value)
-                    }
-                    _ => scale,
-                };
+                // 审计 #9（默认启用）：docvortex `page_to_image` 同式长边钳——
+                // `scale = min(dpi/72, cap/长边)`（cap 默认 3500px，
+                // ANYDOC_RENDER_EDGE_CAP 覆盖）。高 dpi + 大页面时与 MinerU
+                // 像素网格一致，且封顶单页位图内存。A4×100dpi ≈ 1169px，
+                // 常规公文不触发钳位（golden 字节一致）。
+                let eff_scale =
+                    crate::limits::render_scale(dpi, page.height().value.max(page.width().value));
                 let w = (page.width().value * eff_scale) as i32;
                 let h = (page.height().value * eff_scale) as i32;
                 if w <= 0 || h <= 0 {
@@ -319,7 +312,6 @@ fn render_document(
     dpi: f32,
     target: &Option<BTreeSet<u32>>,
 ) -> Result<Vec<image::RgbImage>> {
-    let scale = dpi / 72.0;
     let mut out = Vec::new();
     for (i, page) in doc.pages().iter().enumerate() {
         // 懒惰渲染：仅 `target` 含本页索引时才渲染，跳过页不物化位图（内存收益在此）
@@ -328,6 +320,8 @@ fn render_document(
         {
             continue;
         }
+        // 审计 #9：与 render_docs_filtered 同源长边钳（默认 3500px，逐页计算）。
+        let scale = crate::limits::render_scale(dpi, page.height().value.max(page.width().value));
         let w = (page.width().value * scale) as i32;
         let h = (page.height().value * scale) as i32;
         if w <= 0 || h <= 0 {

@@ -60,8 +60,13 @@ impl BatchConverter {
         for (i, path) in paths.iter().enumerate() {
             match route_doc(path, &self.opts, &self.force) {
                 DocRoute::Done(r) => slots[i] = Some(r),
-                DocRoute::Ocr => {
-                    ocr_specs.push(crate::pdf::OcrDocSpec::scan(path.clone()));
+                DocRoute::Ocr { pages } => {
+                    ocr_specs.push(crate::pdf::OcrDocSpec {
+                        path: path.clone(),
+                        // --pages 选页（None = 整篇 OCR，行为不变）
+                        missing_pages: pages.map(|s| s.into_iter().collect()),
+                        text: None,
+                    });
                     ocr_orig.push(i);
                 }
                 DocRoute::Hybrid { text, missing_pages } => {

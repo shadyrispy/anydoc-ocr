@@ -64,7 +64,8 @@ anydoc-ocr <输入文件或目录> [选项]
 | `--ocr-tier <tiny\|small\|medium>` | `tiny` | OCR 模型档（见「模型档与精度」） |
 | `--ocr-layout <doc\|table>` | `doc` | 版面模型：`doc` 默认文档结构 / `table` 表格专用（检出 Table 才跑 SLANet，无表页零额外开销） |
 | `--threads <n>` | `0` | OCR 推理页级并行度。`0` = 自动取可用并行度；进程级 ORT `intra=max(1,核心数/n)`，总线程≈核心数。内存受限环境（cgroup<8GB）可调小 |
-| `--dpi <f32>` | `100` | 图片型渲染分辨率。印刷体公文 `100` 零精度损失且比 `200` 快 33%；`80` 起脚注/小字开始漏检 |
+| `--dpi <f32>` | `100` | 图片型渲染分辨率，允许区间 `[50, 400]`（越界/NaN 直接报错）。印刷体公文 `100` 零精度损失且比 `200` 快 33%；`80` 起脚注/小字开始漏检 |
+| `--pages <expr>` | 全部 | 页码选择（**仅 PDF**，语法对齐 MinerU/docvortex）：1 基含端点、逗号分隔，如 `1-5,8`；`rN` 从末页倒数（`r3-r1` = 末三页）；`all` = 全部。排序去重、越界裁剪；倒序区间 / 与文档无交集 / 非法语法立即报错。所选外的页不抽取、不渲染、不进输出；非 PDF 或目录输入显式给页直接拒绝 |
 | `--quality-route <auto\|off>` | `off` | 质量路由：`auto` 用 tiny 首跑首页 OCR，平均置信低于阈值则升级 `small` 全篇重跑（污染件更稳）；`off` 用显式 `--ocr-tier` |
 | `--ofd-force-ocr` | off | 文字型 OFD 也强制走 OCR（重建表格结构） |
 | `--pdf-force-ocr` | off | 文字型 PDF 当图片渲染后 OCR（图片型校准用） |
@@ -74,6 +75,7 @@ anydoc-ocr <输入文件或目录> [选项]
 ```bash
 anydoc-ocr 公文.pdf                       # 自动分流，写 stdout
 anydoc-ocr 扫描件.pdf --ocr-tier small --threads 4 --dpi 100
+anydoc-ocr 长文档.pdf --pages 1-3,r1       # 只转前 3 页 + 末页
 anydoc-ocr 公文.ofd --ofd-force-ocr       # 强制 OCR，重建表格
 cat 公文.pdf | anydoc-ocr - -o out.md     # stdin
 anydoc-ocr 资料目录/ -o out_md/           # 目录批处理
@@ -136,8 +138,16 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 | `OAR_HOME` | oar-ocr 模型缓存/下载根目录（首用自动从 ModelScope 下载） |
 | `ANYDOC_MODEL_DIR` | 本地 ONNX 模型目录（绝对路径）。设置后从该目录**直载**，不走 `$OAR_HOME` 缓存/下载，用于离线/内网；缺某模型回退裸名下载。注意不能把自备模型放 `$OAR_HOME` 用裸名（会命中缓存分支被 size/hash 不符静默重下覆盖） |
 | `ANYDOC_ORT_INTRA_THREADS` | 强制覆盖进程级 ORT intra-op 线程数（调试用）。必须在任何 ONNX session 创建前生效。未设置时自动：池=1 → 全核；池>1 → `核心数/池`（防并发 run 互抢） |
-| `ANYDOC_ORT_SESSION_POOL` | A1：每模型加载 N 份 ORT session（1–8，默认 1=上游行为）。>1 时引擎放开页级并发推理（pipeline 多消费者 + 轮转分池），4 核实测 2 页/批并发约 −20% 端到端耗时；内存每池 +模型权重组。CPU-only 专用（CUDA/TensorRT 恒回落 1） |
+| `ANYDOC_ORT_SESSION_POOL` | A1：每模型加载 N 份 ORT session（1–8，默认 1=上游行为）。>1 时引擎放开页级并发推理（pipeline 多消费者 + 轮转分池）；4 核实测（2×24 页批，t=4）wall −20~30%，峰值 RSS +约 0.8GB（每 session 独立 arena），输出逐字节确定一致。CPU-only 专用（CUDA/TensorRT 恒回落 1） |
 | `ANYDOC_NO_HYBRID` | 存在即关闭 PDF 混合路由（B）：有文字层的 PDF 不再对缺页自动补 OCR，回到旧行为（文字层直出，扫描件页可能缺失），用于 A/B 回滚 |
+| `ANYDOC_NO_RAW_EXTRACT` | 存在即禁用 ADR-0008 单图满页直提，扫描件强制走 PDFium 整页光栅化（MinerU 回归对齐用：低分辨率内嵌图也被放大到目标 DPI 网格） |
+| `ANYDOC_RENDER_EDGE_CAP` | 整页渲染长边上限（px，>0 生效；**默认 3500**）。超则整体降 scale，对齐 docvortex/MinerU 3500px 像素网格（PDF 逐页、OFD 按页物理框等价换算 dpi）；A4×100dpi≈1169px 常规公文不触发。非法值回落 3500 |
+| `ANYDOC_MAX_INPUT_BYTES` | 输入字节上限（默认 200 MiB，对齐 MinerU 上传档）。stdin 有界读、文件入口（含 HTML/CSV 等 anydoc 通道）预检，超限显式 `resourceLimit` 拒绝、不截断；非法值（不可解析/≤0）回落默认 |
+| `ANYDOC_NATIVE_TEXT_CHARS` | 单页原生文字层字符上限（默认 65535，对齐 MinerU `MAX_NATIVE_TEXT_CHARS_PER_PAGE`）。超限页放弃文字层抽取直判 OCR 缺页，防超大文字层拖垮抽取；非法值回落默认 |
+| `ANYDOC_MAX_PAGES` | 单文档页数上限（默认 1000，对齐 MinerU `max_pages_per_file`）。PDF 在 classify 元数据阶段、OFD 在逐页判定循环内拦截，超限显式 `resourceLimit` 报错，发生在渲染/OCR 之前；非法值回落默认 |
+| `ANYDOC_RICH_TEXT` | 存在即开启 PDF 文字层**行内样式**注入（借鉴 MinerU `prepare/apply_text_evidence`）：消费 pdf-inspector 的 bold/italic/underline/strikeout 证据，产出 `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>`；标题启发式在剥标记后的判定视图上跑，前缀与样式共存（`## **一、总则**`）。**默认关闭**（守护现网字节一致），精度增益按语料自行 A/B——`is_bold` 部分来自字体名启发，中文公文加粗小标题已由标题前缀承担 |
+| `ANYDOC_RENDER_TRACE` | 存在即逐页打印渲染路径（直提 / 回退整页渲染）到 stderr，排查 ADR-0008 直提命中用 |
+| `ANYDOC_DUMP_DIR` | 目录路径：存在即逐页落 StructureResult + 页像素尺寸 JSON，供 MinerU 框级 IoU / 阅读顺序对比 |
 | `ANYDOC_REC_BATCH` | 覆盖 rec 行批大小（上游默认 tiny=16 / small+medium=4；默认不启用） |
 | `ANYDOC_TIMINGS` | 存在即输出分阶段计时到 stderr |
 | `ANYDOC_DEBUG_GFM` | 存在即启用 GFM 适配器调试输出 |
@@ -233,11 +243,11 @@ scripts/             build-x64 / build-aarch64 / package-single / install-font
 | 包 | 版本 | 用途 |
 |----|------|------|
 | `oar-ocr` | 0.9.2（锁定） | 版面/OCR/表格结构推理（ONNX Runtime，PaddleOCR 系模型） |
-| `anydoc` | 0.2.3（锁定） | 其他格式兜底（docx 等） |
+| `anydoc` | 0.2.4（锁定） | 其他格式兜底（docx 等） |
 | `ort` | 2.0.0-rc.13（锁定） | 进程级 ORT 线程池 API（与 oar-ocr-core 同版镜像） |
 | `ofd-core` | 0.3.0 | OFD 文本提取与渲染 |
-| `pdf-inspector` | 1.14 | 文字型 PDF 文本提取 |
-| `pdfium-render` | 0.9.3 | PDFium 渲染 |
+| `pdf-inspector` | 1.24 | 文字型 PDF 文本提取 |
+| `pdfium-render` | 0.9.4 | PDFium 渲染 |
 
 > 版本策略：深耦合/行为镜像/RC/0.x 演进期锁 `=`，纯 Rust 工具库用 `^`。`oar-ocr-core` 为本仓 vendored（`[patch.crates-io]`），内含 NEON SIMD 的 resize 加速 patch，升级时需 rebase。
 
@@ -248,6 +258,8 @@ scripts/             build-x64 / build-aarch64 / package-single / install-font
 - **ORT 全局线程池仅首次生效**：宿主已先初始化 ORT 时 `init_runtime` 配置被忽略（幂等）。
 - **模型加载失败不自动重试下载**：`ANYDOC_MODEL_DIR` 缺文件时该模型回退裸名下载；自备模型不能放 `$OAR_HOME`。
 - **图片型是先渲染（或直提）成整页光栅再整页 OCR**，不做 unpaper 式全局去噪/去歪斜——靠 100dpi 分辨率 + 文档方向矫正保障精度（与 MinerU 同思路）。
+- **安全闸（口径对齐 MinerU，超限显式报错、绝不静默截断/降质）**：输入 200 MiB（`ANYDOC_MAX_INPUT_BYTES`，stdin 有界读 + 文件入口预检）；单文档 1000 页（`ANYDOC_MAX_PAGES`，PDF 在 classify 元数据阶段拦、OFD 在逐页判定循环拦，均先于渲染/OCR）；`--dpi` 限 50–400；整页渲染长边 3500px（超则整体降 scale，`ANYDOC_RENDER_EDGE_CAP`）；单页原生文字 >65535 字符放弃文字层直判 OCR（`ANYDOC_NATIVE_TEXT_CHARS`）。
+- **`--pages` 仅 PDF 通道**：每个 PDF 调度时多付一次 classify 元数据读取（~10–50ms，不渲图）用于页数闸与选页求值，输出不变。行内样式注入（`ANYDOC_RICH_TEXT`）默认关闭、仅作用于 PDF 文字层通路，开启后 OCR/网格表格通路不受影响。
 
 ## 许可
 
