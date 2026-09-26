@@ -3,7 +3,7 @@
 //! P1.10 后 `BatchConverter` 内部走统一 convert 调度层
 //! （[`crate::convert::route_doc`]，与单文档 [`crate::convert_to_markdown`]
 //! 共用同一预分流）：文字层快速路径、加密/损坏预检、图片型 PDF 判定只此一处；
-//! 跨文档 pipeline（`pdf::convert_pdf_ocr`）成为 convert 的实现细节。
+//! 跨文档 pipeline（`pdf::convert_pdf_ocr_docs`）成为 convert 的实现细节。
 //!
 //! 收集到的图片型 PDF paths 一次性送入跨文档 render↔OCR pipeline——文档边界
 //! OCR 池空转消除 + 小文档 setup 摊薄。engine 复用由 `OcrEngine::build` 的
@@ -43,44 +43,60 @@ impl BatchConverter {
     ///
     /// 预分流走统一调度层 `route_doc`（与单文档入口共用，P1.10）：
     /// 1. PDF 文字层探针——`Done(Ok)` 出结果，`Done(Err)`（加密/损坏）直接标错
-    ///    不送 OCR（ADR-0006 §5/§6），`Ocr`（图片型/force）收集到 `ocr_paths`
-    /// 2. `ocr_paths` 一次性送入 `convert_pdf_ocr` 跨文档 pipeline
+    ///    不送 OCR（ADR-0006 §5/§6），`Ocr`（图片型/force）与 `Hybrid`（缺页）
+    ///    收集进同一批 OCR 规格
+    /// 2. `ocr_specs` 一次性送入 `convert_pdf_ocr_docs` 跨文档 pipeline
+    ///    （混合型只渲染缺页，与图片型共用一次 pipeline 调用）
     /// 3. 非 PDF（OFD/docx/xlsx/pptx）走 `convert_per_doc` per-doc 转换
     pub fn convert_many(&self, paths: &[PathBuf]) -> Vec<DocOutcome> {
         // 每文档槽位：None = 待填充，Some(r) = 已完成。
         // `ConvertError` 非 Clone，故用 `(0..n).map(|_| None).collect()` 避开 Clone 约束。
         let mut slots: Vec<Option<Result<String>>> = (0..paths.len()).map(|_| None).collect();
 
-        // 1) 统一调度预分流：文字型快速路径 + 加密/损坏标错 + 图片型收集
-        let mut ocr_paths: Vec<(usize, PathBuf)> = Vec::new();
+        // 1) 统一调度预分流：文字型快速路径 + 加密/损坏标错 + 图片/混合型收集
+        let mut ocr_specs: Vec<crate::pdf::OcrDocSpec> = Vec::new();
+        let mut ocr_orig: Vec<usize> = Vec::new();
         let mut perdoc: Vec<(usize, DocKind)> = Vec::new();
         for (i, path) in paths.iter().enumerate() {
             match route_doc(path, &self.opts, &self.force) {
                 DocRoute::Done(r) => slots[i] = Some(r),
-                DocRoute::Ocr => ocr_paths.push((i, path.clone())),
+                DocRoute::Ocr => {
+                    ocr_specs.push(crate::pdf::OcrDocSpec::scan(path.clone()));
+                    ocr_orig.push(i);
+                }
+                DocRoute::Hybrid { text, missing_pages } => {
+                    ocr_specs.push(crate::pdf::OcrDocSpec {
+                        path: path.clone(),
+                        missing_pages: Some(missing_pages),
+                        text: Some(text),
+                    });
+                    ocr_orig.push(i);
+                }
                 DocRoute::PerDoc(kind) => perdoc.push((i, kind)),
             }
         }
 
-        // 2) 跨文档 OCR pipeline（图片型 PDF 集中处理）
-        if !ocr_paths.is_empty() {
-            let just_paths: Vec<PathBuf> = ocr_paths.iter().map(|(_, p)| p.clone()).collect();
-            match crate::pdf::convert_pdf_ocr(&just_paths, &self.opts) {
+        // 2) 跨文档 OCR pipeline（图片型整篇 + 混合型缺页，一次调用）
+        if !ocr_specs.is_empty() {
+            match crate::pdf::convert_pdf_ocr_docs(ocr_specs, &self.opts) {
                 Ok(md_per_doc) => {
-                    // convert_pdf_ocr 返回 Vec<(doc_idx, Result<String>)> 按 doc_idx
-                    // 升序；每文档独立 Result。doc_idx 与 just_paths 索引一一对应，
-                    // 回填到原始 paths 槽位。Err doc 带真实 detail（ADR 候选 3）——
-                    // 不再需要"槽位缺失→猜 Err(详见 stderr)"的兜底。
-                    for (doc_idx, md) in md_per_doc {
-                        let (orig_idx, _) = &ocr_paths[doc_idx];
-                        slots[*orig_idx] = Some(md);
+                    // convert_pdf_ocr_docs 返回 Vec<(spec_idx, Result<String>)> 按
+                    // spec_idx 升序；每文档独立 Result。spec_idx 与 ocr_specs 索引
+                    // 一一对应，经 ocr_orig 回填到原始 paths 槽位。Err doc 带真实
+                    // detail（ADR 候选 3）——不再需要"槽位缺失→猜 Err(详见 stderr)"。
+                    for (spec_idx, md) in md_per_doc {
+                        let orig_idx = ocr_orig[spec_idx];
+                        slots[orig_idx] = Some(md);
                     }
                 }
                 Err(e) => {
-                    // pipeline 整体失败（绑定/ORT 致命错误）→ 该批 ocr_paths 全标 Err
-                    for (orig_idx, _) in &ocr_paths {
-                        slots[*orig_idx] =
-                            Some(Err(runtime(Stage::Ocr, None, format!("跨文档 OCR 失败: {e}"))));
+                    // pipeline 整体失败（绑定/ORT 致命错误）→ 该批 OCR 规格全标 Err
+                    for orig_idx in ocr_orig {
+                        slots[orig_idx] = Some(Err(runtime(
+                            Stage::Ocr,
+                            None,
+                            format!("跨文档 OCR 失败: {e}"),
+                        )));
                     }
                 }
             }

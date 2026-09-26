@@ -3,7 +3,7 @@
 //! 单文档入口 [`convert_to_markdown`] 与 [`crate::batch::BatchConverter`] 共用
 //! [`route_doc`] 预分流——文字层快速路径、加密/损坏预检（ADR-0006 §5/§6）、
 //! 图片型 PDF 收集进跨文档 OCR pipeline 的判定只此一处；跨文档 pipeline
-//! （`pdf::convert_pdf_ocr`）成为 convert 的实现细节，调用方不再感知。
+//! （`pdf::convert_pdf_ocr_docs`）成为 convert 的实现细节，调用方不再感知。
 use std::path::Path;
 
 use crate::Result;
@@ -90,7 +90,7 @@ pub struct ForceFlags {
     pub pdf_force_ocr: bool,
 }
 
-/// PDF 预分流结论（P1.10）：文字层探针后的去向。
+/// PDF 预分流结论（P1.10）。
 pub(crate) enum PdfRoute {
     /// 已出结果：`Ok` = 文字层快速路径命中；`Err` = 加密/损坏，直接标错不送 OCR
     /// （ADR-0006 §5：加密 PDF 送 OCR 也读不了，损坏 PDF 浪费 OCR 资源；
@@ -98,16 +98,28 @@ pub(crate) enum PdfRoute {
     Done(Result<String>),
     /// 图片型（无可用文字层）或 force_ocr 强制 → 跨文档 OCR pipeline。
     Ocr,
+    /// 混合文档（anydoc 0.2.4 缺页上报）：文字层覆盖部分页，`missing_pages`
+    /// （1 基）需按页补 OCR 后合并，**不静默丢页**。
+    Hybrid {
+        /// 文字层 DocIR（跨页表 pass 前）。
+        text: crate::docir::DocIR,
+        missing_pages: Vec<u32>,
+    },
 }
 
-/// PDF 预分流（调度层唯一判定处）：text_layer 探针 → 快速路径 / 标错 / OCR。
+/// PDF 预分流（调度层唯一判定处）：text_layer 探针 → 快速路径 / 混合 / 标错 / OCR。
 pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> PdfRoute {
-    match pdf::text_layer_markdown(path, opts) {
+    match pdf::text_layer_probe(path, opts) {
         // 图片型（无可用文字层）→ OCR pipeline
         Ok(None) => PdfRoute::Ocr,
-        // 文字层命中：force_ocr 丢弃文字层结果送 OCR（图片型校准），否则快速路径出结果
-        Ok(Some(md)) if !pdf_force_ocr => PdfRoute::Done(Ok(md)),
-        Ok(Some(_)) => PdfRoute::Ocr,
+        // force_ocr：丢弃文字层结果整篇送 OCR（图片型校准，行为不变）
+        Ok(_) if pdf_force_ocr => PdfRoute::Ocr,
+        // 文字层命中且无缺页：快速路径（与旧行为字节一致）
+        Ok(Some(pdf::TextHit::Complete(md))) => PdfRoute::Done(Ok(md)),
+        // 混合：只补缺页
+        Ok(Some(pdf::TextHit::Hybrid { text, missing_pages, .. })) => {
+            PdfRoute::Hybrid { text, missing_pages }
+        }
         // 加密/损坏 → 直接标错（§5/§6，含 force_ocr 路径的加密预检）
         Err(e) => PdfRoute::Done(Err(e)),
     }
@@ -119,6 +131,8 @@ pub(crate) enum DocRoute {
     Done(Result<String>),
     /// 图片型 PDF → 跨文档 OCR pipeline（单文档为 `&[path]` 委托）
     Ocr,
+    /// 混合 PDF → 按页补 OCR + 合并（单文档粒度，见 [`PdfRoute::Hybrid`]）
+    Hybrid { text: crate::docir::DocIR, missing_pages: Vec<u32> },
     /// 非 PDF 文档 → per-doc 通路（OFD / anydoc 兜底）
     PerDoc(DocKind),
 }
@@ -136,6 +150,7 @@ pub(crate) fn route_doc(path: &Path, opts: &ConvertRequest, force: &ForceFlags) 
         DocKind::Pdf => match route_pdf(path, opts, force.pdf_force_ocr) {
             PdfRoute::Done(r) => DocRoute::Done(r),
             PdfRoute::Ocr => DocRoute::Ocr,
+            PdfRoute::Hybrid { text, missing_pages } => DocRoute::Hybrid { text, missing_pages },
         },
         other => DocRoute::PerDoc(other),
     }
@@ -191,6 +206,9 @@ pub fn convert_to_markdown(
         DocRoute::Done(r) => r,
         // 跨文档 pipeline 是 convert 的实现细节：单文档即 `&[path]` 委托
         DocRoute::Ocr => pdf::convert_pdf_ocr_single(path, opts),
+        DocRoute::Hybrid { text, missing_pages } => {
+            pdf::convert_pdf_hybrid(path, opts, text, &missing_pages)
+        }
         DocRoute::PerDoc(kind) => convert_per_doc(path, kind, opts, &force),
     }
 }

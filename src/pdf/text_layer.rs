@@ -18,6 +18,16 @@ use crate::{ConvertRequest, Result, gfm_adapter, reading_order};
 /// `GARBLED_BAD_PERCENT_THRESHOLD`，PDF/OFD 共用）。
 const GARBLED_MAX_ITEMS: usize = 4000;
 
+/// 文字层探针结论（anydoc 0.2.4 "Scanned pages are reported, not dropped"）。
+pub(crate) enum TextHit {
+    /// 文字层可用且**无缺页**：markdown 与旧快速路径字节一致（golden 守护）。
+    Complete(String),
+    /// 混合文档：文字层只覆盖部分页。`text` = **跨页表 pass 前**的文字层 DocIR，
+    /// `missing_pages` = 需要 OCR 的页（1 基，升序）。
+    /// 调用方只渲/识别缺页，再按页号合并渲染（见 `pdf::merge_hybrid`）。
+    Hybrid { text: DocIR, missing_pages: Vec<u32> },
+}
+
 /// 宽间隙阈值（页宽比例）：行内相邻 item 的 gap > 1% 页宽视为列间隙。
 /// 三处共用同一口径——双列拆行的 x 段分裂、列判定（`clustered_row_split`）、
 /// 表格候选启发式（`page_has_tabular_rows`，行被拆成 >=3 段判为疑似表格）。
@@ -45,22 +55,28 @@ fn no_text_layer(signal: FallbackSignal) -> Result<Option<String>> {
     Ok(Some(String::new()))
 }
 
-/// 文字层 Markdown（P1.8 拆阶段）：提取 → 乱码防护 → 家具剔除 → 行组 →
-/// 表格确认 → DocIR 装配。
+/// 文字层探针（P1.8 拆阶段 + anydoc 0.2.4 缺页上报）。
 ///
-/// 返回 `None` 表示无可用文字层（扫描件/提取失败），调用方回退 OCR。
+/// 返回 `None` = 整文档无可用文字层（扫描件/提取失败/坏字体），调用方整篇转 OCR
+/// （与旧 `text_layer_markdown` 的 `Ok(None)` 完全一致）。
 ///
-/// `pub(crate)`：ADR-0005 候选 2 批处理预分流调用——`BatchConverter` 先逐 doc 试文字层，
-/// 命中（Some）即快速路径出结果；未命中（None）的图片型 PDF 收集到 `ocr_paths`
-/// 进跨文档 `PagePipeline`，与本函数解耦。
-pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertRequest) -> Result<Option<String>> {
+/// 返回 `Some(Complete)` = 旧快速路径，字节一致（golden 守护）。
+/// 返回 `Some(Hybrid)` = 混合文档：文字层只覆盖部分页，`missing_pages`（1 基）
+/// 即旧通路会**静默丢掉**的扫描页，交由调用方按页补 OCR 后合并（不再丢页）。
+///
+/// 缺页判据（两段式，与 anydoc 0.2.4 同思路但用自家文字层复核）：
+/// inspector 深检报 `pages_needing_ocr`（倾向多报：实测 `multipage.pdf` 8/8 页
+/// 全标 scanned，而自家文字层能完整产正文）→ 仅当**本页在文字层 DocIR 里
+/// 没有任何非空区块**时才算真缺页。这样纯文字文档恒为 Complete。
+pub(crate) fn text_layer_probe(path: &Path, opts: &ConvertRequest) -> Result<Option<TextHit>> {
     let items = extract_text_items(path)?;
     // 图片型/扫描件（过滤后 items 空）直接回落 OCR，跳过开销大的 garbled 预检。
     if items.is_empty() {
         // P1.6：空文字层信号（图片型/扫描件）→ 集中决策表裁决（文档级）。
-        return no_text_layer(FallbackSignal::EmptyTextLayer);
+        return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route);
     }
-    if is_garbled_doc(path, &items) {
+    let mut hit = LayerHit::default();
+    if is_garbled_doc(path, &items, &mut hit) {
         return Ok(None);
     }
     let by_page = strip_furniture(items);
@@ -68,24 +84,95 @@ pub(crate) fn text_layer_markdown(path: &Path, opts: &ConvertRequest) -> Result<
     // by_page 为空 → 无可用文字层，回落 OCR（而非 panic）。
     if by_page.is_empty() {
         // P1.6：家具剔除后空层信号 → 集中决策表裁决（文档级）。
-        return no_text_layer(FallbackSignal::EmptyTextLayer);
+        return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route);
     }
     let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
     // P0-2：不 unwrap——防御式回落（无文字层 → 整文档 OCR）而非 panic。
     // P1.6：回退裁决走集中决策表（空层信号，文档级）。
     let last_page = match by_page.keys().next_back() {
         Some(&p) => p,
-        None => return no_text_layer(FallbackSignal::EmptyTextLayer),
+        None => return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route),
     };
     let table_out = confirm_table_pages(path, opts, &by_page, &lines_by_page, &page_w);
     let last_table_md = probe_last_page_table(path, last_page, &page_w, &page_h);
-    let md = assemble_docir(&by_page, &lines_by_page, &page_w, &table_out, last_page, last_table_md.as_deref());
-    if md.is_empty() {
+    // pass 前的文字层 DocIR（混合时与 OCR 页合并后再统一跑 pass，见 pdf::merge_hybrid）
+    let text = build_text_docir(&by_page, &lines_by_page, &page_w, &table_out, last_page, last_table_md.as_deref());
+    if render_of(&text).is_empty() {
         // P1.6：装配输出为空（空层信号，文档级）→ 集中决策表裁决。
-        no_text_layer(FallbackSignal::EmptyTextLayer)
+        no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route)
     } else {
-        Ok(Some(md))
+        let missing = hit.missing_pages(&text);
+        if missing.is_empty() || hybrid_disabled() {
+            Ok(Some(TextHit::Complete(finalize_text_docir(text))))
+        } else {
+            Ok(Some(TextHit::Hybrid { text, missing_pages: missing }))
+        }
     }
+}
+
+/// `ANYDOC_NO_HYBRID=1`：关闭按页混合路由，回到旧行为（缺页静默丢弃、整篇走
+/// 文字层快速路径）。留作 A/B 与故障排查开关。
+fn hybrid_disabled() -> bool {
+    hybrid_disabled_from(std::env::var("ANYDOC_NO_HYBRID").ok().as_deref())
+}
+
+/// 开关语义（纯函数，可单测）：变量**存在即关闭**（不限值），未设置默认开启。
+fn hybrid_disabled_from(v: Option<&str>) -> bool {
+    v.is_some()
+}
+
+/// 只渲染本页（不跑 pass）——用于"文字层是否产出了内容"的空判定。
+fn render_of(doc: &DocIR) -> String {
+    crate::docir::render::render(doc)
+}
+
+/// pass 前 DocIR → 最终 markdown（跨页表合并 + 渲染，与旧通路字节一致）。
+pub(crate) fn finalize_text_docir(mut doc: DocIR) -> String {
+    crate::docir::passes::cross_page_table::run(&mut doc);
+    doc.render()
+}
+
+/// `no_text_layer` 出口 → [`TextHit`]：决策表判回退（`None`）时整文档 OCR；
+/// 判保留文字层时（当前 PDF 文档级决策恒回退，此为防御分支）产退化空文档。
+fn empty_route(o: Option<String>) -> Option<TextHit> {
+    o.map(TextHit::Complete)
+}
+
+/// 深检副产物：inspector 全文档视角的总页数与"需 OCR"页集合（1 基）。
+#[derive(Default)]
+pub(crate) struct LayerHit {
+    page_count: u32,
+    needs_ocr: BTreeSet<u32>,
+}
+
+impl LayerHit {
+    /// 缺页 = inspector 报 needs_ocr ∩ 文字层 DocIR 中无非空内容的页（1 基升序）。
+    ///
+    /// 复核基准是**文字层实际产出**（`text` 里该页号是否有非空段），而不是
+    /// inspector 的抽取长度——多报的页（如 `multipage.pdf` 全部 8 页）在文字层
+    /// 有正文即不算缺页，纯文字文档因此恒空 → Complete → 快速路径行为不变。
+    fn missing_pages(&self, text: &DocIR) -> Vec<u32> {
+        if self.needs_ocr.is_empty() || self.page_count == 0 {
+            return Vec::new();
+        }
+        let mut covered: BTreeSet<u32> = BTreeSet::new();
+        for page in &text.pages {
+            if !page_is_empty(page) {
+                covered.insert(page.page_no);
+            }
+        }
+        (1..=self.page_count)
+            .filter(|p| self.needs_ocr.contains(p) && !covered.contains(p))
+            .collect()
+    }
+}
+
+/// 本页文字层是否没有任何非空区块（Grid/PreRendered 视为有内容）。
+fn page_is_empty(page: &crate::docir::PageIR) -> bool {
+    page.regions.iter().all(|r| match &r.kind {
+        RegionKind::Grid(_) => false,
+        _ => r.text.trim().is_empty(),
+    })
 }
 
 /// 文本提取：pdf-inspector 全文 TextItem + 过滤图片占位符。
@@ -120,7 +207,12 @@ fn extract_text_items(path: &Path) -> Result<Vec<pdf_inspector::TextItem>> {
 ///   峰值），用 mmap 版 `_mem` 零拷贝映射，与末页探针同思路。
 ///
 /// 两级信号均经 [`fallback::decide`]（文档级）集中裁决。
-fn is_garbled_doc(path: &Path, items: &[pdf_inspector::TextItem]) -> bool {
+///
+/// 副产物：深检那次全文档抽取的 `page_count` / `pages_needing_ocr` 回填进
+/// `hit`，供 [`text_layer_probe`] 的缺页判定复用——**不再额外付一次全量抽取**
+/// （anydoc 0.2.4 需两段式，我们的文字层通路本就跑过同一文档，复核基准换成
+/// 自家 DocIR 的实际产出）。
+fn is_garbled_doc(path: &Path, items: &[pdf_inspector::TextItem], hit: &mut LayerHit) -> bool {
     // 浅检
     if looks_garbled(items)
         && fallback::decide(&[FallbackSignal::GarbledShallow], fallback::Scope::Doc).is_ocr()
@@ -138,6 +230,8 @@ fn is_garbled_doc(path: &Path, items: &[pdf_inspector::TextItem]) -> bool {
         return false; // panic/提取失败 → 无法预检，继续文字层
     };
     let total = extraction.pages.len();
+    hit.page_count = total as u32;
+    hit.needs_ocr = extraction.pages_needing_ocr.iter().copied().collect();
     let garbled = extraction
         .ocr_reasons_by_page
         .iter()
@@ -284,17 +378,18 @@ fn confirm_table_pages(
 }
 
 /// 输出装配（P1.5 DocIR producer）：文字层网格表（免 OCR、跨页合并）+
-/// OCR 确认表 + 普通行，页序混排。跨页 Grid 合并由
-/// `docir::passes::cross_page_table` 统一承担，渲染由 `docir::render` 统一
-/// 消费（与旧 emitter 通路字节一致，golden 守护）。
-fn assemble_docir(
+/// OCR 确认表 + 普通行，页序混排。**返回 pass 前的 DocIR**——混合路由
+/// （anydoc 0.2.4 缺页上报）要把 OCR 页按页号并进同一文档后再统一跑
+/// `cross_page_table` pass；纯文字文档由 [`finalize_text_hit`] 走 pass +
+/// 渲染，与旧通路字节一致（golden 守护）。
+fn build_text_docir(
     by_page: &BTreeMap<u32, Vec<pdf_inspector::TextItem>>,
     lines_by_page: &BTreeMap<u32, Vec<pdf_inspector::extractor::TextLine>>,
     page_w_map: &BTreeMap<u32, f32>,
     table_out: &BTreeMap<u32, String>,
     last_page: u32,
     last_table_md: Option<&str>,
-) -> String {
+) -> DocIR {
     let mut doc = DocIR::default();
     for (page, page_items) in by_page.iter() {
         let (Some(&page_w), Some(full_lines)) = (page_w_map.get(page), lines_by_page.get(page))
@@ -342,8 +437,7 @@ fn assemble_docir(
         }
         doc.push_page(*page, PageSource::TextLayerPdf, out);
     }
-    crate::docir::passes::cross_page_table::run(&mut doc);
-    doc.render()
+    doc
 }
 
 /// 普通页正文行构建：列间隙检测 + 双列拆行 → 阅读顺序 → 标题前缀 → Body 区块。
@@ -663,7 +757,12 @@ fn push_line_region(
 
 #[cfg(test)]
 mod tests {
-    use super::{clustered_row_split, is_repeated_furniture, looks_garbled};
+    use super::{
+        LayerHit, clustered_row_split, hybrid_disabled_from, is_repeated_furniture, looks_garbled,
+    };
+    use crate::docir::{DocIR, PageSource};
+    use crate::region::{Region, RegionKind};
+    use crate::table_grid::{TableCell, TableGrid};
     use pdf_inspector::TextItem;
     use pdf_inspector::extractor::TextLine;
 
@@ -960,5 +1059,95 @@ mod tests {
         let mut lines = list_rows;
         lines.extend(body_rows);
         assert_eq!(clustered_row_split(&lines, PAGE_W), None);
+    }
+
+    // ── 混合路由（anydoc 0.2.4 缺页上报）：缺页判定单测 ──
+
+    fn cell(t: &str) -> TableCell {
+        TableCell { text: t.into(), x: 0.0, y: 0.0, h: 10.0 }
+    }
+
+    fn body(text: &str) -> Region {
+        Region::new(0.0, 100.0, 0.0, 10.0, text)
+    }
+
+    fn hit_with(page_count: u32, needs_ocr: &[u32]) -> LayerHit {
+        LayerHit { page_count, needs_ocr: needs_ocr.iter().copied().collect() }
+    }
+
+    /// inspector 多报（实测 `multipage.pdf` 8/8 页全标 scanned）但文字层每页有
+    /// 正文 → 缺页恒空 → Complete，纯文字文档行为不变（golden 守护的关键）。
+    #[test]
+    fn over_reported_needs_ocr_rejected_by_text_coverage() {
+        let doc = DocIR {
+            pages: (1..=3)
+                .map(|p| crate::docir::PageIR {
+                    page_no: p,
+                    regions: vec![body(&format!("第{p}页正文"))],
+                    source: PageSource::TextLayerPdf,
+                })
+                .collect(),
+        };
+        let h = hit_with(3, &[1, 2, 3]);
+        assert_eq!(h.missing_pages(&doc), Vec::<u32>::new());
+    }
+
+    /// 真缺页：needs_ocr ∩ 文字层该页无非空内容。空白页与"仅空格"页均算缺；
+    /// 越界页号（inspector 报错页 > 实际页数）忽略；返回 1 基升序。
+    #[test]
+    fn missing_pages_is_intersection_of_needs_ocr_and_empty_pages() {
+        let doc = DocIR {
+            pages: vec![
+                crate::docir::PageIR { page_no: 1, regions: vec![body("有正文")], source: PageSource::TextLayerPdf },
+                // 页 2 文字层完全无条目（扫描件页）
+                crate::docir::PageIR { page_no: 3, regions: vec![body("   ")], source: PageSource::TextLayerPdf },
+                crate::docir::PageIR { page_no: 4, regions: vec![body("又有正文")], source: PageSource::TextLayerPdf },
+            ],
+        };
+        let h = hit_with(4, &[2, 3, 4, 9]);
+        assert_eq!(h.missing_pages(&doc), vec![2, 3]);
+    }
+
+    /// Grid 区块即使 text 为空也算有内容（表格页不得误判缺页）。
+    #[test]
+    fn grid_region_counts_as_covered() {
+        let grid = TableGrid {
+            cols: 2,
+            header: vec![],
+            rows: vec![vec![cell("a"), cell("b")]],
+            has_header: false,
+        };
+        let doc = DocIR {
+            pages: vec![crate::docir::PageIR {
+                page_no: 1,
+                regions: vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
+                    .with_kind(RegionKind::Grid(grid))],
+                source: PageSource::TextLayerPdf,
+            }],
+        };
+        let h = hit_with(1, &[1]);
+        assert!(h.missing_pages(&doc).is_empty());
+    }
+
+    /// 无元数据（page_count=0 / needs_ocr 空）→ 恒不缺页。
+    #[test]
+    fn missing_pages_without_metadata_is_empty() {
+        let doc = DocIR {
+            pages: vec![crate::docir::PageIR {
+                page_no: 1,
+                regions: vec![],
+                source: PageSource::TextLayerPdf,
+            }],
+        };
+        assert!(hit_with(0, &[1]).missing_pages(&doc).is_empty());
+        assert!(hit_with(1, &[]).missing_pages(&doc).is_empty());
+    }
+
+    /// 回退开关语义：变量存在即关闭（不限值）；未设置默认开启混合路由。
+    #[test]
+    fn hybrid_kill_switch_enabled_by_default() {
+        assert!(!hybrid_disabled_from(None));
+        assert!(hybrid_disabled_from(Some("1")));
+        assert!(hybrid_disabled_from(Some("")));
     }
 }

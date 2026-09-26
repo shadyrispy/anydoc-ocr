@@ -178,6 +178,7 @@ fn error_hint(e: &ConvertError) -> &'static str {
         ErrorKind::MissingPart => "文档结构不完整（缺必需部件），可能源文件生成不完整",
         ErrorKind::ResourceLimit => "超出安全限制（可能解压炸弹或文档过大）",
         ErrorKind::Unsupported => "格式不支持",
+        ErrorKind::NeedsOcr => "存在无法从文字层恢复的页（扫描/乱码），按页补 OCR 未取回结果 — 可尝试 --pdf-force-ocr 整篇 OCR",
         ErrorKind::Io => "文件读写错误（路径不存在/权限不足/磁盘满）",
         _ => "未知错误，详见错误详情",
     }

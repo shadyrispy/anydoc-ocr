@@ -102,27 +102,6 @@ fn try_extract_page_image(page: &PdfPage, dpi: f32) -> Option<image::RgbImage> {
     result.map(|img| downscale_to_dpi(img, dpi))
 }
 
-/// ADR-0005 候选 2：跨文档渲染闭包——在专属线程内逐 doc open + 逐页产出
-/// ((doc_idx, page_idx), img) 入 channel。文档边界不停顿，OCR 池跨文档消费。
-///
-/// 单文档调用方传 `vec![path]`（doc_idx 恒 0）；多文档批处理传完整 paths 列表，
-/// doc_idx 与 paths 索引一一对应。
-///
-/// 单个 PDF 打开失败 → 告警跳过该 doc（其页缺失，调用方容错），不中断整批。
-///
-/// ADR-0006：错误类型 `ConvertError`，渲染失败归 `Malformed { part: "page N", detail }`。
-/// ADR-0008：优先直提 image object（`try_extract_page_image`），失败回退整页渲染。
-pub fn render_cross_doc_fn(
-    paths: Vec<std::path::PathBuf>,
-    dpi: f32,
-) -> impl FnOnce(
-    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
-) -> crate::error::Result<()>
-+ Send
-+ 'static {
-    render_docs_filtered(paths, dpi, Box::new(|_, _| true))
-}
-
 /// 按页子集渲染（T2 按页重试用）：只渲染 `subset` 指定的 `(doc_idx, page_idx)` 页，
 /// 供更高档局部重跑失败页。复用与全量渲染同一核心循环（`render_docs_filtered`），
 /// 保证直提 image object / 回退光栅化 / 错误结构化等语义一致。
@@ -139,8 +118,28 @@ pub fn render_cross_doc_subset_fn(
     render_docs_filtered(paths, dpi, Box::new(move |d, p| keep.contains(&(d, p))))
 }
 
+/// 混合路由（anydoc 0.2.4 缺页上报）渲染闭包：按 doc 分别决定渲染范围——
+/// `keep[doc_idx] == None` 全页（图片型文档），`Some(pages)` 仅该文档的缺页
+/// （0 基页号）。与全量/子集渲染共用同一核心循环，保证渲染语义完全一致。
+pub fn render_cross_doc_pages_fn(
+    paths: Vec<std::path::PathBuf>,
+    dpi: f32,
+    keep: Vec<Option<std::collections::BTreeSet<usize>>>,
+) -> impl FnOnce(
+    std::sync::mpsc::SyncSender<super::super::pipeline::RenderItem>,
+) -> crate::error::Result<()>
++ Send
++ 'static {
+    render_docs_filtered(
+        paths,
+        dpi,
+        Box::new(move |d, p| keep.get(d).map_or(false, |k| k.as_ref().map_or(true, |s| s.contains(&p)))),
+    )
+}
+
 /// 渲染核心：逐 doc open + 逐页渲染，`keep(doc_idx, page_idx)` 为 false 的页跳过。
-/// 被 [`render_cross_doc_fn`]（全量）与 [`render_cross_doc_subset_fn`]（子集）共用，
+/// 被 [`render_cross_doc_pages_fn`]（按 doc 页集：全量/混合缺页）与
+/// [`render_cross_doc_subset_fn`]（按页子集）共用，
 /// 保证两种路径的 PDFium 绑定、直提/光栅化回退、错误结构化完全一致。
 fn render_docs_filtered(
     paths: Vec<std::path::PathBuf>,

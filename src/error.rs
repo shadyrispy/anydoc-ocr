@@ -35,11 +35,16 @@ pub enum ErrorKind {
     /// 运行时依赖失败（ORT/pdfium/模型），非文档本身问题。
     /// ADR-0006 §3 曾被迫归 `Malformed`（external type 不能加变体），P1.9 拆出。
     Runtime,
+    /// 混合文档中"需要 OCR 的页"补齐失败（anydoc 0.2.4 NeedsOcr 语义：宁报
+    /// 错，绝不产出缺页结果）。默认路由会自动 OCR 缺页，本错误仅在 OCR 兜底
+    /// 仍拿不到该页时出现（如渲染失败），或 `ANYDOC_NO_HYBRID=1` 关闭混合
+    /// 路由时由 anydoc 兜底通路透传。
+    NeedsOcr,
 }
 
 impl ErrorKind {
     /// 稳定字符串：`io` / `encrypted` / `malformed` / `missingPart` /
-    /// `resourceLimit` / `unsupported` / `runtime`。
+    /// `resourceLimit` / `unsupported` / `runtime` / `needsOcr`。
     pub fn code(self) -> &'static str {
         match self {
             ErrorKind::Io => "io",
@@ -49,6 +54,9 @@ impl ErrorKind {
             ErrorKind::ResourceLimit => "resourceLimit",
             ErrorKind::Unsupported => "unsupported",
             ErrorKind::Runtime => "runtime",
+            // 与 anydoc 0.2.4 `ConvertError::NeedsOcr::code()` 同名——绑定层
+            // （error.code）跨两库一致，调用方一套分支即可。
+            ErrorKind::NeedsOcr => "needsOcr",
         }
     }
 }
@@ -63,6 +71,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::ResourceLimit => "resource limit exceeded",
             ErrorKind::Unsupported => "unsupported",
             ErrorKind::Runtime => "runtime",
+            ErrorKind::NeedsOcr => "needs OCR",
         })
     }
 }
@@ -176,6 +185,9 @@ impl From<anydoc::ConvertError> for ConvertError {
             anydoc::ConvertError::ResourceLimit { .. } => ErrorKind::ResourceLimit,
             anydoc::ConvertError::MissingPart { .. } => ErrorKind::MissingPart,
             anydoc::ConvertError::Io(_) => ErrorKind::Io,
+            // anydoc 0.2.4：混合 PDF 的扫描页上报（不静默丢页）。默认混合路由
+            // 已在自家通路内消化，此处仅 `ANYDOC_NO_HYBRID=1` / 兜底通路可达。
+            anydoc::ConvertError::NeedsOcr { .. } => ErrorKind::NeedsOcr,
             // `#[non_exhaustive]`：上游未来新增变体时兜底（原始 Display 已存 detail 不丢信息）
             _ => ErrorKind::Malformed,
         };
@@ -279,6 +291,7 @@ mod tests {
         assert_eq!(ErrorKind::ResourceLimit.code(), "resourceLimit");
         assert_eq!(ErrorKind::Unsupported.code(), "unsupported");
         assert_eq!(ErrorKind::Runtime.code(), "runtime");
+        assert_eq!(ErrorKind::NeedsOcr.code(), "needsOcr");
     }
 
     #[test]

@@ -135,7 +135,9 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 |------|------|
 | `OAR_HOME` | oar-ocr 模型缓存/下载根目录（首用自动从 ModelScope 下载） |
 | `ANYDOC_MODEL_DIR` | 本地 ONNX 模型目录（绝对路径）。设置后从该目录**直载**，不走 `$OAR_HOME` 缓存/下载，用于离线/内网；缺某模型回退裸名下载。注意不能把自备模型放 `$OAR_HOME` 用裸名（会命中缓存分支被 size/hash 不符静默重下覆盖） |
-| `ANYDOC_ORT_INTRA_THREADS` | 强制覆盖进程级 ORT intra-op 线程数（调试用）。必须在任何 ONNX session 创建前生效 |
+| `ANYDOC_ORT_INTRA_THREADS` | 强制覆盖进程级 ORT intra-op 线程数（调试用）。必须在任何 ONNX session 创建前生效。未设置时自动：池=1 → 全核；池>1 → `核心数/池`（防并发 run 互抢） |
+| `ANYDOC_ORT_SESSION_POOL` | A1：每模型加载 N 份 ORT session（1–8，默认 1=上游行为）。>1 时引擎放开页级并发推理（pipeline 多消费者 + 轮转分池），4 核实测 2 页/批并发约 −20% 端到端耗时；内存每池 +模型权重组。CPU-only 专用（CUDA/TensorRT 恒回落 1） |
+| `ANYDOC_NO_HYBRID` | 存在即关闭 PDF 混合路由（B）：有文字层的 PDF 不再对缺页自动补 OCR，回到旧行为（文字层直出，扫描件页可能缺失），用于 A/B 回滚 |
 | `ANYDOC_REC_BATCH` | 覆盖 rec 行批大小（上游默认 tiny=16 / small+medium=4；默认不启用） |
 | `ANYDOC_TIMINGS` | 存在即输出分阶段计时到 stderr |
 | `ANYDOC_DEBUG_GFM` | 存在即启用 GFM 适配器调试输出 |
