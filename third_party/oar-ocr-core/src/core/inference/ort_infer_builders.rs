@@ -4,6 +4,37 @@ use crate::core::inference::ModelSource;
 use ort::logging::LogLevel;
 use std::sync::Mutex;
 
+/// Session 池大小（anydoc-orch A1）：`ANYDOC_ORT_SESSION_POOL` 显式设置时加载
+/// N 份同模型 session（1..=8），`predict` 并发经轮转分池消除单 session 锁 convoy；
+/// 未设置 = 1（上游行为，零变化）。
+///
+/// 内存代价：每 session 持有独立权重 + arena。tiny/small 档全模型组约 30–100 MB
+/// 权重，×池 4 ≈ ≤400 MB，8 GB 预算可承受；formula/大档部署请先实测再开池。
+/// CUDA EP 下保持 1：onnxruntime#4829（FormulaNet Loop 串扰）要求 CUDA 工作
+/// 驱动级串行，多 session 不改变该约束。
+fn session_pool_size(common_cfg: Option<&crate::core::config::OrtSessionConfig>) -> usize {
+    let want: Option<usize> = std::env::var("ANYDOC_ORT_SESSION_POOL")
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+    let Some(n) = want else { return 1 };
+    let cuda = common_cfg
+        .and_then(|c| c.execution_providers.as_ref())
+        .is_some_and(|eps| {
+            eps.iter().any(|ep| {
+                matches!(
+                    ep,
+                    crate::core::config::OrtExecutionProvider::CUDA { .. }
+                        | crate::core::config::OrtExecutionProvider::TensorRT { .. }
+                )
+            })
+        });
+    if cuda {
+        1
+    } else {
+        n.clamp(1, 8)
+    }
+}
+
 impl OrtInfer {
     /// First declared input name of the loaded session.
     ///
@@ -35,6 +66,7 @@ impl OrtInfer {
             input_name.map(str::to_string).unwrap_or_else(|| Self::first_input_name(&session));
 
         Ok(OrtInfer {
+            // 此路径无 OrtSessionConfig（不读 EP 配置），恒单 session——保持上游行为。
             sessions: vec![Mutex::new(session)],
             next_idx: std::sync::atomic::AtomicUsize::new(0),
             input_name: resolved_input_name,
@@ -59,27 +91,54 @@ impl OrtInfer {
         // subsequent run unless CUDA work is serialized at the driver level.
         Self::ensure_cuda_launch_blocking_if_needed(common);
 
-        let session = session::load_session_with(
-            source.clone(),
-            |builder| {
-                if let Some(cfg) = &common.ort_session {
-                    Self::apply_ort_config(builder, cfg)
+        let pool = session_pool_size(common.ort_session.as_ref());
+        let mut sessions = Vec::with_capacity(pool);
+        let mut first_input_name: Option<String> = None;
+        for i in 0..pool {
+            let session = session::load_session_with(
+                source.clone(),
+                |builder| {
+                    if let Some(cfg) = &common.ort_session {
+                        Self::apply_ort_config(builder, cfg)
+                    } else {
+                        Ok(builder.with_log_level(LogLevel::Error)?)
+                    }
+                },
+                Some("check device/EP configuration and model file"),
+            )
+            .map_err(|e| {
+                // 池中途失败：报哪个 session 建不起来（1 = 首个，与原行为一致）
+                if i == 0 {
+                    e
                 } else {
-                    Ok(builder.with_log_level(LogLevel::Error)?)
+                    OCRError::InvalidInput {
+                        message: format!(
+                            "Model '{}': failed to build session {}/{} in pool: {e}",
+                            common.model_name.as_deref().unwrap_or("unknown_model"),
+                            i + 1,
+                            pool
+                        ),
+                    }
                 }
-            },
-            Some("check device/EP configuration and model file"),
-        )?;
+            })?;
+            if i == 0 {
+                first_input_name = Some(Self::first_input_name(&session));
+            }
+            sessions.push(Mutex::new(session));
+        }
 
         let model_name = common
             .model_name
             .clone()
             .unwrap_or_else(|| "unknown_model".to_string());
-        let resolved_input_name =
-            input_name.map(str::to_string).unwrap_or_else(|| Self::first_input_name(&session));
+        let resolved_input_name = match (input_name, first_input_name) {
+            (Some(n), _) => n.to_string(),
+            (None, Some(detected)) => detected,
+            (None, None) => "x".to_string(), // pool 恒 >=1，理论不可达
+        };
 
         Ok(OrtInfer {
-            sessions: vec![Mutex::new(session)],
+            sessions,
             next_idx: std::sync::atomic::AtomicUsize::new(0),
             input_name: resolved_input_name,
             model_path: source.display_path(),

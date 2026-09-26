@@ -69,7 +69,7 @@ pub(crate) fn collect_text_lines(page: &PageObject) -> Vec<OfdTextLine> {
     let mut out = Vec::new();
     if let Some(content) = &page.content {
         for layer in &content.layers {
-            collect_text_blocks(&layer.objects, &mut out);
+            collect_text_blocks(&layer.objects, &mut out, 0);
         }
     }
     out
@@ -98,7 +98,16 @@ fn ctm_is_watermark_angle(ctm: &[f64]) -> bool {
     nearest_axis_dist > TOL + 1e-9
 }
 
-fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>) {
+/// OFD `PageBlock::Block` 嵌套层数上限：OFD 是 zip+XML，深嵌套 Group 可由
+/// 构造文件免费获得；无界递归（本文件两处 + `render::collect_image_objects`）
+/// 会栈溢出崩掉整个进程（转批处理时即全批）。合法文档的分组深度远小于此
+/// （规范无显式上限，实测公文 ≤5），超限即停止下探该子树。
+pub(crate) const MAX_BLOCK_DEPTH: usize = 64;
+
+fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>, depth: usize) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for b in blocks {
         match b {
             PageBlock::Text(t) => {
@@ -155,7 +164,7 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>) {
                     });
                 }
             }
-            PageBlock::Block(g) => collect_text_blocks(&g.objects, out),
+            PageBlock::Block(g) => collect_text_blocks(&g.objects, out, depth + 1),
             _ => {}
         }
     }
@@ -166,17 +175,20 @@ pub(crate) fn count_images(page: &PageObject) -> usize {
     let mut n = 0;
     if let Some(content) = &page.content {
         for layer in &content.layers {
-            count_image_blocks(&layer.objects, &mut n);
+            count_image_blocks(&layer.objects, &mut n, 0);
         }
     }
     n
 }
 
-fn count_image_blocks(blocks: &[PageBlock], n: &mut usize) {
+fn count_image_blocks(blocks: &[PageBlock], n: &mut usize, depth: usize) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for b in blocks {
         match b {
             PageBlock::Image(_) => *n += 1,
-            PageBlock::Block(g) => count_image_blocks(&g.objects, n),
+            PageBlock::Block(g) => count_image_blocks(&g.objects, n, depth + 1),
             _ => {}
         }
     }
@@ -275,5 +287,53 @@ mod tests {
         assert_eq!(out[0], "## 一、总则");
         assert_eq!(out[1], "这是正文句子。");
         assert_eq!(out[2], "# 已带前缀的标题");
+    }
+
+    /// 造一页：单个 leaf 区块外包 `depth` 层 `PageBlock::Block`。
+    fn nested_page(depth: usize, leaf: PageBlock) -> PageObject {
+        use ofd_core::model::graphics::PageBlockGroup;
+        use ofd_core::model::page::{Content, CtLayer};
+        let mut block = leaf;
+        for _ in 0..depth {
+            block = PageBlock::Block(PageBlockGroup {
+                id: None,
+                objects: vec![block],
+            });
+        }
+        PageObject {
+            content: Some(Content {
+                layers: vec![CtLayer {
+                    objects: vec![block],
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn text_leaf(s: &str) -> PageBlock {
+        use ofd_core::model::graphics::{TextCode, TextObject};
+        PageBlock::Text(TextObject {
+            text_codes: vec![TextCode {
+                text: Some(s.to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn block_depth_cap_bounds_recursion() {
+        use ofd_core::model::graphics::ImageObject;
+        // 合法深度（≤MAX_BLOCK_DEPTH）照常收集
+        let ok = nested_page(MAX_BLOCK_DEPTH, text_leaf("嵌套正文"));
+        assert_eq!(collect_text_lines(&ok).len(), 1);
+        // 超限子树整体停止下探：不收集、不 panic、不栈溢出
+        let deep = nested_page(MAX_BLOCK_DEPTH + 50, text_leaf("超限正文"));
+        assert!(collect_text_lines(&deep).is_empty());
+        // count_images 同界
+        let img = PageBlock::Image(ImageObject::default());
+        assert_eq!(count_images(&nested_page(10, img.clone())), 1);
+        assert_eq!(count_images(&nested_page(MAX_BLOCK_DEPTH + 50, img)), 0);
     }
 }

@@ -13,6 +13,10 @@
 //! 且实测高并发死锁（见 `ocr_engine::OcrEngine::infer_lock` 文档）。真并行来自：
 //! 渲染线程与消费线程的重叠 + ORT intra-op 线程池在单次 run 内的 batch 并行。
 //!
+//! A1（`ANYDOC_ORT_SESSION_POOL>1`）：core 每模型建 N session 池后，convoy 前提
+//! 消除，消费侧放开为 `threads` 个共享 channel 的消费者（`engine.concurrent_infer()`
+//! 为真时）；默认（池=1）仍严格单消费者——golden 行为与串行时代逐字节一致。
+//!
 //! 深模块 [`PagePipeline`]：拥有 render 闭包 + 背压 + OCR 消费，暴露 `run()` 返回
 //! 按页序的结果。删除测试——删掉后 channel/spawn/回填逻辑散到 PDF/OFD 两调用方，
 //! 复杂度重现 → earning its keep。
@@ -46,6 +50,17 @@ pub(crate) type RenderItem =
 /// 不跨线程）。
 pub trait RenderFn: FnOnce(mpsc::SyncSender<RenderItem>) -> Result<()> + Send + 'static {}
 impl<F: FnOnce(mpsc::SyncSender<RenderItem>) -> Result<()> + Send + 'static> RenderFn for F {}
+
+/// A1 多消费者共享的收集状态：按 idx 归位的三张表（消费者线程并发写入，
+/// 全部 join 后由 `run` 取出）。单消费者路径同样经此结构（无锁竞争开销可忽略），
+/// 保证两种模式的收集语义完全一致。
+struct ConsumerState {
+    results: std::sync::Mutex<
+        std::collections::BTreeMap<(usize, usize), Result<oar_ocr::domain::structure::StructureResult>>,
+    >,
+    render_errors: std::sync::Mutex<std::collections::BTreeMap<(usize, usize), ConvertError>>,
+    page_dims: std::sync::Mutex<std::collections::BTreeMap<(usize, usize), (u32, u32)>>,
+}
 
 /// render↔OCR 流水线：渲染线程 + rayon OCR 池 + 有界背压。
 ///
@@ -112,51 +127,102 @@ impl<F: RenderFn> PagePipeline<F> {
             .spawn(move || render_fn(tx))
             .map_err(|e| runtime(Stage::Render, None, format!("启动渲染线程失败: {e}")))?;
 
-        // OCR 消费：P0-1b 后为**单消费者**循环——oar 每模型单 session，页级并发
-        // 只有锁 convoy（且有死锁实证，见 `ocr_engine::OcrEngine::infer_lock`
+        // OCR 消费：默认（session 池=1）为**单消费者**循环——oar 每模型单 session，
+        // 页级并发只有锁 convoy（且有死锁实证，见 `ocr_engine::OcrEngine::infer_lock`
         // 文档），`predict_one` 内部已引擎级串行化。真并行 = 渲染线程（生产者）
         // 与本消费线程重叠 + ORT intra-op 在单次 run 内的 batch 并行。
         //
+        // A1（池>1，`engine.concurrent_infer()`）：起 `threads` 个消费者共享同一
+        // channel 接收端（`Receiver` 非 Clone → `Arc<Mutex<Receiver>>`：recv 阻塞
+        // 在锁上排队取件，推理本体在锁外并发——与"每模型 N session 池"配合即
+        // 真页级并行）。结果统一按 idx 收集，最终升序输出——每页推理与消费者
+        // 数无关，输出与单消费者逐字节一致。
+        //
         // 背压语义不变：channel bound = threads×BOUND_MULT，OCR 忙时渲染线程
-        // 在 `send` 上阻塞，峰值内存 ~2×页图。
-        let mut results: std::collections::BTreeMap<
-            (usize, usize),
-            Result<oar_ocr::domain::structure::StructureResult>,
-        > = std::collections::BTreeMap::new();
-        // 页面原始像素尺寸（回归 dump 单位化用；仅 ANYDOC_DUMP_DIR 时收集）
+        // 在 `send` 上阻塞，峰值内存 ~(2+消费者数)×页图。
         let dump_on = std::env::var("ANYDOC_DUMP_DIR")
             .ok()
             .filter(|s| !s.is_empty())
             .is_some();
-        let mut page_dims: std::collections::BTreeMap<(usize, usize), (u32, u32)> =
-            std::collections::BTreeMap::new();
-        // 渲染失败（单页 / 整文档）的错误，按 idx 收集供调用方回填。
-        let mut render_errors: std::collections::BTreeMap<(usize, usize), ConvertError> =
-            std::collections::BTreeMap::new();
-        let engine = &self.engine;
-        let timings = self.timings.as_deref();
-        while let Ok(item) = rx.recv() {
-            let (idx, img) = match item {
-                Ok((idx, img)) => (idx, img),
-                Err((idx, e)) => {
-                    render_errors.insert(idx, e);
-                    continue;
-                }
-            };
-            if dump_on {
-                page_dims.insert(idx, (img.width(), img.height()));
-            }
-            // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
-            let res = engine.predict_one(img, idx.0, idx.1, timings);
-            results.insert(idx, res);
+        let consumers = if self.engine.concurrent_infer() { self.threads } else { 1 };
+        let shared = Arc::new(ConsumerState {
+            results: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            render_errors: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            page_dims: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        });
+        let rx = Arc::new(std::sync::Mutex::new(rx));
+        let mut handles = Vec::with_capacity(consumers);
+        for _ in 0..consumers {
+            let rx = Arc::clone(&rx);
+            let engine = Arc::clone(&self.engine);
+            let state = Arc::clone(&shared);
+            let timings = self.timings.clone();
+            handles.push(
+                thread::Builder::new()
+                    .name("anydoc-ocr".into())
+                    .spawn(move || loop {
+                        // 取件：单消费者 fast path 直接 recv（无锁竞争）；多消费者
+                        // 经 Mutex 排队。recv Err = 渲染端全部 drop → 收工。
+                        let item = match rx.try_lock() {
+                            Ok(g) => match g.recv() {
+                                Ok(item) => item,
+                                Err(_) => return,
+                            },
+                            // 别的消费者在取件：本次让位轮询（有界，见下）
+                            Err(_) => {
+                                std::thread::yield_now();
+                                match rx.lock().unwrap().try_recv() {
+                                    Ok(item) => item,
+                                    Err(mpsc::TryRecvError::Empty) => continue,
+                                    Err(mpsc::TryRecvError::Disconnected) => return,
+                                }
+                            }
+                        };
+                        let (idx, img) = match item {
+                            Ok((idx, img)) => (idx, img),
+                            Err((idx, e)) => {
+                                // 消费者侧统一容忍中毒：某线程 panic 后其余消费者
+                                // 继续把已产出结果收完，错误在收尾处确定性上抛
+                                // （与下方 into_inner 收尾一致），不搞级联二次 panic。
+                                state.render_errors.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, e);
+                                continue;
+                            }
+                        };
+                        if dump_on {
+                            let dims = (img.width(), img.height());
+                            state.page_dims.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, dims);
+                        }
+                        // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
+                        let res = engine.predict_one(img, idx.0, idx.1, timings.as_deref());
+                        state
+                            .results
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(idx, res);
+                    })
+                    .map_err(|e| runtime(Stage::Ocr, None, format!("启动 OCR 线程失败: {e}")))?,
+            );
         }
+        // 消费者线程各持 Clone 的 Arc<Mutex<Receiver>>；主线程释放自己的两份
+        // 引用，渲染线程 drop(tx) 后 recv 得 Disconnected，全体自然收尾。
+        drop(rx);
 
-        // 等渲染线程结束
-        match render_handle.join() {
+        // 等渲染线程结束（先 join 渲染再 join 消费者：渲染 Err 也要让消费者收工）
+        let render_result = render_handle.join();
+        for h in handles {
+            let _ = h.join();
+        }
+        match render_result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e), // render_fn 返回致命错误
             Err(e) => return Err(runtime(Stage::Render, None, format!("渲染线程 panic: {e:?}"))),
         }
+
+        let ConsumerState { results, render_errors, page_dims } = Arc::try_unwrap(shared)
+            .unwrap_or_else(|_| panic!("pipeline 状态共享计数异常（消费者线程未全部退出）"));
+        let results = results.into_inner().unwrap_or_else(|p| p.into_inner());
+        let render_errors = render_errors.into_inner().unwrap_or_else(|p| p.into_inner());
+        let page_dims = page_dims.into_inner().unwrap_or_else(|p| p.into_inner());
 
         // 收集按 (doc_idx, page_idx) 升序结果
         let mut out = Vec::with_capacity(results.len());

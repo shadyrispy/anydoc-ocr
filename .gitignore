@@ -13,6 +13,17 @@ third_party/dl/
 /fonts
 # 真实公文样本体积大，不入库；tests/samples 生成样本保留
 /tests/real_samples
+# MinerU 回归对照产物（36MB 输出/中间件），本地存档不入库
+/compare/
+# 根目录回归 scratch：真实样本 PDF 与其转换/对照 md（基线一律进 tests/golden）
+/*_sample.pdf
+/*_orig.md
+/*_out.md
+/*_small.md
+# agent 会话产物（设计稿导出）
+/.claude/
+# 运行/调试日志
+*.log
 # 一次性实验脚本（INT8 量化探针、压测、加固笔记）；本地存档，不入库
 /.scratch
 # ADR/架构文档本地维护，不入库

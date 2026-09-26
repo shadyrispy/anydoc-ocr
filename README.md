@@ -33,7 +33,7 @@ OCR 管线：版面（layout）→ 文本检测（det）→ 文本识别（rec�
 
 ## 快速开始
 
-依赖预编译原生库（ONNX Runtime 1.23.2、PDFium）与 Rust ≥ 1.95，先放库再构建：
+依赖预编译原生库（ONNX Runtime 1.28.2、PDFium）与 Rust ≥ 1.95，先放库再构建：
 
 ```bash
 # 1) 把预编译库放到 third_party/ 对应架构目录（见「构建」节）
@@ -136,8 +136,12 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 | `OAR_HOME` | oar-ocr 模型缓存/下载根目录（首用自动从 ModelScope 下载） |
 | `ANYDOC_MODEL_DIR` | 本地 ONNX 模型目录（绝对路径）。设置后从该目录**直载**，不走 `$OAR_HOME` 缓存/下载，用于离线/内网；缺某模型回退裸名下载。注意不能把自备模型放 `$OAR_HOME` 用裸名（会命中缓存分支被 size/hash 不符静默重下覆盖） |
 | `ANYDOC_ORT_INTRA_THREADS` | 强制覆盖进程级 ORT intra-op 线程数（调试用）。必须在任何 ONNX session 创建前生效。未设置时自动：池=1 → 全核；池>1 → `核心数/池`（防并发 run 互抢） |
-| `ANYDOC_ORT_SESSION_POOL` | A1：每模型加载 N 份 ORT session（1–8，默认 1=上游行为）。>1 时引擎放开页级并发推理（pipeline 多消费者 + 轮转分池），4 核实测 2 页/批并发约 −20% 端到端耗时；内存每池 +模型权重组。CPU-only 专用（CUDA/TensorRT 恒回落 1） |
+| `ANYDOC_ORT_SESSION_POOL` | A1：每模型加载 N 份 ORT session（1–8，默认 1=上游行为）。>1 时引擎放开页级并发推理（pipeline 多消费者 + 轮转分池）；4 核实测（2×24 页批，t=4）wall −20~30%，峰值 RSS +约 0.8GB（每 session 独立 arena），输出逐字节确定一致。CPU-only 专用（CUDA/TensorRT 恒回落 1） |
 | `ANYDOC_NO_HYBRID` | 存在即关闭 PDF 混合路由（B）：有文字层的 PDF 不再对缺页自动补 OCR，回到旧行为（文字层直出，扫描件页可能缺失），用于 A/B 回滚 |
+| `ANYDOC_NO_RAW_EXTRACT` | 存在即禁用 ADR-0008 单图满页直提，扫描件强制走 PDFium 整页光栅化（MinerU 回归对齐用：低分辨率内嵌图也被放大到目标 DPI 网格） |
+| `ANYDOC_RENDER_EDGE_CAP` | 整页渲染长边上限（px，>0 生效；默认不限）。超限时整体降 scale，对齐 docvortex/MinerU 3500px 像素网格（MinerU 回归用） |
+| `ANYDOC_RENDER_TRACE` | 存在即逐页打印渲染路径（直提 / 回退整页渲染）到 stderr，排查 ADR-0008 直提命中用 |
+| `ANYDOC_DUMP_DIR` | 目录路径：存在即逐页落 StructureResult + 页像素尺寸 JSON，供 MinerU 框级 IoU / 阅读顺序对比 |
 | `ANYDOC_REC_BATCH` | 覆盖 rec 行批大小（上游默认 tiny=16 / small+medium=4；默认不启用） |
 | `ANYDOC_TIMINGS` | 存在即输出分阶段计时到 stderr |
 | `ANYDOC_DEBUG_GFM` | 存在即启用 GFM 适配器调试输出 |
@@ -148,7 +152,7 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 
 ## 构建
 
-依赖预编译原生库（ORT 1.23.2、PDFium），先放到 `third_party/` 对应架构目录，再用环境变量指明位置。
+依赖预编译原生库（ORT 1.28.2、PDFium），先放到 `third_party/` 对应架构目录，再用环境变量指明位置。
 
 ### x86_64 本机构建
 
@@ -159,8 +163,8 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 等效手动方式：
 
 ```bash
-export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.23.2/lib
-export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.23.2/include
+export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.28.2/lib
+export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.28.2/include
 export ORT_PREFER_DYNAMIC_LINK=1
 export PDFIUM_LIB_DIR=$PWD/third_party/pdfium/x64/lib
 cargo build --release
@@ -233,11 +237,11 @@ scripts/             build-x64 / build-aarch64 / package-single / install-font
 | 包 | 版本 | 用途 |
 |----|------|------|
 | `oar-ocr` | 0.9.2（锁定） | 版面/OCR/表格结构推理（ONNX Runtime，PaddleOCR 系模型） |
-| `anydoc` | 0.2.3（锁定） | 其他格式兜底（docx 等） |
+| `anydoc` | 0.2.4（锁定） | 其他格式兜底（docx 等） |
 | `ort` | 2.0.0-rc.13（锁定） | 进程级 ORT 线程池 API（与 oar-ocr-core 同版镜像） |
 | `ofd-core` | 0.3.0 | OFD 文本提取与渲染 |
-| `pdf-inspector` | 1.14 | 文字型 PDF 文本提取 |
-| `pdfium-render` | 0.9.3 | PDFium 渲染 |
+| `pdf-inspector` | 1.24 | 文字型 PDF 文本提取 |
+| `pdfium-render` | 0.9.4 | PDFium 渲染 |
 
 > 版本策略：深耦合/行为镜像/RC/0.x 演进期锁 `=`，纯 Rust 工具库用 `^`。`oar-ocr-core` 为本仓 vendored（`[patch.crates-io]`），内含 NEON SIMD 的 resize 加速 patch，升级时需 rebase。
 

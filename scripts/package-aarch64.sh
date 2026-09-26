@@ -12,7 +12,7 @@ OUT="dist/anydoc-ocr-linux-arm64"
 rm -rf "$OUT" && mkdir -p "$OUT/lib" "$OUT/oar-home" "$OUT/fonts"
 
 cp "$BIN" "$OUT/"
-cp third_party/ort/aarch64/onnxruntime-linux-aarch64-1.23.2/lib/libonnxruntime.so* "$OUT/lib/"
+cp third_party/ort/aarch64/onnxruntime-linux-aarch64-1.28.2/lib/libonnxruntime.so* "$OUT/lib/"
 cp third_party/pdfium/aarch64/lib/libpdfium.so "$OUT/lib/"
 [ -d fonts ] && cp fonts/* "$OUT/fonts/" 2>/dev/null || true
 

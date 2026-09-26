@@ -31,7 +31,8 @@ static ORT_INIT: Once = Once::new();
 /// 故 auto 式 = `cores`（留 1 核给渲染/主线程的诉求由 OS 调度自然满足——渲染与
 /// OCR 不重叠的时段极少，channel 流水本就以 OCR 为瓶颈）。
 ///
-/// P2：`cfg.ort_intra > 0` 时用显式值；`0` = 自动（cores）。
+/// P2：`cfg.ort_intra > 0` 时用显式值；`0` = 自动（池=1 → `cores`；A1 池>1 →
+/// `cores/pool`，见 [`auto_intra_threads`]）。
 /// `ANYDOC_ORT_INTRA_THREADS` 仍可强制覆盖（调试用，优先级最高）。
 /// ORT 环境为进程全局、首次初始化者生效；已在别处初始化则本调用被忽略（幂等）。
 ///
@@ -43,12 +44,18 @@ pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let intra = std::env::var("ANYDOC_ORT_INTRA_THREADS")
+        // 显式覆盖（env / cfg）优先；auto 时按池分摊（池=1 → cores，与原一致）。
+        // #1 实测注记（2026-09-26，真实池激活后 A/B）：pool=2/t=4 相对 pool=1
+        // wall 29–35s → 24s，输出逐字节一致。收益主因是跨阶段消费者重叠
+        // （layout/det/rec 属不同模型、独立 session，锁互不冲突）+ 本处 intra
+        // 分摊；代价是 round-robin 把并发打散到各 session 的独立 arena，
+        // 峰值 RSS 1.2GB → 2.0GB（内存换墙钟，默认池=1 不受影响）。
+        let explicit = std::env::var("ANYDOC_ORT_INTRA_THREADS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&n| n > 0)
-            .or(if cfg.ort_intra > 0 { Some(cfg.ort_intra) } else { None })
-            .unwrap_or(cores);
+            .or(if cfg.ort_intra > 0 { Some(cfg.ort_intra) } else { None });
+        let intra = explicit.unwrap_or_else(|| auto_intra_threads(cores, session_pool_wanted()));
         // 配置失败不得掀翻宿主进程（本 crate 亦作为库被集成）：告警后回落 ORT 默认线程池。
         let opts = match ort::environment::GlobalThreadPoolOptions::default()
             .with_intra_threads(intra)
@@ -76,17 +83,57 @@ struct EngineKey {
 static CACHE: LazyLock<Mutex<HashMap<EngineKey, Arc<OcrEngine>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Session 池档位（A1）：`ANYDOC_ORT_SESSION_POOL`，进程首次读取时定格
+/// （此后改环境变量无效，两侧永远一致）。与 vendored oar-ocr-core
+/// `session_pool_size` 读同一变量：core 侧真正建 N 份 session（经
+/// `build_analyzer` 传入的 `ort_session` 配置激活），此处镜像同一档位决定
+/// 能否放开 `infer_lock`。
+/// 本 crate 构建未启用 CUDA/TensorRT EP（core 侧那两种 EP 恒回落池 1），CPU 下
+/// 两侧条件严格一致——"放开引擎锁 ⇔ core 真的有多 session"。
+/// #6：OnceLock 定格——`init_runtime`（intra 分摊）与 `build`/`build_analyzer`
+/// 分两处读，若中途有线程改环境变量会出现"intra 按池 A 算、session 按池 B 建"
+/// 的错配；定格后全进程恒同一值。
+fn session_pool_wanted() -> usize {
+    static POOL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *POOL.get_or_init(|| {
+        std::env::var("ANYDOC_ORT_SESSION_POOL")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 8)
+    })
+}
+
+/// A1：session 池并发下单次 run 的 intra-op 线程份额。
+///
+/// `init_runtime` 的 auto 式 = `cores` 是为"P0-1b 引擎级串行、单 run 独占全核"
+/// 调的。池>1 后同时有 ≤pool 个 run 在跑，全局线程池仍是 `cores` 个 worker，
+/// 不降 intra 只会互相抢同一池（实测 pool=4 无收益，见 A/B 记录）。故池>1 时
+/// 把 auto intra 降为 `max(1, cores/pool)`——总线程≈核心数，页级并行才成立。
+/// 显式 `ANYDOC_ORT_INTRA_THREADS` / `cfg.ort_intra` 仍优先（调试覆盖）。
+pub(crate) fn auto_intra_threads(cores: usize, pool: usize) -> usize {
+    (cores / pool.max(1)).max(1)
+}
+
 /// 已构建的 OCR 分析器句柄（内部 `Arc` 共享，跨线程安全）。
 pub struct OcrEngine {
     pub(crate) analyzer: Arc<OARStructure>,
     /// 引擎级推理互斥（P0-1b）：oar 的 `OrtInfer` 每模型恒为**单 session**
-    /// （`vec![Mutex::new(session)]`），多线程并发 `predict_images` 只会在同一把
+    /// （`vec![Mutex<Session>]` ×1），多线程并发 `predict_images` 只会在同一把
     /// session futex 上 convoy，且实测高并发下出现"持锁线程消失"型死锁
     /// （4 worker 等待 CRNN session 锁、锁字=2、进程内无持有者，2026-08-16
     /// batch_golden gdb 取证）。真并行由 ORT intra-op 线程池在**单次 run 内**
     /// 提供（batch 张量并行），跨调用并行只有锁竞争没有吞吐收益——这里把
     /// `analyzer` 的全部触达收拢为进程内（每引擎）串行，消除该死锁类。
+    ///
+    /// A1 例外：`ANYDOC_ORT_SESSION_POOL>1` 时 core 每模型建 N session 池
+    /// （round-robin 分池），单 session convoy 前提不成立，`concurrent_infer`
+    /// 置真——pipeline 可开多消费者，本锁保留但改用 `try_lock`：抢到照旧串行
+    /// 兜底路径（如 probe 与新引擎混跑时），抢不到说明有并发窗口，直接推理
+    /// （池内不同 session）。锁本身不再排队，死锁 convoy 形态不复存在。
     infer_lock: Mutex<()>,
+    /// A1：build 时按池配置定格——true 才允许 analyzer 并发触达。
+    concurrent_infer: bool,
 }
 
 impl OcrEngine {
@@ -101,14 +148,35 @@ impl OcrEngine {
             return Ok(Arc::clone(e));
         }
         let mut t = crate::timing::StageTimer::new();
+        // A1：池 >1 时 core 已建多 session（build_analyzer 内读取同一 env），
+        // 本引擎放开并发；=1 保持 P0-1b 引擎级串行。
         let engine = Arc::new(OcrEngine {
             analyzer: Arc::new(build_analyzer(tier, layout)?),
             infer_lock: Mutex::new(()),
+            concurrent_infer: session_pool_wanted() > 1,
         });
         t.stage("model-load");
         // 注意：build_analyzer 返回 OARStructure（predict_images 在其上），非 Builder。
         cache.insert(key, Arc::clone(&engine));
         Ok(engine)
+    }
+
+    /// A1：pipeline 消费者数判据——core session 池 >1 时才允许并发触达 analyzer。
+    pub(crate) fn concurrent_infer(&self) -> bool {
+        self.concurrent_infer
+    }
+
+    /// 推理触达 analyzer 的统一加锁策略（predict / predict_one 共用）：
+    /// - 池=1（默认）：阻塞 `lock()`，P0-1b 引擎级串行原语义（golden 行为不变）；
+    /// - 池>1：`try_lock`——空闲时顺带互斥（如与 probe 等旧路径混跑），被占时
+    ///   直接并发推理（round-robin 落在池内不同 session），**绝不排队等锁**，
+    ///   杜绝 2026-08-16 取证的"持锁线程消失"convoy 死锁形态。
+    fn guard_infer(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        if self.concurrent_infer {
+            self.infer_lock.try_lock().ok()
+        } else {
+            Some(self.infer_lock.lock().unwrap_or_else(|p| p.into_inner()))
+        }
     }
 
     /// 对一组页面图跑 OCR，返回每页 `StructureResult`（页序保序，契约由断言守恒）。
@@ -138,10 +206,7 @@ impl OcrEngine {
         for (ci, chunk) in images.chunks(chunk_size).enumerate() {
             let start = Instant::now();
             let group = {
-                let _infer = self
-                    .infer_lock
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _infer = self.guard_infer();
                 self.analyzer.predict_images(chunk.to_vec())
             };
             if let Some(t) = timings {
@@ -180,12 +245,10 @@ impl OcrEngine {
     ) -> Result<oar_ocr::domain::structure::StructureResult> {
         let start = Instant::now();
         let r = {
-            // P0-1b：引擎级串行化（见 infer_lock 文档）——pipeline 多 worker 并发
-            // 进来时在此排队，analyzer 内部的单 session 锁永不受竞态触达。
-            let _infer = self
-                .infer_lock
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // P0-1b：默认（池=1）引擎级串行——pipeline 多 worker 并发进来时在此
+            // 排队，analyzer 内部的单 session 锁永不受竞态触达。
+            // A1（池>1）：try_lock 不排队，见 guard_infer 文档。
+            let _infer = self.guard_infer();
             self.analyzer.predict_images(vec![img])
         };
         if let Some(t) = timings {
@@ -301,6 +364,23 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
     {
         builder = builder.region_batch_size(n);
     }
+    // A1/#1：池>1 时必须给 builder 传 ort_session 配置——core 的 session 池只在
+    // `OrtInfer::from_config` 路径激活（adapter `ort_config.is_some()` 分支），
+    // 此前从不传入，`session_pool_size` 恒不可达（池代码形同虚设）。
+    // 传 EP-free 的 Default 配置：execution_providers=None → core 侧池判定
+    // 走 CPU 分支（与本 crate 无 CUDA/TensorRT EP 的构建一致），intra/inter 等
+    // 全部 None → 线程数仍由 init_runtime 提交的 ORT 全局线程池决定，不在此覆盖。
+    // 若未来启用 CUDA EP：core 的 session_pool_size 对 CUDA/TensorRT 恒回落 1
+    // （onnxruntime#4829），与本处池档位一致。
+    // 池=1 时保持 None——默认路径与 golden 行为零变化。
+    if session_pool_wanted() > 1 {
+        // log_severity=3(Error)：对齐普通路径 load_session_with 的
+        // with_log_level(Error)，避免 from_config 分支默认日志等级把 ORT
+        // warning 喷到 stderr。
+        let mut ort_cfg = oar_ocr::core::config::OrtSessionConfig::default();
+        ort_cfg.log_severity_level = Some(3);
+        builder = builder.ort_session(ort_cfg);
+    }
     builder
         .build()
         .map_err(|e| runtime(Stage::Ocr, None, format!("构建 OCR 分析器失败: {e}")))
@@ -325,4 +405,24 @@ pub fn ocr_images(
     // P2：ort_intra 未显式时按 auto 语义构造（0 = 自动 cores/page_parallel）。
     init_runtime(&crate::convert::ParallelConfig { page_parallel: threads, ort_intra: 0 });
     OcrEngine::build(tier, layout)?.predict(images, threads, timings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_intra_threads;
+
+    #[test]
+    fn auto_intra_pool1_keeps_all_cores() {
+        // 池=1（默认）：与 P0-1b 语义一致，单 run 独占全核。
+        assert_eq!(auto_intra_threads(4, 1), 4);
+        assert_eq!(auto_intra_threads(8, 1), 8);
+    }
+
+    #[test]
+    fn auto_intra_splits_across_pool() {
+        assert_eq!(auto_intra_threads(4, 2), 2);
+        assert_eq!(auto_intra_threads(4, 4), 1);
+        // 池 > 核数：至少 1 线程，不出现 0。
+        assert_eq!(auto_intra_threads(4, 8), 1);
+    }
 }
