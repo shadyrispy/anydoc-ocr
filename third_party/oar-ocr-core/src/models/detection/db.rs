@@ -378,16 +378,21 @@ impl DBModelBuilder {
         self,
         model_source: impl Into<crate::core::ModelSource>,
     ) -> Result<DBModel, OCRError> {
-        // Create ONNX inference engine
+        // Create ONNX inference engine.
+        // Input name is auto-detected from the session's first declared input rather
+        // than hardcoded to "x": PaddleOCR det exports use "x", but the MinerU seal
+        // model (`seal_PP-OCRv4_det`) declares "image", and a mismatched name fails
+        // inference at run time with an error the CLI does not surface (same class of
+        // silent breakage fixed for PP-FormulaNet in `ort_infer_builders`).
         let inference = if self.ort_config.is_some() {
             use crate::core::config::ModelInferenceConfig;
             let common_config = ModelInferenceConfig {
                 ort_session: self.ort_config,
                 ..Default::default()
             };
-            OrtInfer::from_config(&common_config, model_source, Some("x"))?
+            OrtInfer::from_config(&common_config, model_source, None)?
         } else {
-            OrtInfer::new(model_source, Some("x"))?
+            OrtInfer::new(model_source, None)?
         };
 
         // Create resizer

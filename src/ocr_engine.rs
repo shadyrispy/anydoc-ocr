@@ -14,6 +14,7 @@ use std::time::Instant;
 use crate::error::{Result, Stage, runtime};
 use image::RgbImage;
 use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
+use oar_ocr::domain::tasks::{LayoutDetectionConfig, TextDetectionConfig};
 
 use crate::models::{OcrLayout, OcrTier, spec_for};
 
@@ -255,11 +256,40 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // 通用结构适配器：Wired/Wireless/Unknown 三分支无专用 adapter 时均回退到它，
         // 避免 table_cls 分类为 Wired 时因无 wired adapter 触发 config_error 整页失败
         .with_table_structure_recognition(model_path(spec.table_structure), "wireless")
-        .table_structure_dict_path(model_path(spec.table_dict))
+        .table_structure_dict_path(model_path(spec.table_dict));
+    // MinerU 复刻档：版面阈值/后处理对齐 MinerU（score 0.45 + MinerU 块级链，
+    // core 内实现），det box_thresh 0.5（MinerU yml，§4.4 坑 1；默认 0.6 会丢
+    // 低分文本行），并关闭页面方向矫正（MinerU basic 无此环节，doc_ori 置空）。
+    if tier.is_mineru() {
+        builder = builder
+            .layout_detection_config(LayoutDetectionConfig::with_mineru_doclayoutv2_defaults())
+            .text_detection_config(TextDetectionConfig {
+                box_threshold: 0.5,
+                // MinerU det 预处理：limit_side_len=960/Max + max_side_limit=4000
+                // （`pp_ocr_v6_onnx.py::TextDetectorONNX`）；wrapper 对未显式给出的
+                // limit 会回落 PP-StructureV3 的 736/Min，必须在此覆盖。
+                limit_side_len: Some(960),
+                limit_type: Some(oar_ocr::processors::LimitType::Max),
+                max_side_len: Some(4000),
+                ..TextDetectionConfig::default()
+            });
+        // Step 3：公式识别（PP-FormulaNet_plus-M ONNX，自回归 bake 进图，一次前向
+        // 出 token IDs）。tokenizer JSON 从 MFR yml 的 fast_tokenizer_file 提取；
+        // batch=8 与 MinerU CPU_BATCH_SIZE 对齐。core 预处理链已对拍：384² 短边、
+        // 黑边居中、mean .7931/std .1738、BGR 灰度、pad 1.0、EOS=2 截断。
+        if !spec.formula.is_empty() {
+            builder = builder.with_formula_recognition(
+                model_path(spec.formula),
+                model_path(spec.formula_tokenizer),
+                "pp_formulanet",
+            );
+        }
+    } else {
         // P1：文档方向矫正（0°/90°/180°/270°）——扫描件旋转/歪斜时 det/rec 召回关键。
         // 模型三档已定义（pp-lcnet_x1_0_doc_ori），此前未接入。在版面前自动矫正，
         // 改变 OCR 行为（旋转页结果变正），golden 需 UPDATE=1 重基线（预期召回提升）。
-        .with_document_orientation(model_path(spec.doc_ori));
+        builder = builder.with_document_orientation(model_path(spec.doc_ori));
+    }
     // rec 行批旋钮：上游 CPU 默认 tiny=16 / small+medium=4。A/B 实测（2026-08-17，
     // 3 核沙箱 ×9 样本 ×3 轮）：small 4/8/16/32 与 tiny 16/32/64 全部持平（±2% 噪声内），
     // 证伪"加大行批提速"——intra=cores 后单 op 已满核，批大小只改矩阵形状不改 FLOPs，

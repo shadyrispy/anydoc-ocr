@@ -151,11 +151,35 @@ pub(crate) fn convert_per_doc(
 ) -> Result<String> {
     match kind {
         DocKind::Ofd => ofd::convert_ofd(path, opts, force.ofd_force_ocr),
+        // Step 5：HTML 结构化通道（htmd → GFM，对齐 MinerU flash analyze_html）
+        DocKind::Html => crate::html::convert_html(path),
+        // Step 5：CSV/TSV 分隔文本。anydoc 0.2.4 的 `Format::from_extension` 无 tsv
+        // 分支（其 CSV 分隔符嗅探候选含 \t），故 tsv 显式点名 Csv 前端，
+        // 对齐 MinerU flash 的 csv/tsv 共用 `analysis/csv.py` 结构化通道。
+        DocKind::DelimitedText => convert_delimited(path),
+        // Step 5：Office 系（docx/xlsx/rtf/epub…）——anydoc 前端已覆盖，
+        // 与旧 `Other` 同路，仅分流归口显式化。
         // P1.9：anydoc 兜底通路错误经 `From<anydoc::ConvertError>` 转入自有类型
         // （kind 分类保留，原始 Display 存 detail）。
-        DocKind::Other => anydoc::to_markdown(path).map_err(ConvertError::from),
+        DocKind::Office | DocKind::Other => {
+            anydoc::to_markdown(path).map_err(ConvertError::from)
+        }
         DocKind::Pdf => pdf::convert_pdf(path, opts, force.pdf_force_ocr),
     }
+}
+
+/// CSV/TSV → Markdown 管道表（经 anydoc Csv 前端，含分隔符嗅探）。
+fn convert_delimited(path: &Path) -> Result<String> {
+    let is_tsv = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("tsv"))
+        .unwrap_or(false);
+    if !is_tsv {
+        return anydoc::to_markdown(path).map_err(ConvertError::from);
+    }
+    let bytes = std::fs::read(path).map_err(|e| ConvertError::io(Stage::Convert, e))?;
+    anydoc::to_markdown_bytes(&bytes, anydoc::Format::Csv).map_err(ConvertError::from)
 }
 
 pub fn convert_to_markdown(

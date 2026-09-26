@@ -544,6 +544,9 @@ impl LayoutDetectionAdapter {
         config: &LayoutDetectionConfig,
     ) -> LayoutDetectionOutput {
         if self.model_config.model_type == "pp-doclayout" {
+            if config.mineru_post_process {
+                return self.postprocess_pp_doclayout_mineru(predictions, img_shapes, config);
+            }
             return self.postprocess_pp_doclayout(predictions, img_shapes, config);
         }
 
@@ -625,6 +628,7 @@ impl LayoutDetectionAdapter {
         LayoutDetectionOutput {
             elements,
             is_reading_order_sorted: false, // Will be set by execute() based on model output
+            mineru_processed: false,
         }
     }
 
@@ -842,6 +846,90 @@ impl LayoutDetectionAdapter {
         LayoutDetectionOutput {
             elements,
             is_reading_order_sorted: false,
+            mineru_processed: false,
+        }
+    }
+
+    /// MinerU (PP-DocLayoutV2 ONNX) post-processing: score filter `>= conf`,
+    /// integer bbox clipping (`normalize_to_int_bbox`), reading-order lexsort
+    /// (col6 asc, col7 desc), then the block-level chain
+    /// (`mineru_layout_post_process`). Skips paddlex NMS, image-area filter and
+    /// merge modes, none of which exist in the MinerU pipeline.
+    fn postprocess_pp_doclayout_mineru(
+        &self,
+        predictions: &ndarray::Array4<f32>,
+        img_shapes: Vec<ImageScaleInfo>,
+        config: &LayoutDetectionConfig,
+    ) -> LayoutDetectionOutput {
+        use crate::processors::mineru_layout::{
+            mineru_layout_post_process, normalize_to_int_bbox, round4, MineruBox, V2_LABELS,
+        };
+
+        let mut all_elements: Vec<Vec<crate::domain::tasks::LayoutDetectionElement>> = Vec::new();
+
+        for (img_idx, img_shape) in img_shapes.iter().enumerate() {
+            let pred = predictions.index_axis(Axis(0), img_idx);
+            let num_boxes = pred.shape()[0];
+            let orig_width = img_shape.src_w;
+            let orig_height = img_shape.src_h;
+            let threshold = config.score_threshold.max(0.0);
+
+            // Collect rows passing the model's conf filter, keeping the order keys.
+            let mut rows: Vec<(f32, f32, MineruBox)> = Vec::new();
+            for box_idx in 0..num_boxes {
+                let class_id = pred[[box_idx, 0, 0]] as i32;
+                if class_id < 0 || (class_id as usize) >= V2_LABELS.len() {
+                    continue;
+                }
+                let raw_score = pred[[box_idx, 0, 1]];
+                // MinerU filters with the *raw* score (conf happens inside the model
+                // wrapper) and only rounds when building the box dict.
+                if raw_score < threshold {
+                    continue;
+                }
+                let score = round4(raw_score);
+                let x1 = pred[[box_idx, 0, 2]];
+                let y1 = pred[[box_idx, 0, 3]];
+                let x2 = pred[[box_idx, 0, 4]];
+                let y2 = pred[[box_idx, 0, 5]];
+                let col = pred[[box_idx, 0, 6]];
+                let row = pred[[box_idx, 0, 7]];
+
+                let bbox = match normalize_to_int_bbox(x1, y1, x2, y2, orig_width, orig_height) {
+                    Some(bbox) => bbox,
+                    None => continue,
+                };
+                rows.push((
+                    col,
+                    row,
+                    MineruBox::new(bbox, V2_LABELS[class_id as usize].to_string(), score),
+                ));
+            }
+
+            // np.lexsort((-sample[:, 7], sample[:, 6])): col asc, then row desc.
+            rows.sort_by(|a, b| {
+                a.0.total_cmp(&b.0).then_with(|| b.1.total_cmp(&a.1))
+            });
+
+            let boxes: Vec<MineruBox> = rows.into_iter().map(|(_, _, bx)| bx).collect();
+            let processed =
+                mineru_layout_post_process(boxes, (orig_height, orig_width));
+
+            let mut img_elements = Vec::with_capacity(processed.len());
+            for bx in processed {
+                img_elements.push(crate::domain::tasks::LayoutDetectionElement {
+                    bbox: bx.bbox,
+                    element_type: bx.label,
+                    score: bx.score,
+                });
+            }
+            all_elements.push(img_elements);
+        }
+
+        LayoutDetectionOutput {
+            elements: all_elements,
+            is_reading_order_sorted: true,
+            mineru_processed: true,
         }
     }
 

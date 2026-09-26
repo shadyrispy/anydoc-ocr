@@ -24,3 +24,4 @@ third_party/dl/
 /scripts/compare_accuracy*.py
 third_party/oar-ocr-core/.cargo-ok
 third_party/oar-ocr-core/Cargo.lock
+**/target

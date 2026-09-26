@@ -68,6 +68,10 @@ webgpu = ["ort/webgpu"]
 name = "oar_ocr_core"
 path = "src/lib.rs"
 
+[[test]]
+name = "tok_parity"
+path = "tests/tok_parity.rs"
+
 [dependencies.clipper2-rust]
 version = "1.0.3"
 

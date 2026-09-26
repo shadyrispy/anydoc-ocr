@@ -75,6 +75,13 @@ pub struct LayoutDetectionConfig {
     /// Default: [1.0, 1.0] (no change)
     #[serde(default)]
     pub layout_unclip_ratio: Option<UnclipRatio>,
+    /// Apply the MinerU (PP-DocLayoutV2) block-level post-processing chain after
+    /// the paddlex threshold/lexsort stage: paddlex_filter_boxes → IoU-0.9 dedup →
+    /// formula nesting merge → formula/vertical relabel → header/footer boundary
+    /// relabel → internal visual-caption filter → 1-based renumber.
+    /// Default: false (existing paddlex behavior unchanged).
+    #[serde(default)]
+    pub mineru_post_process: bool,
 }
 
 fn default_layout_nms() -> bool {
@@ -95,6 +102,7 @@ impl Default for LayoutDetectionConfig {
             layout_nms: true,
             nms_threshold: 0.5,
             layout_unclip_ratio: None,
+            mineru_post_process: false,
         }
     }
 }
@@ -125,6 +133,7 @@ impl LayoutDetectionConfig {
             layout_nms: true,
             nms_threshold: 0.5,
             layout_unclip_ratio: Some(UnclipRatio::Separate(1.0, 1.0)),
+            mineru_post_process: false,
         }
     }
 
@@ -200,6 +209,7 @@ impl LayoutDetectionConfig {
             layout_nms: true,
             nms_threshold: 0.5,
             layout_unclip_ratio: Some(UnclipRatio::Separate(1.0, 1.0)),
+            mineru_post_process: false,
         }
     }
 
@@ -243,6 +253,34 @@ impl LayoutDetectionConfig {
             layout_nms: true,
             nms_threshold: 0.5,
             layout_unclip_ratio: Some(UnclipRatio::Separate(1.0, 1.0)),
+            mineru_post_process: false,
+        }
+    }
+
+    /// Creates a config replicating the MinerU-4 `basic` tier PP-DocLayoutV2
+    /// ONNX pipeline (`mineru/model/layout/pp_doclayout_v2_onnx.py` +
+    /// `pp_doclayout_v2_base.py`):
+    ///
+    /// - `score_threshold = 0.45`: the ONNX wrapper's only score filter is
+    ///   `scores >= self.conf` (`_run_session`); `DEFAULT_CLASS_THRESHOLDS` belongs
+    ///   to the torch/HF backend and is NOT applied on the ONNX path, so
+    ///   `class_thresholds` stays `None` for exact parity.
+    /// - `layout_nms = false`: MinerU applies no paddlex layout NMS; its dedup is
+    ///   the block-level IoU-0.9 chain enabled via `mineru_post_process`.
+    /// - no merge modes, no unclip. max_elements 512 > the model's fixed 300 rows.
+    /// - `mineru_post_process = true`: run the MinerU block chain (paddlex_filter_boxes,
+    ///   IoU dedup, formula merge/relabel, header/footer boundary relabel, internal
+    ///   caption filter) inside the adapter so wrappers see final blocks.
+    pub fn with_mineru_doclayoutv2_defaults() -> Self {
+        Self {
+            score_threshold: 0.45,
+            max_elements: 512,
+            class_thresholds: None,
+            class_merge_modes: None,
+            layout_nms: false,
+            nms_threshold: 0.5,
+            layout_unclip_ratio: None,
+            mineru_post_process: true,
         }
     }
 
@@ -251,8 +289,7 @@ impl LayoutDetectionConfig {
     /// Merge modes follow standard configuration:
     /// - "large": paragraph_title, image, formula, chart
     /// - "union": all other PP-DocLayout_plus-L classes
-    pub fn with_pp_structurev3_defaults() -> Self {
-        let mut cfg = Self::with_pp_structurev3_thresholds();
+    pub fn with_pp_structurev3_defaults() -> Self {        let mut cfg = Self::with_pp_structurev3_thresholds();
 
         let mut merge_modes = HashMap::new();
         merge_modes.insert("paragraph_title".to_string(), MergeBboxMode::Large);
@@ -326,6 +363,10 @@ pub struct LayoutDetectionOutput {
     /// When `true`, downstream consumers can skip reading order sorting algorithms
     /// as the elements are already in the correct reading order based on model output.
     pub is_reading_order_sorted: bool,
+    /// Whether the MinerU (PP-DocLayoutV2) block-level post-processing chain has
+    /// already been applied inside this adapter (`mineru_post_process = true`).
+    /// Wrappers must then skip their own paddlex dedup/fixes on these elements.
+    pub mineru_processed: bool,
 }
 
 impl LayoutDetectionOutput {
@@ -334,6 +375,7 @@ impl LayoutDetectionOutput {
         Self {
             elements: Vec::new(),
             is_reading_order_sorted: false,
+            mineru_processed: false,
         }
     }
 
@@ -342,6 +384,7 @@ impl LayoutDetectionOutput {
         Self {
             elements: Vec::with_capacity(capacity),
             is_reading_order_sorted: false,
+            mineru_processed: false,
         }
     }
 
@@ -460,6 +503,7 @@ mod tests {
         let output = LayoutDetectionOutput {
             elements: vec![vec![element]],
             is_reading_order_sorted: false,
+            mineru_processed: false,
         };
         assert!(task.validate_output(&output).is_ok());
     }

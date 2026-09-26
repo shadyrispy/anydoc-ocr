@@ -676,6 +676,7 @@ mod tests {
             y: 0.0,
             width,
             height: 10.0,
+            advance_known: true,
             font: "test".into(),
             font_size: 10.0,
             page: 1,
@@ -685,6 +686,16 @@ mod tests {
             is_strikeout: false,
             item_type: Default::default(),
             mcid: None,
+            rotation: 0.0,
+            font_tag: String::new(),
+            legacy_symbol_rewrite: false,
+            font_weight: None,
+            bold_source: None,
+            fixed_pitch: None,
+            fill_color: None,
+            stroke_color: None,
+            render_mode: None,
+            baseline_shift: 0.0,
         }
     }
 
@@ -696,6 +707,7 @@ mod tests {
             y,
             width: w,
             height: h,
+            advance_known: true,
             font: "test".into(),
             font_size: 10.0,
             page,
@@ -705,6 +717,16 @@ mod tests {
             is_strikeout: false,
             item_type: Default::default(),
             mcid: None,
+            rotation: 0.0,
+            font_tag: String::new(),
+            legacy_symbol_rewrite: false,
+            font_weight: None,
+            bold_source: None,
+            fixed_pitch: None,
+            fill_color: None,
+            stroke_color: None,
+            render_mode: None,
+            baseline_shift: 0.0,
         }
     }
 

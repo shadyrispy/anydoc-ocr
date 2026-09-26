@@ -138,16 +138,13 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 受支持文档扩展名（大小写不敏感）。PDF/OFD 走本库专用通道，其余走 anydoc。
+/// 受支持文档扩展名（大小写不敏感）：直接复用 `detect::is_known_extension`
+/// 单一表，目录收集范围与单文档分流能力恒等（批目录不再漏收单文件可转的后缀）。
 fn is_supported_doc(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
-    let ext = ext.to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "pdf" | "ofd" | "docx" | "doc" | "xlsx" | "xls" | "pptx" | "ppt"
-    ) && !is_temp_file(path)
+    crate::detect::is_known_extension(ext) && !is_temp_file(path)
 }
 
 fn is_temp_file(path: &Path) -> bool {

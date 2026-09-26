@@ -111,7 +111,7 @@ pub(crate) fn convert_pdf_ocr(
     let engine = crate::ocr_engine::OcrEngine::build(tier, opts.ocr.layout)?;
     let timings = std::sync::Arc::new(crate::timing::PageTimings::new());
     let render_fn = render::render_cross_doc_fn(paths.to_vec(), dpi);
-    let (mut results, render_errors) = crate::pipeline::PagePipeline::new(
+    let (mut results, render_errors, mut page_dims) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.parallel.page_parallel,
@@ -140,7 +140,8 @@ pub(crate) fn convert_pdf_ocr(
             if !bad.is_empty() {
                 let higher_engine = crate::ocr_engine::OcrEngine::build(higher, opts.ocr.layout)?;
                 let retry_render_fn = render::render_cross_doc_subset_fn(paths.to_vec(), dpi, bad);
-                let (retry_results, _retry_errors) = crate::pipeline::PagePipeline::new(
+                let (retry_results, _retry_errors, retry_dims) =
+                    crate::pipeline::PagePipeline::new(
                     retry_render_fn,
                     higher_engine,
                     opts.parallel.page_parallel,
@@ -158,26 +159,50 @@ pub(crate) fn convert_pdf_ocr(
                         *res = new.clone();
                     }
                 }
+                page_dims.extend(retry_dims);
             }
         }
     }
 
     // 按复合键 (doc_idx, page_idx) 升序结果分组——pipeline 已保证页序，
     // 同 doc_idx 组内 page_idx 升序，直接 collect 进 Vec 保序。
-    let mut by_doc: BTreeMap<usize, Vec<oar_ocr::domain::structure::StructureResult>> =
+    let mut by_doc: BTreeMap<usize, Vec<(usize, oar_ocr::domain::structure::StructureResult)>> =
         BTreeMap::new();
-    for ((doc_idx, _page_idx), res) in results {
-        by_doc.entry(doc_idx).or_default().push(res);
+    for ((doc_idx, page_idx), res) in results {
+        by_doc.entry(doc_idx).or_default().push((page_idx, res));
     }
     // 整文档失败（哨兵页 usize::MAX 标记打开失败）→ 该 doc_idx 标 Err（带真实 detail）。
     // 单页失败（page < usize::MAX）不标错——该 doc 其余页仍产出，保错误隔离。
+    // MinerU 回归用（ANYDOC_DUMP_DIR）：逐页 StructureResult + 页像素尺寸 → JSON，
+    // 供框级 IoU / 阅读顺序对比。
+    let dump_dir = std::env::var("ANYDOC_DUMP_DIR").ok().filter(|s| !s.is_empty());
     let mut doc_errors = classify_doc_errors(render_errors);
     let mut out = Vec::with_capacity(paths.len());
     for (doc_idx, pages) in by_doc {
         if let Some(e) = doc_errors.remove(&doc_idx) {
             out.push((doc_idx, Err(e)));
         } else {
-            let md = gfm_adapter::to_markdown(&pages);
+            if let Some(dir) = &dump_dir {
+                let _ = std::fs::create_dir_all(dir);
+                let mut manifest = Vec::new();
+                for (pi, res) in &pages {
+                    if let Ok(s) = serde_json::to_string(res) {
+                        let _ = std::fs::write(format!("{dir}/doc{doc_idx}_page{pi:03}.json"), s);
+                    }
+                    let (w, h) = page_dims
+                        .get(&(doc_idx, *pi))
+                        .copied()
+                        .unwrap_or((0, 0));
+                    manifest.push(format!("{pi} {w} {h}"));
+                }
+                let _ = std::fs::write(
+                    format!("{dir}/doc{doc_idx}_dims.txt"),
+                    manifest.join("\n") + "\n",
+                );
+            }
+            let md = gfm_adapter::to_markdown(
+                &pages.into_iter().map(|(_, res)| res).collect::<Vec<_>>(),
+            );
             out.push((doc_idx, Ok(md)));
         }
     }

@@ -10,6 +10,7 @@ pub mod detect;
 pub(crate) mod docir;
 pub(crate) mod fallback;
 pub(crate) mod gfm_adapter;
+pub(crate) mod html;
 pub mod models;
 pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
 pub(crate) mod ofd;

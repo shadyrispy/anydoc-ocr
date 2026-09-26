@@ -188,7 +188,12 @@ fn render_docs_filtered(
                 }
                 // ADR-0008：优先直提 image object（单图满页），跳过整页光栅化。
                 // 直提成功 → 直接送 OCR；失败（混合页/多图块/解码错误）→ 回退渲染。
-                if let Some(img) = try_extract_page_image(&page, dpi) {
+                // MinerU 回归（ANYDOC_NO_RAW_EXTRACT=1）：强制走 pdfium 光栅化，
+                // 与 MinerU `page.to_image(matrix=zoom×dpi/72)` 渲染语义对齐
+                // （低分辨率内嵌图同样被放大到目标 DPI 网格）。
+                if std::env::var_os("ANYDOC_NO_RAW_EXTRACT").is_none()
+                    && let Some(img) = try_extract_page_image(&page, dpi)
+                {
                     if std::env::var_os("ANYDOC_RENDER_TRACE").is_some() {
                         let (w, h) = img.dimensions();
                         eprintln!("[render] doc{doc_idx} p{i} → 直提 image object ({w}x{h})");
@@ -201,8 +206,21 @@ fn render_docs_filtered(
                 if std::env::var_os("ANYDOC_RENDER_TRACE").is_some() {
                     eprintln!("[render] doc{doc_idx} p{i} → 回退 PDFium 整页渲染");
                 }
-                let w = (page.width().value * scale) as i32;
-                let h = (page.height().value * scale) as i32;
+                // ANYDOC_RENDER_EDGE_CAP（MinerU 回归对齐）：docvortex
+                // `page_to_image` 长边上限 3500px（超则整体降 scale），
+                // 高 dpi + 大页面时与 MinerU 像素网格保持一致。
+                let eff_scale = match std::env::var("ANYDOC_RENDER_EDGE_CAP")
+                    .ok()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .filter(|&c| c > 0.0)
+                {
+                    Some(cap) if page.height().value.max(page.width().value) * scale > cap => {
+                        cap / page.height().value.max(page.width().value)
+                    }
+                    _ => scale,
+                };
+                let w = (page.width().value * eff_scale) as i32;
+                let h = (page.height().value * eff_scale) as i32;
                 if w <= 0 || h <= 0 {
                     let _ = tx.send(Err((
                         (doc_idx, i),

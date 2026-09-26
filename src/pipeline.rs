@@ -100,6 +100,7 @@ impl<F: RenderFn> PagePipeline<F> {
     ) -> Result<(
         Vec<((usize, usize), oar_ocr::domain::structure::StructureResult)>,
         Vec<((usize, usize), ConvertError)>,
+        std::collections::BTreeMap<(usize, usize), (u32, u32)>,
     )> {
         let bound = self.threads * Self::BOUND_MULT;
         let (tx, rx) = mpsc::sync_channel(bound);
@@ -122,6 +123,13 @@ impl<F: RenderFn> PagePipeline<F> {
             (usize, usize),
             Result<oar_ocr::domain::structure::StructureResult>,
         > = std::collections::BTreeMap::new();
+        // 页面原始像素尺寸（回归 dump 单位化用；仅 ANYDOC_DUMP_DIR 时收集）
+        let dump_on = std::env::var("ANYDOC_DUMP_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some();
+        let mut page_dims: std::collections::BTreeMap<(usize, usize), (u32, u32)> =
+            std::collections::BTreeMap::new();
         // 渲染失败（单页 / 整文档）的错误，按 idx 收集供调用方回填。
         let mut render_errors: std::collections::BTreeMap<(usize, usize), ConvertError> =
             std::collections::BTreeMap::new();
@@ -135,6 +143,9 @@ impl<F: RenderFn> PagePipeline<F> {
                     continue;
                 }
             };
+            if dump_on {
+                page_dims.insert(idx, (img.width(), img.height()));
+            }
             // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
             let res = engine.predict_one(img, idx.0, idx.1, timings);
             results.insert(idx, res);
@@ -155,6 +166,6 @@ impl<F: RenderFn> PagePipeline<F> {
                 Err(e) => return Err(e),
             }
         }
-        Ok((out, render_errors.into_iter().collect()))
+        Ok((out, render_errors.into_iter().collect(), page_dims))
     }
 }

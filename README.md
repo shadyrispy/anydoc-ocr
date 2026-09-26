@@ -33,7 +33,7 @@ OCR 管线：版面（layout）→ 文本检测（det）→ 文本识别（rec�
 
 ## 快速开始
 
-依赖预编译原生库（ONNX Runtime 1.20.1、PDFium）与 Rust ≥ 1.95，先放库再构建：
+依赖预编译原生库（ONNX Runtime 1.23.2、PDFium）与 Rust ≥ 1.95，先放库再构建：
 
 ```bash
 # 1) 把预编译库放到 third_party/ 对应架构目录（见「构建」节）
@@ -146,7 +146,7 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 
 ## 构建
 
-依赖预编译原生库（ORT 1.20.1、PDFium），先放到 `third_party/` 对应架构目录，再用环境变量指明位置。
+依赖预编译原生库（ORT 1.23.2、PDFium），先放到 `third_party/` 对应架构目录，再用环境变量指明位置。
 
 ### x86_64 本机构建
 
@@ -157,8 +157,8 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 等效手动方式：
 
 ```bash
-export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.20.1/lib
-export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.20.1/include
+export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.23.2/lib
+export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.23.2/include
 export ORT_PREFER_DYNAMIC_LINK=1
 export PDFIUM_LIB_DIR=$PWD/third_party/pdfium/x64/lib
 cargo build --release

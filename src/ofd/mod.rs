@@ -304,7 +304,7 @@ fn ocr_pending_pages(
     let path = path.to_path_buf();
     let dpi = opts.render.dpi;
     let render_fn = ofd_pending_render_fn(path.clone(), pending.clone(), dpi);
-    let (mut results, _render_errors) = crate::pipeline::PagePipeline::new(
+    let (mut results, _render_errors, _page_dims) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.parallel.page_parallel,
@@ -340,7 +340,7 @@ fn ocr_pending_pages(
                     let higher_engine =
                         crate::ocr_engine::OcrEngine::build(higher, opts.ocr.layout)?;
                     let retry_render_fn = ofd_pending_render_fn(path.clone(), bad_pending, dpi);
-                    let (retry_results, _retry_errors) = crate::pipeline::PagePipeline::new(
+                    let (retry_results, _retry_errors, _) = crate::pipeline::PagePipeline::new(
                         retry_render_fn,
                         higher_engine,
                         opts.parallel.page_parallel,

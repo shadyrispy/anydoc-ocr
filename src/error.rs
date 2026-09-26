@@ -8,7 +8,8 @@
 //! - `page`：页号定位（0 基，`None` = 文档级）；
 //! - `detail`：上游错误信息。
 //!
-//! 兜底通路（`DocKind::Other` 走 anydoc）经 `From<anydoc::ConvertError>` 转入，
+//! 兜底通路（`DocKind::Office`/`Other` 与 `DelimitedText` 走 anydoc）经
+//! `From<anydoc::ConvertError>` 转入，
 //! kind 分类保留、原始 Display 存入 detail。
 use std::fmt;
 
@@ -164,7 +165,7 @@ impl ConvertError {
     }
 }
 
-/// anydoc 兜底通路（`DocKind::Other`）错误转入：kind 分类保留、原始 Display
+/// anydoc 兜底通路错误转入：kind 分类保留、原始 Display
 /// 存 detail（不丢 `part`/`limit` 等变体字段信息）。
 impl From<anydoc::ConvertError> for ConvertError {
     fn from(e: anydoc::ConvertError) -> Self {

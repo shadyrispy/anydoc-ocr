@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # aarch64 (linux-arm64) 交叉构建 + 离线打包
 # 前置：第三方库需先放好（见 README §第三方库）
-#   third_party/ort/aarch64/onnxruntime-linux-aarch64-1.20.1/{lib,include}
+#   third_party/ort/aarch64/onnxruntime-linux-aarch64-1.23.2/{lib,include}
 #   third_party/pdfium/aarch64/lib/libpdfium.so
 #   fonts/NotoSansCJK-*.otf（OFD 渲染中文字体回退）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TARGET=aarch64-unknown-linux-gnu
-ORT_DIR="$PWD/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.20.1"
+ORT_DIR="$PWD/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.23.2"
 PDFIUM_LIB="$PWD/third_party/pdfium/aarch64/lib"
 
 export ORT_LIB_LOCATION="$ORT_DIR/lib"

@@ -10,6 +10,10 @@ pub enum OcrTier {
     Small,
     /// 高精度：PP-OCRv6 medium（det 59MB / rec 73MB），复杂版式（ARM CPU 慢）
     Medium,
+    /// MinerU-4 basic 档复刻：PP-DocLayoutV2 + PP-OCRv6 tiny_det/small_rec，
+    /// 版面后处理对齐 MinerU（score 0.45、paddlex filter、IoU 去重、header/footer 重标）。
+    /// 模型资产需自备（`ANYDOC_MODEL_DIR` 指向 mineru-ocr 目录）。
+    MineruBasic,
 }
 
 impl OcrTier {
@@ -20,7 +24,13 @@ impl OcrTier {
             OcrTier::Tiny => Some(OcrTier::Small),
             OcrTier::Small => Some(OcrTier::Medium),
             OcrTier::Medium => None,
+            OcrTier::MineruBasic => None,
         }
+    }
+
+    /// MinerU 复刻档：版面后处理与阈值走 MinerU 语义（core 内 mineru_post_process）。
+    pub fn is_mineru(self) -> bool {
+        matches!(self, OcrTier::MineruBasic)
     }
 }
 
@@ -46,6 +56,10 @@ pub struct ModelSpec {
     pub table_cls: &'static str,
     pub table_dict: &'static str,
     pub doc_ori: &'static str,
+    /// 公式识别（PP-FormulaNet_plus-M ONNX + 内嵌 fast_tokenizer JSON）；
+    /// 空串 = 该档不接公式（build_analyzer 据此跳过 with_formula_recognition）。
+    pub formula: &'static str,
+    pub formula_tokenizer: &'static str,
 }
 
 pub fn spec_for(tier: OcrTier) -> ModelSpec {
@@ -60,6 +74,8 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             table_cls: "pp-lcnet_x1_0_table_cls.onnx",
             table_dict: "table_structure_dict_ch.txt",
             doc_ori: "pp-lcnet_x1_0_doc_ori.onnx",
+            formula: "",
+            formula_tokenizer: "",
         },
         OcrTier::Small => ModelSpec {
             layout: "pp-doclayout-m.onnx",
@@ -71,6 +87,8 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             table_cls: "pp-lcnet_x1_0_table_cls.onnx",
             table_dict: "table_structure_dict_ch.txt",
             doc_ori: "pp-lcnet_x1_0_doc_ori.onnx",
+            formula: "",
+            formula_tokenizer: "",
         },
         OcrTier::Medium => ModelSpec {
             layout: "pp-doclayoutv3.onnx",
@@ -82,6 +100,26 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             table_cls: "pp-lcnet_x1_0_table_cls.onnx",
             table_dict: "table_structure_dict_ch.txt",
             doc_ori: "pp-lcnet_x1_0_doc_ori.onnx",
+            formula: "",
+            formula_tokenizer: "",
+        },
+        // MinerU-4 basic 复刻（§5.2 Step 1）：与 MinerU `basic` 档逐模型对齐。
+        // det/rec/dict 与 oar tiny/small 缓存字节一致；版面换 DocLayoutV2 并走
+        // MinerU 后处理链。资产目录：ANYDOC_MODEL_DIR=/data/models/mineru-ocr。
+        // table 三件 Step 2 接线；doc_ori 置空（MinerU basic 无页面方向矫正，
+        // build_analyzer 据此跳过 with_document_orientation）。
+        OcrTier::MineruBasic => ModelSpec {
+            layout: "pp-doclayoutv2.onnx",
+            layout_name: "PP-DocLayoutV2",
+            det: "pp-ocrv6_tiny_det.onnx",
+            rec: "pp-ocrv6_small_rec.onnx",
+            dict: "ppocrv6_dict.txt",
+            table_structure: "slanet_plus.onnx",
+            table_cls: "pp-lcnet_x1_0_table_cls.onnx",
+            table_dict: "table_structure_dict_ch.txt",
+            doc_ori: "",
+            formula: "formula_m.onnx",
+            formula_tokenizer: "ppformulanet_tokenizer.json",
         },
     }
 }
