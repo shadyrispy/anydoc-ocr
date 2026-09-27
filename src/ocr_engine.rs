@@ -86,6 +86,9 @@ struct EngineKey {
     /// #7 A/B 位（`ANYDOC_WIRELESS_CELLS`）：给不给这张 129MB 的 cell-det 件会
     /// 造出两个**结构不同**的 analyzer，共用一个缓存键就会"这次有、下次没有"。
     wireless_cells: bool,
+    /// #8 A/B 位（`ANYDOC_TABLE_ORI`）：接不接表格方向槽位同理——挂了会多出
+    /// 一个 adapter，两种状态不能共用一个 analyzer 缓存。
+    table_ori: bool,
 }
 
 /// 进程级 OCR 引擎缓存（同 key 只建一次模型）。
@@ -159,6 +162,7 @@ impl OcrEngine {
             seal_ocr: crate::ocr_post::seal_on(),
             table_fill: crate::ocr_post::table_fill_on(),
             wireless_cells: crate::models::wireless_cells_wanted() && tier.is_mineru(),
+            table_ori: crate::models::table_ori_wanted() && tier.is_mineru(),
         };
         let mut cache = CACHE
             .lock()
@@ -471,6 +475,19 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         builder = builder
             .with_wireless_table_cell_detection(model_path(spec.wireless_cell_det))
             .use_wireless_table_cells_trans_to_html(true);
+    }
+    // #8 A/B：表格**方向**矫正。默认**不挂**（`models::table_ori_wanted` 的成本
+    // 理由），`ANYDOC_TABLE_ORI` 存在且是 mineru 档才接。注意这是
+    // `with_table_orientation`——只转正"表格裁剪图"，与页面级
+    // `with_document_orientation`（本档 doc_ori 为空、刻意不接）是两个不同槽位：
+    // MinerU basic 有小模型版面时确实跑前者（window.py:389），但不跑后者。
+    // 复用同一张 pp-lcnet_x1_0_doc_ori 模型，按表逐个分类（0/90/180/270）。
+    if crate::models::table_ori_wanted() && tier.is_mineru() && !spec.table_ori.is_empty() {
+        eprintln!(
+            "[anydoc-ocr] #8 A/B：ANYDOC_TABLE_ORI 已开，表格结构识别前逐个转正（额外加载 {}，6.8MB，$OAR_HOME 缓存）",
+            spec.table_ori
+        );
+        builder = builder.with_table_orientation(model_path(spec.table_ori));
     }
     // A1/#1：池>1 时必须给 builder 传 ort_session 配置——core 的 session 池只在
     // `OrtInfer::from_config` 路径激活（adapter `ort_config.is_some()` 分支），

@@ -95,8 +95,8 @@
 | #10b | 含章公文页默认不出印章文字，而 MinerU basic 默认出 | 决定"默认开"能否接受为行为变更（普通安装多 4.8MB 下载 + 新增 `【印章】` 行） | seal_scan 默认档出直排行文字 + golden 重基线 + README 记一笔 | **已完成** · 小 |
 | #12 | `anydoc scan.png` 进不了 OCR 管线（MinerU 直接吃 8 种图片） | `detect` 加 `DocKind::Image`，复用整页 OCR；像素闸要在**加载**处补算一次 | png 出 markdown；>3500px 显式 `resourceLimit`；gif/tiff 只取首帧且 `--help` 注明 | **已完成** · 小（本节最便宜） |
 | #13 | 无法强制"只用文字层、绝不联网下载模型" | 定名：`--pdf-text-only` 还是 `--ocr-mode txt`（**只留一套**） | 空 `$OAR_HOME` + 断网实测不加载模型 | **已完成**（定名 `--text-only`）· 小 |
-| #8 | 图片型扫描件里旋转的表格没有第二道方向信号（表被转置/正文被吞） | 先查 `with_table_orientation`（`structure.rs:442`）要吃哪个模型、是否在我们注册表 | 合成旋转表在 `--pdf-force-ocr` 下网格正确；非旋转页逐字节不变 | 排在 #7 后（同通路，防冲突）· 小-中 |
-| #9 | 表格里的公式/图片丢；行内公式是否已对齐**未知** | 拿含行内公式与公式编号的样本 `ANYDOC_DUMP_DIR` 对拍，先量"已具备/缺失"再决定做多少 | 行内公式 `$...$` 不掉行；编号不重复成独立行；表内对象有去处 | 公式件需 `ANYDOC_MODEL_DIR` · 中 |
+| #8 | 图片型扫描件里旋转的表格没有第二道方向信号（表被转置/正文被吞） | 先查 `with_table_orientation`（`structure.rs:442`）要吃哪个模型、是否在我们注册表 | 合成旋转表在 `--pdf-force-ocr` 下网格正确；非旋转页逐字节不变 | **已实现为默认关闭的 `ANYDOC_TABLE_ORI`**（90/180/270 三角度 ON 严格更好、6 件既有表逐字节不变）· 翻默认待现网语料误判率 |
+| #9 | 表格里的公式/图片丢；行内公式是否已对齐**未知** | 拿含行内公式与公式编号的样本 `ANYDOC_DUMP_DIR` 对拍，先量"已具备/缺失"再决定做多少 | 行内公式 `$...$` 不掉行；编号不重复成独立行；表内对象有去处 | **第 0 步已完成**：缺口是真的但**根因在装配层**（上游 stitching 好的 `LayoutElement.text` 我们没用），不需接新模型；表内图那半**仍未量到** · 中 |
 | #10 | code 无 fence、目录无缩进、旁注混进正文、脚注/引用不挂接 | 按 `PIPELINE_DET_TYPE` 13 项内顺序 CODE → INDEX → ASIDE_TEXT → FOOTNOTE/REF_TEXT，各配 1 个样本 | 每类输出结构可断言；未涉及类型逐字节不变 | 除页眉页脚外全依赖 #6 · 中-大 |
 | #11 | 没有可被下游消费的产物（content_list / middle_json） | #6 完成后，先把 24 个类型名与 bbox 约定抄成**单测常量表**，再写 renderer | 与 MinerU basic 同文档的类型序列/块数对齐率可量化；markdown 输出不变 | #6 · 中 |
 | #14 | 与 MinerU 默认档（standard，含 VLM）精度不可比 | 只写文档口径；如要接，只做 `--server-url` 客户端，不搬权重 | README/`--help` 口径落地即结 | **已完成**（README + `--help` 口径已落地）· 文档级 |
@@ -148,6 +148,103 @@
 → 从当前 IR **无法**还原出块边界与级别，字符串已经焊死了。因此 #6 的第一件事是
 把结构信息从 producer 的输出字符串里**解耦**：producer 产"块 + 级别 + span"，
 `#` 前缀与分隔符下移到渲染器。
+
+### 第 0 步产出：字段清单（2026-09-27，逐条实读权威 schema）
+
+**权威来路更正**：严格 schema 不在 MinerU 包内，而在 **`docvortex/schema.py`**
+（MinerU `types.py` 从那里 re-export），所以下面每条的证据都是这个文件。对照
+MinerU 侧渲染层 `render/_internal/content_list/v2.py`（其 `:1-4` 自述"严格
+MiddleJson 到按页 Content List V2 的渲染实现"，即 content_list 确为派生物）。
+
+**先纠正一处会被反复误用的口径**：严格 middle_json 的 `bbox` 是 **0–1 归一化**，
+不是 pt——`BlockBase.bbox` 校验器直接要求每个分量 `0.0 ≤ v ≤ 1.0`
+（`schema.py:463-485`，`schema.py:481` 那行 raise "must be finite normalized
+coordinates"）。content_list v2 再乘 1000 成整数框
+（`content_list/common.py:118-122` `normalize_bbox`，docstring 明写"把 MiddleJson
+的 0-1 bbox 转换为 Content List 的 0-1000 整数框"）。
+→ 我们侧是 **pt、左上原点、y 向下**（`src/region.rs:1-6`）。所以投影**必须先有页尺寸
+才能算归一化**，而 `PageIR` 现在只有 `page_no`/`regions`/`source` 三个字段
+（`src/docir/mod.rs:36-44`），页尺寸只活在 dump 的 `doc*_dims.txt` 旁路里
+（`src/pdf/mod.rs:357-359`）。这条是 #6 第 1 步的真实动因，不是"顺手加个字段"。
+
+**子代理那份 29 行差距表不可信，已逐条推翻的 5 处**（别再引用它）：
+
+1. "MinerU page 有 `page_w`/`page_h`/`rotate`" —— 严格 `PageInfo` **只有
+   `page_idx` + `blocks`**（`schema.py:1035-1039`），没有任何尺寸/旋转字段；
+   `page_size` 只存在于 **legacy** 形状（`legacy_middle_json.py:16`
+   `_LEGACY_PAGE_FIELDS = {page_size, preproc_blocks, para_blocks, discarded_blocks}`），
+   而本节决策第 2 条已明确"不投资 legacy"。
+2. "`span.font` / `span.size`" —— `TextSpan` 只有 `type`/`content`/`styles`
+   （`schema.py:341-346`）；全文件 grep `font`/`size`/`font_size` **零命中**。
+   字体与字号**不在** MinerU 严格 schema 面，不是我们的缺口。
+3. "`table.cells[].row`/`.col`、`row_span`/`col_span`" —— 不存在这些类。表格 body
+   是 `TableBodyBlock`（`schema.py:598`）继承 `ImagePayloadContentBlock`，载荷就是
+   **一个 `content: str`（HTML）**（`:584-588`）。跨格信息在 HTML 字符串里，不在字段里。
+4. "标题级别已丢失"分类正确，但 MinernU 侧形状被写成"doc_title/paragraph_title +
+   级别"这种模糊说法 —— 实际是显式 `level: int` 字段：`TitleBlockBase.anchor` +
+   `level`（`schema.py:521-525`），`DocTitleBlock.level` 恒 **1**（`ge=1, le=1`），
+   `ParagraphTitleBlock.level` **2..6**（`ge=2, le=6`）。→ 我们的 `#` 前缀级数
+   与之**同一数域**，映射是 1:1，不需要换算表。
+5. 所有 MinerU 侧 `file:line` 当时被自述为**占位**（子代理自己标注"未验证、
+   未读 MinerU 源码"），上表已用实读结果替换。
+
+**真实差距表**（只列已双侧核过的；"分类"= 已有等价物 / 可推出 / 须改 producer）
+
+| MinerU 严格 schema 字段 | 证据 | 我们侧 | 落点 |
+|---|---|---|---|
+| `bbox`（0–1 归一化，`[x0,y0,x1,y1]`） | `schema.py:463-485` | pt 左上原点 y 向下 → **可推出，但缺页尺寸** | `PageIR` 加 `page_w/page_h`（pt）+ 渲染层归一化 |
+| `BlockBase.index`（页内递增序号） | `schema.py:467`；`PageInfo` 校验顶层 index 严格递增 `schema.py:1047`/`:1052` | **已有等价物**：`Vec<Region>` 的位置即阅读序 | 渲染层用下标，不新增字段 |
+| `type: BlockType`（29 值，实数） | `schema.py:70-108` | **部分**：`RegionKind` 4 值（`region.rs:24-34`），无 image/code/formula/index/aside/footnote/header/footer/page_number | `region.rs` 扩枚举（#10 同源） |
+| `DocTitleBlock`/`ParagraphTitleBlock.level` | `schema.py:528-536` | **已永久丢失**：级别焊在 text 前缀（`src/text_health.rs:117`/`:123` `format!("{} {}", "#".repeat(lv), line)`） | `Region` 加 `heading_level: Option<u8>`；前缀下移渲染器（**触碰字节契约**） |
+| `InlineContentBlock.content: list[InlineSpan]` | `schema.py:494-503` | **已永久丢失**：无 span 概念 | 新增 `Span` + `Region.spans`（三个 producer 都要改） |
+| `TextSpan.styles: [bold\|italic\|underline\|emphasis\|strikethrough\|superscript\|subscript]` | `schema.py:320-338`、`:341-356`（上下标互斥校验） | `ANYDOC_RICH_TEXT` 已把样式注入成 `**`/`<u>` 字面量，**非结构化** | 判定视图/渲染视图分离手法改造 |
+| `EquationInlineSpan`（`equation_inline`，**不含外层定界符**） | `schema.py:358-371` | 无行内公式载体 | `SpanKind::Equation`；与 #9 对拍后再定 |
+| `CodeInlineSpan` / `HyperlinkSpan` | `schema.py:373-397` | 无 | 同上（span 层一次性补齐） |
+| `continues_prev: bool\|None`（仅顶层块） | `schema.py:506-509`；嵌套块禁止携带 `schema.py:1058` | **可推出**：跨页表合并 pass 已知续接关系（`docir/passes/cross_page_table`），但未存字段 | `Region` 加 `continues_prev`，pass 顺带写 |
+| `TableBlock.cell_merge: list[0\|1]\|None` | `schema.py:704-709`（由 `postprocess/visual.py:440-441,476-477` 从 body 弹出后挂到父块） | **须改 producer**：`TableCell{text,x,y,h}` 无跨格信息（`src/table_grid.rs:16-21`） | 若要投影须保留 oar-ocr 的 span 信息，别从 HTML 反解 |
+| `ImagePayloadBlock.image_base64\|image_path\|image_url` | `schema.py:556-581`（path 仅安全 POSIX 相对路径，URL 禁危险协议） | **已永久丢失**：IR 无图片资产引用，Image 块 bbox 只用于表格补救（`gfm_adapter.rs`） | 需新增"裁图落盘 + 引用"通路（成本最高的一项） |
+| `EquationBlock`（行间公式，`content: str` + 载荷） | `schema.py:590-592` | **已永久丢失** | 同 #9 |
+| `CodeBlock`/`AlgorithmBodyBlock`/`ListBlock`/`IndexBlock` | `schema.py:731-735`（`CodeBlock.sub_type` 区分 code/algorithm）、`:610-614`、`:646-662`。**两处口径别混**：`BlockType` 里 CODE/REF_TEXT/HEADER 等注释写 "Added in vlm 2.5"（`schema.py:86`、`:99-104`）说的是**版面标签来源**，不代表不在 basic 线上——`PIPELINE_DET_TYPE`（basic=medium 的检测集，`ocr.py:50-51`）**含** CODE / ASIDE_TEXT / INDEX / REF_TEXT / HEADER / FOOTER / PAGE_NUMBER / PAGE_FOOTNOTE，**不含** LIST 与 CHART（`constants.py:98-113`） | 与 #10 的 13 项口径同源（basic 不含 LIST/CHART） | 排在 #10 之后 |
+
+**dump 实测的两条硬事实**（决定第 1 步从哪来）：
+
+1. **文字层通路根本没有 dump**。写入点只有 `assemble_doc_result` 内那一处
+   （`src/pdf/mod.rs:350-361`），而它只被 OCR 批量路径调用（`src/pdf/mod.rs:311`）；
+   文字层走 `finalize_text_docir`，不经此函数 → 设了 `ANYDOC_DUMP_DIR` 也不落盘。
+   子代理用"没设 env 跑 text.pdf"来证明这一点是**操作失误**（它自己也承认了），
+   真正的证据是上面的调用链。**含义**：想用 dump 对拍 IR 字段，text.pdf/text.ofd
+   这类原生文字层文档拿不到任何中间数据 → #6 第 1 步若要看页尺寸现状，得先补
+   文字层侧的 dims 传递，或改用 OCR 样本对拍。
+2. OCR dump 的形状是 `doc{i}_page{p:03}.json`（`StructureResult` 原样 serde）
+   + `doc{i}_dims.txt`（`"{page} {w} {h}"` 行）（`src/pdf/mod.rs:353-359`）。
+   → **页尺寸已经在手边**，只是没进 IR。这是最便宜的第 1 步。
+
+**最小增量顺序**（每步注明是否触碰字节契约；1→2 是本票唯一必须先做的两件）
+
+1. `PageIR` 加 `page_w`/`page_h`（pt），三个 producer 各传一次 → **不触碰**（渲染层
+   不消费即输出不变）。解锁 bbox 归一化与 content_list 的 `bbox` 字段。
+2. `Region` 加 `heading_level: Option<u8>`，producer 改"设字段"而前缀**下移到
+   `docir/render.rs`** → **触碰**，必须"双写 + 新 renderer 与旧通路逐字节等值"
+   来证伪风险（本节"风险"段的手法）。解锁 #11 的标题级别与 #10 的 DOC_TITLE。
+3. `Region` 加 `continues_prev`，由既有跨页表 pass 写入 → **不触碰**。
+4. 新增 `Span` + `Region.spans`（先只装 text + styles） → **不触碰**（默认渲染
+   忽略 spans 即输出不变），但 #10 的 `ANYDOC_RICH_TEXT` 通路要一并改造成结构化。
+5. `RegionKind` 扩 Image/Code/Formula/Index/Aside/Footnote + 图片裁切落盘通路 →
+   **不触碰**既有块，新类别出现才改输出（依赖 #10 的样本）。
+6. `TableGrid`/表格 HTML 侧补 `cell_merge` 与真实 row/col → **不触碰**（但若从
+   HTML 反解 span 是错路，必须回到 oar-ocr 的 cell 信息，成本高）。
+
+**待决断**（开工前需要一句话答复，不要各自猜）：
+
+- (a) 第 2 步"前缀下移"是否接受**双写过渡**（producer 同时设字段与保留前缀，
+  渲染器优先用字段、字段缺时走前缀），还是一次切干净 + `ANYDOC_GOLDEN_UPDATE`？
+  本仓口径历来是"行为变更须显式重基线"（#10b 即先例），但本节验收判据又明写
+  "**未使用** UPDATE"——两条要求在第 2 步上**互相冲突**，必须先定一个。
+- (b) 图片资产（第 5 步的落盘通路）要不要做：它是唯一引入"除 markdown 之外的
+  产物文件"的项，会改变本仓"单文件输出"的分发口径。
+- (c) `styles` 与 `ANYDOC_RICH_TEXT` 的关系：统一到结构化 span 后，`ANYDOC_RICH_TEXT`
+  这个 env 是保留为渲染开关（同一 IR 两种 markdown 详略），还是废弃？
+
 
 ### 风险（务必先读）
 
@@ -290,49 +387,216 @@ wireless=true (E2E mode)"）与 `with_wired_table_cell_detection` /
 
 ## #8 表格方向的视觉兜底分类器缺失
 
-状态：**未开始**。
+状态：**已实现为默认关闭的 `ANYDOC_TABLE_ORI`，第 0 步 + A/B 已出结论（2026-09-27）**。
+差距**是真的**（不是我早期记的"basic 无方向矫正"那么回事），但**不进默认路径**，
+理由与 #7 不同：#7 是"增益未证"，#8 是"增益已证、但缺一个零副作用的机制保证"。
 
-**问题 → 动作**：扫描件里旋转的表没有视觉兜底 → 先查所需模型是否在我们的注册表里，再决定是否接 `with_table_orientation`。
+### 先更正本条目早期的一处误判（重要，别再抄错）
 
-MinerU 表格三阶段第一步是"先 PDF 原生文本行投票，**不足时**调视觉方向分类模型"
-（`mineru/backend/analysis/pdf/tables.py:530-559`，模型
-`table/cls/mineru_table_ori_cls.py`）。本仓 `src/orientation.rs` 实现了同一套
+本节原文写"本仓 `mineru-basic` 档按 MinerU 口径**关闭**页面方向矫正……这是刻意的
+对齐"，并据此把 #8 归入"要不要做"。**方向是对的，理由错了一半**：MinerU 有两个
+**不同**的槽位，之前把它们混为一谈了——
+
+- **页面级**方向矫正（转整页）：MinerU basic（=hybrid effort medium）**确实没有**，
+  所以我们 `doc_ori: ""` 是对的，别顺手打开；
+- **表格级**方向矫正（只转"表格裁剪图"、在结构识别之前）：MinerU **确实跑**，
+  `backend/analysis/pdf/window.py:389` `if effort in ["flash", "medium", "high"]`
+  里就含 medium（`parser/tier.py:14` basic→medium）。
+
+→ 所以 #8 不是"要不要额外做一个 MinerU 没有的东西"，而是**"MinerU 有、我们没有"
+的真缺口**。`src/orientation.rs` 那套 PDF 文本行投票**盖不住**这条——它只在有文字层
+时投票，且投的是**整页/块级朝向**，纯图片扫描页里被版面框出来的旋转表拿不到这道信号。
+
+### A/B 实测（真 CLI，`--dpi 150`，OAR_HOME=/root/.oar）
+
+测试件：`tests/gen_table_ori.py` 生成 `table_upright.pdf` / `table_rot90.pdf`（入库，
+同一张 3×4 有线表只差朝向、逐像素同源），180°/270° 两版只在 /tmp 生成不入库。
+真值 = `wired_table.pdf` 那张表，故判据可复用 `wireless_table.rs` 的网格断言口径。
+
+| 测试件 | OFF（现状） | ON（`ANYDOC_TABLE_ORI`） |
+|---|---|---|
+| `table_upright`（0°） | 正确 | **逐字节相同** |
+| `table_rot90` | ❌ **转置残局**：3 行 × 5 列，单元格被劈成 `C` / `herry` / `B` / `nana`，`$` 单独成格 | ✅ 每行 3 格、5 行、表头 `Item`/`Quantity` 就位（rec 仍有瑕疵：`Price`→`rice`） |
+| `table_rot180`（/tmp） | ❌ 行列顺序反、`Appple`/`Banaana` 粘连、首列变金额 | ✅ 行列顺序正确、`Price` 保住（rec 瑕疵同类） |
+| `table_rot270`（/tmp） | ❌ 转置成 5 列（`Item/Appple/Bannana/Cheery` 挤进一行） | ✅ 正确 3 列 × 4 行 |
+| 既有表样本 `wired_table` / `wireless_span` / `wireless_simple` / `image_table.pdf` / `rotated_table.pdf`（文字层件） | — | **全部逐字节相同**（6 件，含非 OCR 通路） |
+| `multipage.pdf`（12 页）耗时 | 15.65 / 15.81s | 15.92 / 15.38s（**噪声内**） |
+
+**结论**：三个角度上 ON **严格更好或持平，无一处变坏**；正常表零影响；开销测不出。
+断言只钉"网格形状 + 表头存在"，**不逐格钉文本**——rec 对旋转后文字的精度是另一笔债
+（属 #7/#9 范畴），钉进来会把两条债焊成一个易碎的测试。
+
+一处观察但**不下结论**：rot90 的 OFF 输出带 `<tbody>`、ON 不带。这与 #7 里
+cells→HTML"多包一层 `<tbody>`"现象同源（`<tbody>` 的有无似乎在区分"E2E 结构通路"
+与"兜底/重拼通路"），但样本太少（n=1），**不要据此推断通路选择规则**。
+
+### 为什么不进默认路径（与 #10b 的对比才是关键）
+
+#10b 敢默认开，是因为有**机制保证**：`seal_pass` 在页面无 `Seal` 版面元素时早退，
+模型连加载都不加载 → "不含章的文档零影响"是可证的，不是实测出来的。
+
+#8 没有这个机制。`with_table_orientation` 一旦挂上，**每个表格裁剪都要过一遍分类器**，
+正常表靠的是"分类器判 0° → `apply_orientation_from_class_id` 不旋转"
+（`preprocess.rs:128-133`，class_id=0 走 `_ => image` 原样返回）。也就是说它的
+"零影响"依赖**分类器不误判**，而误判的后果是**把一张本来正确的表转歪**——
+静默降级，比不修更糟。
+
+而这里恰恰验不全：`tests/real_samples/` 13 件是 gitignored、本沙箱不存在，
+golden 的 OCR 基线只能重跑仓内 10 件。我没有在现网语料上量过误判率，
+不能拿"6 件合成/仓内件全等"外推成"对所有文档安全"。
+
+叠加第二条：`pp-lcnet_x1_0_doc_ori.onnx` 当前**不在** `MINERU_ASSETS`（basic 的
+`doc_ori` 是空串）。默认开就必须把它加进必需件，默认档首跑承诺从 7 件/≈240MB
+变成 8 件/≈247MB，`mineru_assets_match_spec` 与离线包脚本都得跟着改——
+为一个未量误判率的能力，抬高"首跑必需"的门槛，不值。
+
+→ **落法**：默认关闭的 `ANYDOC_TABLE_ORI` 开关（`EngineKey` 加 `table_ori` 位，
+生效时打一行 stderr 说明），`tests/table_orientation.rs` 三条契约钉死
+"正常表逐字节不变 + 旋转表网格转正 + 开关有痕迹"。
+**翻默认的唯一前置**：拿 `real_samples` 跑一轮 OFF/ON 对拍，确认"旋转表修复数 > 0
+且正常表变化数 = 0"，同时把 doc_ori 加进 `MINERU_ASSETS` 并重基线 golden。
+
+### 子代理取证报告里被推翻的 4 处（别照着它开工）
+
+1. "改动在 `src/main.rs`"——**错**，构建 analyzer 的地方是
+   `src/ocr_engine.rs::build_analyzer`（本票接线即在此）。
+2. "`/root/.oar` 为空、模型只在 `/data/models/mineru-ocr/`"——**两处都错**：
+   `/root/.oar` 有 15 个文件且**含** `pp-lcnet_x1_0_doc_ori.onnx`（6,787,248 B）；
+   `/data/models/mineru-ocr/` 里**没有**这个文件（只有 `table_cls`）。
+3. "`pp-lcnet_x1_0_table_cls.onnx` 是方向分类器还是有线/无线分类器待查"——已确认
+   是**有线/无线**分类器，且我们早已接线（`ocr_engine.rs:401`），与本票无关；
+   本票用的方向件是 `registry.rs:64` 那张 `doc_ori`（6.8MB，在注册表内可
+   auto-download）。
+4. "改动面 60–110 行、无阻塞、可直接进第 1 步"——**低估**：真正的门槛不是接线
+   （接线确实只有 3 行），而是上面那节"误判率无法在现网语料外验证"。
+
+### 原始取证（保留，已按上文更正）
+
+MinerU 表格三阶段第一步是"先 PDF 原生文本行投票，**不足时**才调视觉方向模型"
+（`mineru/backend/analysis/pdf/tables.py:530-559` `_apply_table_orientations`，
+`window.py:389` 按 effort 触发；模型
+`model/table/cls/mineru_table_ori_cls.py`）。本仓 `src/orientation.rs` 实现了同一套
 PDF 线投票口径（046b08a ②），但**没有视觉兜底** → 纯图片型扫描件里旋转 90°/180°
-的表格没有第二道信号。附带：本仓 `mineru-basic` 档按 MinerU 口径**关闭**页面方向
-矫正（`OcrTier::MineruBasic` 的 `doc_ori: ""`，`src/models.rs:251`；口径注释见 `src/ocr_engine.rs:402-404`），这是刻意的对齐，不要顺手打开。
+的表格没有第二道信号（本票要补的正是这一条）。
 
-**验收判据**：合成样本（表块旋转 90°）在 `--pdf-force-ocr` 下网格重建正确；
-非旋转页面输出逐字节不变；上游 `with_table_orientation`（`structure.rs:442`）
-需要哪个模型资产要先查（本仓注册表里有 `pp-lcnet_x1_0_table_cls.onnx`，
-方向分类件是否在册未确认）。
+**MinerU 侧的门控与阈值**（`mineru_table_ori_cls.py:22` 等，我们**未**复刻，记此备查）：
+- 候选门控：竖框（宽高比 < 0.8）数 ≥ 总框数 28% 且 ≥ 3 个才进入多角度评分
+  （`ROTATED_TEXT_*`，`:13-16`）；
+- 角度来源：用 **OCR rec 置信度评分**选角度，不是独立视觉分类器
+  （`ORIENTATION_SCORE_*`，`:18-21`：0° 分 ≥0.9 直接判 0°，其他角度与 0° 差 <0.08
+  时保守保持 0°）；候选角只有 **0/90/270**，**没有 180°**（`ORIENTATION_SCORE_LABELS`
+  `:22`）；
+- 有效识别结果 <5 条记 0 分（投票不足判据）。
+→ **我们接的是另一套技术方案**：oar-ocr 的 `DocumentOrientationAdapter`
+（PP-LCNet 视觉分类器，224×224 输入、4 类 0/90/180/270，`structure.rs:437` 注释
+"uses the same model as document orientation detection"）。
+**对齐的是能力，不是实现**（与 #7 那条 cells→HTML 同一处境）。差异有两处值得留意：
+它有"保守保持 0°"的门控而没有；我们能处理 180° 而它不能（实测 180° 上我们确实修对了）。
+若要翻默认，这组阈值是现成的调参参考，不必自己发明。
+
+**上游接线事实**（已核，非推断）：`with_table_orientation(model_source)`
+在 `third_party/oar-ocr/src/oarocr/structure.rs:442`，与页面级
+`with_document_orientation`（`:379`）是**两个独立槽位**；表级槽位在
+`structure.rs:920-925` 建 `DocumentOrientationAdapter`，消费点在
+`table_analyzer.rs:352-384`（每个表格裁剪调 `correct_image_orientation`，
+失败则 warn 后**原图继续**，不整页失败）；0° 判定走
+`preprocess.rs:128-133` 的 `_ => image` 分支**不旋转**。
+
+**本票验收判据**（已满足，逐条对应上文实测表）：合成样本表块旋转 90°/180°/270°
+在 `--dpi 150` 下网格重建正确 ✅；非旋转页与全部既有表样本输出逐字节不变 ✅
+（`tests/table_orientation.rs` 三条契约守护）。**未完成的部分**：现网语料
+（`tests/real_samples/`，gitignored）上的误判率未量——这是翻默认的唯一门槛。
 
 ---
 
 ## #9 表内对象吸收 + 行内公式 / 公式编号
 
-状态：**未开始**。
+状态：**第 0 步已完成（2026-09-27，两侧同件对拍），结论是"检测侧已具备、装配侧丢信息"**。
+本条目原写的"表内公式/图丢"方向对，但**根因不在公式识别**——MFD/MFR 全在跑且结果与
+MinerU basic 逐字一致；丢在**我们把上游已经拼好的 `LayoutElement.text` 扔了**。
 
-**问题 → 动作**：表内公式/图丢，行内公式覆盖度**未实测** → 先对拍量差距，不许凭代码痕迹开工。
+### 第 0 步对拍（真 CLI vs 真 MinerU basic，同一张图页）
 
-**取证事实**：
+测试件 `tests/samples/formula_mixed.pdf`（`tests/gen_formula_mixed.py` 生成，1000×620px
+图像页 → 480×297.6pt，`--dpi 150` 像素 1:1；无文字层已用 PyMuPDF 核实 `len(text)==0`）。
+一页五个观测点：行内公式 / 带编号行间公式 / 无编号行间公式 / 表内公式 / 表内图。
+对照侧：本机 `mineru parse --tier basic`（本地 server，非远程），故两边**同流程同模型**。
+
+| 观测点 | MinerU basic 输出 | 本仓输出 | 判定 |
+|---|---|---|---|
+| 行内公式 | `The relation $E = m c ^ { 2 }$ links mass and energy here.`（**留在行内**） | `The relationE=m c^{2}` 换行 + `links mass and energy here.` 与**下一段粘连** | ❌ **真缺口** |
+| 行间公式 | `$$ V = IR $$`（有定界符） | `V=I R`（裸 LaTeX，无 `$$`） | ❌ 渲染缺定界符 |
+| 公式编号 | 并进公式块 `\tag{1}`，**不独立成行** | `(1)` 独立成一行 | ❌ 缺编号合并 |
+| 表内公式 | `$\overline { { f ( x ) } } = x ^ { 2 } + 1$`（**一份**） | `\overline{{f(x)}}=x^{2}+1<br/>$\overline{{f(x)}}=x^{2}+1$`（**同一格两份**） | ❌ 缺去重/取 LaTeX 形态 |
+| 表内图 | 该格**空** | 该格**空** | ✅ 持平（且见下方"没量到"的说明） |
+| MFR 识别质量 | `\overline{{f(x)}}=x^{2}+1`（把表格横线读成上划线） | **完全相同**的 `\overline{{f(x)}}` | ✅ 同源，非差距 |
+
+**"表内图"这一格实际没量到**（诚实记录，别把持平当结论）：格内放的曲线位图被**两家
+的版面模型都判成 `inline_formula`**——我们 dump 里是 `Formula/inline_formula` +
+latex `\sim`，MinerU 直接吐 `$\smile$`。第二版换成灰度渐变块后该格不再出公式、
+两侧都空，但仍没触发"表内图吸收"。→ **本票的"图那半仍未测到**，需要一个版面模型
+明确判为 `Image` 且落在表格 bbox 内的样本（现成件 `image_table.pdf` 是"整页当图"，
+不是"表格里有图"，不能替代）。
+
+### 关键取证：信息在上游就有，是我们丢的
+
+`ANYDOC_DUMP_DIR=/tmp/fx_dump3` 的逐页 JSON（本仓自己的中间产物）显示：
+
+- `layout_elements[0]`（Text）的 `text` = `'The relation $E=m c^{2}$ links mass and energy here.'`
+  ——**上游已经把行内公式拼回原句**（`third_party/oar-ocr/.../structure.rs` 的
+  inline-formula stitching，正是本条目原来引的 `structure.rs:2816-2824` 那段）；
+- 同一页 `layout_elements` 带完整 `label`：`inline_formula` / `display_formula` /
+  `formula_number`（`text='$$(1)$$'`）/ `table` / `text`，且 `order_index` 1..10 齐；
+- `text_regions` 里公式是**额外**的行（region 7 `E=m c^{2}`、region 9 `(1)`、
+  region 11 `\overline{{f(x)}}=x^{2}+1`，conf 全 1.00）。
+
+而本仓装配路径（`src/gfm_adapter.rs:236-257`）的正文行**只来自 `text_regions`**，
+`LayoutElement.text` 目前仅被 Seal（`#10b`）与 title 前缀两处消费。于是：
+拼接好的整句被弃用 → 行内公式以"孤立行"形式落进正文 → 段落合并（`merge_into_paragraphs`）
+按 y 邻近把它和邻居焊成 `The relationE=m c^{2}` 与 `links…here.Paragraph continues…`。
+**这不是模型差距，是我们自己少用了一路已经算好的信息。**
+
+### 由此得出的最小修法（按性价比排序，尚未开工）
+
+1. **正文行优先取带 `label` 的 Text 元素文本**（约等于"用 stitching 后的句子"），
+   det/rec 行只在元素无 text 时兜底 → 一次修好 行内公式掉行 + 段落粘连，且顺带
+   让 `order_index` 真正生效。风险：改的是 OCR 通路正文装配，**golden 基线必然要重跑**
+   （`tests/samples/image*.pdf`、`multipage.pdf` 等 OCR 件都在契约内）。
+2. **display formula 加 `$$…$$`**：纯渲染层，按 `label=display_formula` 分流。
+3. **公式编号并入公式块**：MinerU 有 `optimize_hybrid_formula_number_blocks`
+   （`formulas.py:75-102`）；我们已有 `FormulaNumber` 元素与 `$$…$$` 载荷，缺的是
+   "就近并入 + 不再独立成行"的几何判据（同 y 带、x 在右侧）。
+4. **表内单元格去重**：`cell_texts` 已是 `X<br/>$X$` 双份，取一份（优先 `$` 形态）。
+   注意这与 #6 的 `TableBlock.cell_merge` / 内容表示是同一块地皮，动之前先看 #6 的
+   三个待决断。
+5. **表内图吸收**：仍**不做**——第 0 步没量到 MinerU basic（无 VLM）在表内图上到底
+   输出什么（本条目原引的 `tables.py:714-715` base64 吸收属哪条通路未证），
+   先补一个"版面判 Image 且在表 bbox 内"的样本再定。
+
+**验收判据**（第 0 步后收紧为可测形式）：`formula_mixed.pdf` 上行内公式**在行内**
+（输出含 `The relation $E=m c^{2}$ links` 形态、且 `links mass and energy here.` 不与他段
+粘连）；行间公式带 `$$`；`(1)` 不独立成行；表内公式单元格只有一份；既有 OCR golden
+逐条重基线（不是"不变"，这条要提前和用户确认）。
+
+**原取证事实（保留备查）**：
 - MinerU 收表格任务时**吸收**表内图片 → `<img src="data:image/jpeg;base64,...">`、
   表内行内公式 → `<eq>...</eq>`，且被吸收对象从 model_list 删除避免二次输出
-  （`tables.py:714-715`）；本仓表输出为纯文本 HTML，表内图/公式直接丢。
+  （`tables.py:714-715`）；本仓表输出为纯文本 HTML。**注**：这条是 flash/hybrid 通路的
+  读法，basic（无 VLM）是否走同一吸收逻辑**未证**，见上"表内图没量到"。
 - 公式标签三分：`inline_formula` / `display_formula`（`formulas.py:112`）+
   `formula_number`（layout 标签 → `RAW_FORMULA_NUMBER`，surface 清单 §4.1），
   medium 模式下公式编号由 OCR-rec 识别（`formulas.py:182-234`）、hybrid 模式有
   专门的编号合并函数 `optimize_hybrid_formula_number_blocks`
-  （`formulas.py:75-102`）。
+  （`formulas.py:75-102`）。**第 0 步实测：这三类 label 在我们 dump 里都已经在**，
+  所以本票不需要接新模型，只需要消费它们。
 - 本仓 `mineru-basic` 挂 `with_formula_recognition`（`src/ocr_engine.rs:427-434`，条件挂载），
-  公式件为**可选**（缺件只丢 LaTeX，见 19f6bf8 的参数面收敛票），但**行内公式覆盖到
-  什么程度未实测**：上游 `structure.rs:2816-2824` 有"inline formula 的 sort_and_join +
-  `label="formula"` 包裹"的痕迹，说明通路存在，不等于我们对齐。
+  公式件为**可选**（缺件只丢 LaTeX，见 19f6bf8 的参数面收敛票）。
 
-**第 0 步**：拿一张含行内公式与公式编号的样本跑 `ANYDOC_DUMP_DIR`，与本仓 markdown
-对拍，先量出"已具备/缺失"，再决定做多少——不要凭代码痕迹开工。
-
-**验收判据**：行内公式在正文行内以 `$...$` 就位（不掉行、不吞前后文）；公式编号
-不重复成独立行；表内公式/图片有明确去处（吸收或至少在正文里不丢）。
+**测试件本身的两条教训**（写进 `gen_formula_mixed.py` 头部注释，防后人重踩）：
+1. 手写 x 偏移会让文本块互相重叠（第一版公式压住了 `relationn` / `connects` 的首字母），
+   det/rec 读出残字 → 量到的"掉行"混了排版伪影。现在用 renderer **实测宽度**顺排。
+2. `fig.add_axes` 是**归一化 + 左下角原点**，直接拿数据坐标算 y 会把格内图画到表格外
+   （第一版画到尾行文字上，两家各吞半行）。现在用 `cell_band()` 显式换算。
 
 ---
 

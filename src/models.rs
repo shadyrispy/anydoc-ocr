@@ -215,6 +215,30 @@ pub struct ModelSpec {
     /// 空串 = 该档没有候选件，开关给了也不接（tiny/small/medium 不留这条口子，
     /// 免得 129MB 模型被误算进小档）。
     pub wireless_cell_det: &'static str,
+    /// **表格**方向矫正（#8）。复用页面方向模型（`pp-lcnet_x1_0_doc_ori.onnx`），
+    /// 但接的是**另一个槽位**：`with_table_orientation` 只转"表格裁剪图"，
+    /// `with_document_orientation` 转"整页"——两者不可混为一谈。
+    ///
+    /// 为什么 mineru-basic 才有候选：MinerU 用小模型版面时**确实**跑表格方向矫正
+    /// （`backend/analysis/pdf/window.py:389` `if effort in ["flash","medium","high"]`，
+    /// basic→medium `parser/tier.py:14`），但它**没有**页面方向矫正这一环。所以
+    /// "basic 无方向矫正"这句老注释只对**页面级**成立，表格级是缺口（#8）。
+    ///
+    /// 空串 = 该档没有该候选件（tiny/small/medium 已用页面级 doc_ori 把整页转正、
+    /// 表随页走，再接表格级只是多付推理，且它们本就不是"对齐 MinerU"的档）。
+    pub table_ori: &'static str,
+}
+
+/// #8 表格方向矫正开关：`ANYDOC_TABLE_ORI` 存在即给 mineru-basic 档接
+/// `with_table_orientation`。
+///
+/// **默认关闭**理由同 #7：这是行为变更（含旋转表的页输出会变）+ 每表一次额外
+/// 分类推理，且要新加载一个模型——`pp-lcnet_x1_0_doc_ori.onnx`（6.8MB）当前
+/// **不在** `MINERU_ASSETS`（basic 的 `doc_ori` 是空串）。在 A/B 量清"旋转表修复
+/// 率↑、非旋转表逐字节不变"之前不塞进默认路径；开关留着让现网能一行 env 出结论。
+pub fn table_ori_wanted() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ANYDOC_TABLE_ORI").is_ok())
 }
 
 /// #7 的 A/B 开关：`ANYDOC_WIRELESS_CELLS` 存在即给 mineru-basic 档接
@@ -252,6 +276,7 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             formula_tokenizer: "",
             seal_det: "pp-ocrv4_mobile_seal_det.onnx",
             wireless_cell_det: "",
+            table_ori: "",
         },
         OcrTier::Small => ModelSpec {
             layout: "pp-doclayout-m.onnx",
@@ -267,6 +292,7 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             formula_tokenizer: "",
             seal_det: "pp-ocrv4_mobile_seal_det.onnx",
             wireless_cell_det: "",
+            table_ori: "",
         },
         OcrTier::Medium => ModelSpec {
             layout: "pp-doclayoutv3.onnx",
@@ -282,6 +308,7 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             formula_tokenizer: "",
             seal_det: "pp-ocrv4_mobile_seal_det.onnx",
             wireless_cell_det: "",
+            table_ori: "",
         },
         // MinerU-4 basic 复刻（§5.2 Step 1）：与 MinerU `basic` 档逐模型对齐。
         // det/rec/dict 与 oar tiny/small 缓存字节一致；版面换 DocLayoutV2 并走
@@ -306,6 +333,7 @@ pub fn spec_for(tier: OcrTier) -> ModelSpec {
             // #7：mineru-basic 是唯一有该候选件的档（129MB 不进小档），且只有
             // `ANYDOC_WIRELESS_CELLS` 给出时才加载。
             wireless_cell_det: "rt-detr-l_wireless_table_cell_det.onnx",
+            table_ori: "pp-lcnet_x1_0_doc_ori.onnx",
         },
     }
 }
