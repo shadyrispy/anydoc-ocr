@@ -99,7 +99,7 @@
 | #9 | 表格里的公式/图片丢；行内公式是否已对齐**未知** | 拿含行内公式与公式编号的样本 `ANYDOC_DUMP_DIR` 对拍，先量"已具备/缺失"再决定做多少 | 行内公式 `$...$` 不掉行；编号不重复成独立行；表内对象有去处 | 公式件需 `ANYDOC_MODEL_DIR` · 中 |
 | #10 | code 无 fence、目录无缩进、旁注混进正文、脚注/引用不挂接 | 按 `PIPELINE_DET_TYPE` 13 项内顺序 CODE → INDEX → ASIDE_TEXT → FOOTNOTE/REF_TEXT，各配 1 个样本 | 每类输出结构可断言；未涉及类型逐字节不变 | 除页眉页脚外全依赖 #6 · 中-大 |
 | #11 | 没有可被下游消费的产物（content_list / middle_json） | #6 完成后，先把 24 个类型名与 bbox 约定抄成**单测常量表**，再写 renderer | 与 MinerU basic 同文档的类型序列/块数对齐率可量化；markdown 输出不变 | #6 · 中 |
-| #14 | 与 MinerU 默认档（standard，含 VLM）精度不可比 | 只写文档口径；如要接，只做 `--server-url` 客户端，不搬权重 | README/`--help` 口径落地即结 | 无 · 文档级 |
+| #14 | 与 MinerU 默认档（standard，含 VLM）精度不可比 | 只写文档口径；如要接，只做 `--server-url` 客户端，不搬权重 | README/`--help` 口径落地即结 | **已完成**（README + `--help` 口径已落地）· 文档级 |
 
 **开工顺序建议**：#12 / #13 / #10b（小而独立，先攒收益）→ **#7**（当前最大的实际质量偏差）
 → **#6**（结构债的根，之后 #11/#10 才有落点）→ #8 / #9 / #10 / #11。
@@ -521,7 +521,11 @@ MinerU 输出面（`parser/api_server.py:146-154`）：`markdown` / `middle_json
 
 ## #14 VLM / LLM 辅助线：判定为范围外（除非以客户端方式接）
 
-状态：**决策条目，非实现任务**。写在这里是为了下次不必重做权衡。
+状态：**已完成（文档口径已落地，2026-09-27）**。本条目本来就是决策条目、非实现任务；
+唯一要做的实现是"附带必做"那两条文档，现已落地：README「模型档与精度」新增一段
+写明 basic ≠ MinerU 默认档 standard（含 VLM）、别拿 standard 结果当基线，并列出
+`title_leveling` / `cross_page_table_cell_merge` 默认全关这一处口径差异；`--help`
+（`MINERU_ENGINE_HELP`）新增「对齐口径」小节，内容与 README 同源并指回本节。
 
 **问题 → 动作**：默认档口径不可比 → 只写文档；真要做就是 `--server-url` 客户端，不做本地推理。
 
@@ -536,7 +540,7 @@ telemetry、agent 向 `read`/`search`/`--limit`/`--after` 游标。
 MinerU **默认全关**（`config.py:395-397`），所以"不实现"就是与默认行为对齐，
 不算缺口；本仓对应实现走的是规则路径（`heading_levels.rs` 三信号投票 /
 `cross_page_table.rs` 几何列数对齐），语义上比它的默认更确定 → **维持现状**。
-唯一要做的是在 README 写清这一处口径差异（与 #10 表格末行同源）。
+这一处口径差异已写进 README（见本节首的状态行）。
 
 **如果要接，务实路径只有一条**：不做本地推理，当**客户端**。MinerU 的 v1 API 协议
 和 OpenAI 兼容形态已在 `parser/api_client.py`（上传→提交→轮询→下载，
@@ -544,9 +548,10 @@ MinerU **默认全关**（`config.py:395-397`），所以"不实现"就是与默
 `--server-url` 一个参数即可把 standard/advanced 变成可选后端，不污染主链路、
 不引入权重。开工条件：有人真的需要 standard 档精度，且接受网络依赖。
 
-**附带必做**（不需要写代码之外的事）：README 与 `--help` 明确
+**附带必做（已完成）**：README 与 `--help` 明确
 "本仓对齐 MinerU **basic** 档（无 VLM）；MinerU 默认档为 standard（含 VLM）"，
-并链接本节口径。
+并链接本节口径。→ 2026-09-27 已落地，位置：README「模型档与精度」第二段、
+`src/models.rs` 的 `MINERU_ENGINE_HELP`「对齐口径」小节、README `--ocr-tier` 行注。
 
 ---
 

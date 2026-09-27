@@ -42,6 +42,18 @@ pub const MINERU_ENGINE_HELP: &str = "\
     本仓不对用户原图做静默缩放；要处理大图请先自行等比缩放。
   · EXIF 方向自动转正后再 OCR。
 
+对齐口径（重要，别拿错基线）：
+  本仓对齐的是 MinerU 的 basic 档（=hybrid effort medium，`tier.py:14`），
+  不含 VLM。MinerU 自己的默认档是 standard（`tier.py:53` `tier=None → \"standard\"`，
+  effort=high），standard 且未配 `server_url` 时要额外装本地 VLM 引擎（`tier.py:75`）。
+  也就是说 `mineru` 默认跑出来的结果不是本仓的对比对象——多栏阅读顺序、图表内容
+  分析这些归 VLM 的活本仓刻意不做，精度差异属档位差异，不是 bug（取舍理由见
+  BACKLOG.md #14：与「CPU / 离线 / 单文件分发」的仓定位正面冲突）。真要 standard
+  精度，唯一务实路径是加 `--server-url` 当客户端，不搬权重。
+  另：MinerU 的 LLM 辅助后处理（`title_leveling` / `cross_page_table_cell_merge`）
+  默认全关（`config.py:395-397`），本仓对应实现走规则路径（标题三信号投票 /
+  跨页表几何列数对齐），语义上比它的默认更确定。
+
 引擎档（--ocr-tier）说明：
   默认 mineru-basic：与 MinerU 4.0 basic 档同流程、同模型、同版面后处理。
   日常使用无需传任何参数；首跑会联网拉模型（合计约 240MB，$OAR_HOME 缓存复用）。

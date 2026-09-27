@@ -115,6 +115,12 @@ fn help_declares_mineru_as_the_default_tier() {
     let help = format!("{}{}", r.out, r.err);
     assert!(help.contains("mineru-basic"), "--help 未提到默认档 mineru-basic:\n{help}");
     assert!(help.contains("MinerU"), "--help 应说明默认档与 MinerU 的对应关系:\n{help}");
+    // #14 口径：本仓对齐 basic（无 VLM），MinerU 自己的默认档是 standard。
+    // 不写清就会有人拿 standard 的结果当基线，把档位差误报成 bug。
+    assert!(
+        help.contains("standard") && help.contains("VLM"),
+        "--help 必须写明对齐的是 basic 而非 MinerU 默认档 standard（#14）:\n{help}"
+    );
 }
 
 #[test]

@@ -62,7 +62,7 @@ anydoc-ocr <输入文件或目录> [选项]
 | 参数 | 默认 | 含义 |
 |------|------|------|
 | `-o, --output <path>` | stdout | 输出文件；目录输入时为输出目录 |
-| `--ocr-tier <mineru-basic\|tiny\|small\|medium>` | `mineru-basic` | OCR 引擎档。**默认即 MinerU 4.0 basic 档同款流程与模型**，日常无需传（见「模型档与精度」） |
+| `--ocr-tier <mineru-basic\|tiny\|small\|medium>` | `mineru-basic` | OCR 引擎档。**默认即 MinerU 4.0 basic 档同款流程与模型**（注意 basic ≠ MinerU 自己的默认档 standard，见「模型档与精度」） |
 | `--threads <n>` | `0` | OCR 推理页级并行度。`0` = 自动取可用并行度；进程级 ORT `intra=max(1,核心数/n)`，总线程≈核心数。内存受限环境（cgroup<8GB）可调小 |
 | `--dpi <f32>` | `100` | 图片型渲染分辨率，允许区间 `[50, 400]`（越界/NaN 直接报错）。印刷体公文 `100` 零精度损失且比 `200` 快 33%；`80` 起脚注/小字开始漏检 |
 | `--pages <expr>` | 全部 | 页码选择（**仅 PDF**，语法对齐 MinerU/docvortex）：1 基含端点、逗号分隔，如 `1-5,8`；`rN` 从末页倒数（`r3-r1` = 末三页）；`all` = 全部。排序去重、越界裁剪；倒序区间 / 与文档无交集 / 非法语法立即报错。所选外的页不抽取、不渲染、不进输出；非 PDF 或目录输入显式给页直接拒绝 |
@@ -87,6 +87,8 @@ anydoc-ocr 资料目录/ -o out_md/           # 目录批处理
 ## 模型档与精度
 
 **默认档 `mineru-basic`** 与 MinerU 4.0 `basic` 档逐模型对齐（`--ocr-tier` 可切换，无需重编译）。注册表内的模型从 ModelScope 自动下载，按 `$OAR_HOME` 缓存（sha256 匹配则复用）。
+
+**对齐的是 basic，不是 MinerU 的默认档。** MinerU 自身默认 `tier=None → "standard"`（`parser/tier.py:53`），standard = 小模型 **+ VLM**（未配 `server_url` 时要装本地 VLM 引擎，`tier.py:75`）；`basic` 才是"layout + MFR + 表格模型、无 VLM"（映射 hybrid effort=medium，`tier.py:14`）。所以**别拿 `mineru` 默认跑出来的结果当本仓基线**——多栏阅读顺序、图表内容分析这类归 VLM 的活本仓刻意不做（与「CPU / 离线 / 单文件分发」的定位正面冲突，取舍见 `BACKLOG.md` #14），精度差属档位差而非 bug。真需要 standard 精度，唯一务实路径是加 `--server-url` 当客户端、不搬权重。另有一处口径差异：MinerU 的 LLM 辅助后处理（`title_leveling` / `cross_page_table_cell_merge`）**默认全关**（`config.py:395-397`），本仓对应实现走规则路径（标题三信号投票、跨页表几何列数对齐），语义上比它的默认更确定。
 
 | 档 | 版面 | 文本检测（det） | 识别（rec） | 公式 | 适用 |
 |----|------|----------------|------------|------|------|
