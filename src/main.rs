@@ -5,34 +5,42 @@ use std::path::{Path, PathBuf};
 use anydoc_ocr::ConvertError;
 use anydoc_ocr::Result;
 use anydoc_ocr::convert_to_markdown;
-use anydoc_ocr::models::{OcrLayout, OcrTier};
-use anydoc_ocr::quality::QualityRoute;
+use anydoc_ocr::models::{MINERU_ENGINE_HELP, OcrLayout, OcrTier};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "anydoc-ocr",
     version,
-    about = "办公文档转 Markdown（含图片型 PDF/OFD 的 OCR 回退）"
+    about = "办公文档转 Markdown（含图片型 PDF/OFD 的 OCR 回退）",
+    after_help = MINERU_ENGINE_HELP
 )]
 struct Cli {
     /// 输入文件或目录；目录递归遍历处理所有受支持文档。- 表示 stdin
+    /// （图片输入见下方"输入格式"说明）
     input: String,
     /// 输出文件（单文件输入）或输出目录（目录输入）；省略单文件则写 stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// OCR 模型档：tiny/small/medium
-    #[arg(long, value_enum, default_value_t = OcrTier::Tiny)]
+    /// OCR 引擎档（默认 mineru-basic = MinerU 4.0 basic 同流程同模型，无需显式传）。
+    /// 只在默认档于本机跑不动时才需要碰：内存受限、无 MinerU 资产、离线安装包内
+    /// 置的小模型 → 降 tiny/small/medium。详见 --help 末尾档位说明。
+    #[arg(long, value_enum, default_value_t = OcrTier::MineruBasic)]
     ocr_tier: OcrTier,
-    /// 版面模型：doc 默认文档结构 / table 表格专用（检出表格才跑 SLANet，无表页零开销）
-    #[arg(long, value_enum, default_value_t = OcrLayout::Doc)]
-    ocr_layout: OcrLayout,
     /// OFD 强制走 OCR（重建表格结构）
     #[arg(long)]
     ofd_force_ocr: bool,
     /// PDF 强制走 OCR（文字型 PDF 当图片渲染后 OCR，用于图片型校准）
     #[arg(long)]
     pdf_force_ocr: bool,
+    /// 只走文字层，**绝不跑 OCR、绝不加载模型**（#13）。用途：这台机器不联网/
+    /// 没模型也要出文字层内容，以及排查"是不是 OCR 的锅"。
+    /// 与 MinerU `--ocr-mode txt` 的差别：MinerU 在 medium 档仍会为图片块加载
+    /// 版面/OCR，本开关严格——全篇无文字层的扫描件直接报 needsOcr，混合文档
+    /// 按文字层输出并把缺页号打到 stderr（不静默）。图片输入在此模式下拒绝处理。
+    /// 与 --pdf-force-ocr / --ofd-force-ocr 互斥（同时给出立即报错）。
+    #[arg(long)]
+    text_only: bool,
     /// OCR 推理线程数（页级并行）。A 改造后：进程级 ORT 线程池按
     /// `intra = max(1, 核心数/threads)` 提交，使总线程≈核心数、不再超额订阅。
     /// 默认 0 = 自动取可用并行度（飞腾 D2000 8 核→8），结合 intra=1 全核利用；
@@ -50,11 +58,6 @@ struct Cli {
     /// 与所选页无交集 / 倒序区间 / 非法语法立即报错。语法对齐 MinerU。
     #[arg(long)]
     pages: Option<String>,
-    /// ADR-0007：质量路由（后验置信度门控）。auto 用 tiny 跑首页 OCR，平均置信度
-    /// 低于阈值则升级 small 全篇重跑（污染件更准）；off 用 --ocr-tier 显式值，
-    /// 不承担额外首页 OCR 开销（golden 测试固定 off）。默认 off。
-    #[arg(long, value_enum, default_value_t = QualityRoute::Off)]
-    quality_route: QualityRoute,
 }
 
 fn main() -> Result<()> {
@@ -70,6 +73,10 @@ fn main() -> Result<()> {
     if let Err(e) = anydoc_ocr::validate_page_range_syntax(cli.pages.as_deref()) {
         exit_with_hint(&e);
     }
+    // 默认档（mineru-basic）的模型预检**不在这里**做：CLI 无从判断该文档是否真的
+    // 会走 OCR（文字型 PDF 一个模型都不加载），在下载发生前打印"正在下载"会变成
+    // 对纯文字文档的假告警。真正的告知点在 `ocr_engine::OcrEngine::build`（只有
+    // OCR 引擎要建模型时才输出一行）。
     let threads = if cli.threads == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -79,18 +86,38 @@ fn main() -> Result<()> {
     };
     let opts = anydoc_ocr::ConvertRequest {
         render: anydoc_ocr::RenderConfig { dpi: cli.dpi },
-        ocr: anydoc_ocr::OcrConfig {
-            tier: cli.ocr_tier,
-            layout: cli.ocr_layout,
-        },
+        // 版面模型不再暴露为参数：默认档 = MinerU 的 PP-DocLayoutV2 全流程，
+        // 换 table 版面会把它整个替掉、连 MinerU 对齐的后处理都失效，
+        // 属"和默认流程作对"的旋钮，故从 CLI 撤下（库侧 OcrLayout 仍可显式构造）。
+        ocr: anydoc_ocr::OcrConfig { tier: cli.ocr_tier, layout: OcrLayout::Doc },
         parallel: anydoc_ocr::ParallelConfig { page_parallel: threads, ort_intra: 0 },
-        quality_route: cli.quality_route,
         pages: cli.pages.clone(),
+        // quality_route 已从 CLI 撤下（参数面取消，语义与 MinerU 默认档冲突，
+        // 见 src/quality.rs）：恒用 Default = Off。库调用方仍可显式构造 Auto。
+        ..Default::default()
     };
     let force = anydoc_ocr::ForceFlags {
         ofd_force_ocr: cli.ofd_force_ocr,
         pdf_force_ocr: cli.pdf_force_ocr,
+        text_only: cli.text_only,
     };
+    // #13：`--text-only` 与两个 force 开关互斥。CLI 早拒（不分格式）比"目录批处理
+    // 里 PDF 报错、OFD 也报错、报错文案还不一样"好解释；库侧各通道另有同语义闸
+    // （route_pdf / convert_ofd），库调用方不会被绕过。
+    if cli.text_only && (cli.pdf_force_ocr || cli.ofd_force_ocr) {
+        let mut v = Vec::new();
+        if cli.pdf_force_ocr {
+            v.push("--pdf-force-ocr");
+        }
+        if cli.ofd_force_ocr {
+            v.push("--ofd-force-ocr");
+        }
+        exit_with_hint(&anydoc_ocr::ConvertError::new(
+            anydoc_ocr::ErrorKind::Unsupported,
+            anydoc_ocr::Stage::Convert,
+            format!("--text-only 与 {} 互斥（前者绝不跑 OCR，后者强制跑）", v.join(" / ")),
+        ));
+    }
 
     if cli.input == "-" {
         // ADR-0006 审计跟进 W1：单文档路径 `?` 改 `match`，按 e.code() 给精准提示。

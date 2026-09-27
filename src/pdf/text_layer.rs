@@ -81,6 +81,11 @@ pub(crate) fn classify_pages(path: &Path) -> crate::error::Result<u32> {
 /// 返回 `Some(Hybrid)` = 混合文档：文字层只覆盖部分页，`missing_pages`（1 基）
 /// 即旧通路会**静默丢掉**的扫描页，交由调用方按页补 OCR 后合并（不再丢页）。
 ///
+/// `text_only`（#13 `--text-only`）：本探针内**唯一**会加载模型的动作是
+/// [`confirm_table_pages`]（表格候选页的版面 OCR 确认），此处直接跳过——不渲染、
+/// 不建引擎，与 `--ocr-tier` 无关地保证"零模型加载"。其余判定（乱码/空层/缺页）
+/// 照常上抛给调用方裁决（route_pdf 在 text_only 下把"该走 OCR"改为显式报错/告警）。
+///
 /// `select` = `--pages` 求值后的 1 基页集合（`None` = 全页，行为与历史逐字节
 /// 一致）：抽取先行裁剪到所选页，缺页判定只在所选页内取交集，未选页不抽取、
 /// 不渲染、不进输出。
@@ -93,6 +98,7 @@ pub(crate) fn text_layer_probe(
     path: &Path,
     opts: &ConvertRequest,
     select: Option<&BTreeSet<u32>>,
+    text_only: bool,
 ) -> Result<Option<TextHit>> {
     let mut items = extract_text_items(path)?;
     // --pages：抽取后先裁剪（后续浅检/家具/短路/装配全部只在所选页内工作）。
@@ -137,7 +143,7 @@ pub(crate) fn text_layer_probe(
         Some(&p) => p,
         None => return no_text_layer(FallbackSignal::EmptyTextLayer).map(empty_route),
     };
-    let table_out = confirm_table_pages(path, opts, &by_page, &lines_by_page, &page_w);
+    let table_out = confirm_table_pages(path, opts, &by_page, &lines_by_page, &page_w, text_only);
     let last_table_md = probe_last_page_table(path, last_page, &page_w, &page_h);
     // pass 前的文字层 DocIR（混合时与 OCR 页合并后再统一跑 pass，见 pdf::merge_hybrid）
     let text = build_text_docir(
@@ -439,7 +445,15 @@ fn confirm_table_pages(
     by_page: &BTreeMap<u32, Vec<pdf_inspector::TextItem>>,
     lines_by_page: &BTreeMap<u32, Vec<pdf_inspector::extractor::TextLine>>,
     page_w: &BTreeMap<u32, f32>,
+    text_only: bool,
 ) -> BTreeMap<u32, String> {
+    // #13：`--text-only` 是全库"零模型加载"契约的守点——这里若放行，文字型 PDF
+    // 里一张疑似表页就会把整套 mineru 模型拉起来（首跑还要联网）。跳过即可：
+    // 未确认的页本就回落文字层（下方 has_table 语义），输出只是少了 `<table>`
+    // 结构、不缺内容。
+    if text_only {
+        return BTreeMap::new();
+    }
     let mut suspicious: BTreeSet<u32> = BTreeSet::new();
     for (&page, lines) in lines_by_page {
         let Some(&w) = page_w.get(&page) else { continue };
@@ -512,6 +526,32 @@ fn build_text_docir(
             continue; // 不变量：两表均由 build_line_groups 从 by_page 构建，键恒一致
         };
 
+        // 0) 朝向分组（借鉴 MinerU 表格朝向投票的常量族，见 `orientation` 模块）。
+        // 整页单一朝向（`groups.len() == 1`，即全仓现网文档）→ 完全跳过本分支，
+        // 下面 1)/2)/3) 的历史路径逐字节不变（golden 守护）。
+        //
+        // 多朝向才进来：旧路径把整页 items 一次性喂给网格重建，正立正文与
+        // 旋转表块混成同一次聚类 → 表被**转置**（行列互换）、正文被吞进格子，
+        // 或整页只剩正文丢掉表。分组后逐组独立走"网格表 → 正文行"，非正立组
+        // 先旋回正立帧再重建。版面 OCR 已确认的表格页（步骤 2）优先级更高，
+        // 故该页已在 `table_out` 时不进本分支。
+        if !table_out.contains_key(page) {
+            let groups = crate::orientation::vote_groups(
+                &page_items.iter().map(|i| i.rotation).collect::<Vec<f32>>(),
+            );
+            if groups.len() > 1 {
+                let mut out = build_oriented_page(page_items, &groups, *page, page_w, rich);
+                if *page == last_page && let Some(tbl) = last_table_md {
+                    out.push(
+                        Region::new(0.0, 0.0, 0.0, 0.0, format!("\n{tbl}\n"))
+                            .with_kind(RegionKind::PreRendered),
+                    );
+                }
+                doc.push_page(*page, PageSource::TextLayerPdf, out);
+                continue;
+            }
+        }
+
         // 1) 文字层网格表格（快速、免 OCR）：Grid 区块（同列续接/换列定格由 pass 承担）
         let blocks: Vec<Region> = page_items
             .iter()
@@ -553,6 +593,105 @@ fn build_text_docir(
         doc.push_page(*page, PageSource::TextLayerPdf, out);
     }
     doc
+}
+
+/// 多朝向页的装配（`orientation::vote_groups` 命中 >=2 组时才调用）。
+///
+/// 逐组独立走「网格表 → 正文行」。输出顺序：0° 组先出（页面自身叙事优先），
+/// 其余按票数降序跟随——单页多朝向本就没有可靠的跨朝向阅读顺序，稳定可复现
+/// 比猜测更值钱。`rich` 透传给正文行构建（`ANYDOC_RICH_TEXT`）。
+fn build_oriented_page(
+    page_items: &[pdf_inspector::TextItem],
+    groups: &[(u16, Vec<usize>)],
+    page: u32,
+    page_w: f32,
+    rich: bool,
+) -> Vec<Region> {
+    let mut out = Vec::new();
+    // groups 已按票数降序；这里只把 0° 组提到最前，其余保持票数降序。
+    for take_upright in [true, false] {
+        for &(angle, _) in groups {
+            if (angle == 0) != take_upright {
+                continue;
+            }
+            out.extend(oriented_group_regions(
+                page_items, groups, angle, page, page_w, rich,
+            ));
+        }
+    }
+    out
+}
+
+/// 单组（指定朝向）的区块构建：转正 → 试网格表 → 否则正文行。
+///
+/// 0° 组：不转不平移，`page_w` 用整页宽（与历史整页路径同口径）。
+/// 非 0° 组：绕原点旋回正立（[`crate::orientation::to_upright_box`]）后平移到
+/// 原点——平移不改相对几何，但让组内坐标与 `page_w` 估计回到历史口径。
+fn oriented_group_regions(
+    page_items: &[pdf_inspector::TextItem],
+    groups: &[(u16, Vec<usize>)],
+    angle: u16,
+    page: u32,
+    page_w_full: f32,
+    rich: bool,
+) -> Vec<Region> {
+    let ids = match groups.iter().find(|(a, _)| *a == angle) {
+        Some((_, ids)) => ids,
+        None => return Vec::new(),
+    };
+    let mut up: Vec<pdf_inspector::TextItem> = Vec::with_capacity(ids.len());
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    for &i in ids {
+        let src = &page_items[i];
+        let (x, y, w, h) = crate::orientation::to_upright_box(src.x, src.y, src.width, src.height, angle);
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        let mut item = src.clone();
+        item.x = x;
+        item.y = y;
+        item.width = w;
+        item.height = h;
+        item.rotation = 0.0; // 已转正，组内行分组按正立处理
+        up.push(item);
+    }
+    if up.is_empty() {
+        return Vec::new();
+    }
+    let page_w = if angle == 0 {
+        page_w_full
+    } else {
+        if !min_x.is_finite() || !min_y.is_finite() {
+            return Vec::new();
+        }
+        for item in &mut up {
+            item.x -= min_x;
+            item.y -= min_y;
+        }
+        up.iter()
+            .map(|i| i.x + i.width)
+            .fold(0.0_f32, f32::max)
+            .max(1.0)
+    };
+
+    // 1) 该组是否自成一张网格表（列对齐 + >=2 行同列数）——表格优先，免 OCR
+    let blocks: Vec<Region> = up
+        .iter()
+        .map(|i| Region::from_top_left(i.x, -i.y, i.width, i.height, i.text.clone()))
+        .collect();
+    if let Some(grid) = table_grid::reconstruct_table_grid(&blocks, page_w) {
+        return vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
+            .with_kind(RegionKind::Grid(grid))];
+    }
+
+    // 2) 正文行：组内重新行分组。整页的 TextLine 是按整页 y 聚出来的，对旋转组
+    // 无意义（跨朝向混行），故每组自成一次 group_into_lines。上游对畸形页有
+    // 已知 panic（见 build_line_groups 注释），同样 catch_unwind 兜底。
+    let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_inspector::extractor::group_into_lines_preserving_all_text(up.clone())
+    }))
+    .unwrap_or_default();
+    build_body_regions(&lines, page, page_w, rich)
 }
 
 /// 普通页正文行构建：列间隙检测 + 双列拆行 → 阅读顺序 → 标题前缀 → Body 区块。

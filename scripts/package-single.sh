@@ -6,9 +6,9 @@
 #   aarch64       → dist/anydoc-ocr-linux-arm64-<tier>.run（单架构）
 #   x86_64        → dist/anydoc-ocr-linux-x86_64-<tier>.run（单架构）
 #   tier   (默认 tiny)：内嵌模型档。
-#     tiny  极简版：只嵌 tiny 9 件 ~39M（包 ~78M）
-#     small 正常版：嵌 small + tiny 全 13 件 ~119M（包 ~158M）——默认档 small，
-#           显式 `--ocr-tier tiny` 即切极速档（模型已在包内，无需联网）
+#     tiny  极简版：只嵌 tiny 8 件 ~34M（包 ~73M）
+#     small 正常版：嵌 small + tiny 全 12 件 ~114M（包 ~153M）——启动器注入
+#           --ocr-tier small，显式传 tiny 即切极速档（模型已在包内，无需联网）
 #
 # 产物 = [自解压壳 bash 脚本][tar.gz 数据段]，新机器一键部署：
 #   1. 壳按 uname -m 检测架构，只解压对应架构目录到 $ANYDOC_INSTALL_DIR
@@ -17,10 +17,11 @@
 #   3. 在 ~/.local/bin 安装 `anydoc` 命令（启动器：设 OAR_HOME/LD_LIBRARY_PATH），
 #      并把 ~/.local/bin 加入 PATH（追加 shell rc，幂等）
 #   之后直接敲 `anydoc` 即可；--reinstall 重装。
-#   small 包的启动器会在用户未显式传 --ocr-tier 时默认注入 --ocr-tier small。
+#   启动器会在用户未显式传 --ocr-tier 时注入包内档位（CLI 默认档已是
+#   mineru-basic，包里没有那套模型，不注入就会联网下载失败）。
 #
 # 内嵌资源（每架构）：bin + libonnxruntime.so* + libpdfium.so + NotoSansCJK.ttc
-#           + 所选档模型 9 件（OAR_HOME 布局，含 doc_ori 方向模型）。
+#           + 所选档模型（OAR_HOME 布局，含 doc_ori 方向模型）。
 #           medium 不内嵌，运行期 ANYDOC_MODEL_DIR 外置（README）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -33,9 +34,11 @@ case "$MODE" in
   x86_64)     ARCHES="x86_64";         OUT_SFX="linux-x86_64";;
   *) echo "未知模式: $MODE（支持 auto / aarch64 / x86_64）"; exit 1 ;;
 esac
-# 各档模型清单（spec_for + picodet_table 版面件 + doc_ori；与 build_analyzer 一致）。
+# 各档模型清单（spec_for + doc_ori；与 build_analyzer 一致）。
 # 两档共用的表格件/方向件各一份；small 档同时内嵌 tiny 全套（共用件自动去重）。
-COMMON_MODELS="picodet_layout_1x_table.onnx slanet_plus.onnx \
+# 注：picodet_layout_1x_table.onnx（OcrLayout::Table 版面）已随 `--ocr-layout` 从
+# CLI 撤下而不再内嵌——包内启动器恒注入 tiny/small 档，走不到 table 版面。
+COMMON_MODELS="slanet_plus.onnx \
 pp-lcnet_x1_0_table_cls.onnx table_structure_dict_ch.txt \
 pp-lcnet_x1_0_doc_ori.onnx"
 TINY_MODELS="pp-doclayout-s.onnx \
@@ -106,15 +109,16 @@ pack_arch() {
 }
 
 # 启动器（run.sh + PATH anydoc 命令共用同一 env 逻辑，内容一致）
-# small 包：用户未显式传 --ocr-tier 时注入默认档（否则 CLI 默认 tiny 会触发在线下载）
+# CLI 默认档已是 mineru-basic（首跑需联网拉约 240MB 七件模型，公式件另需
+# ANYDOC_MODEL_DIR 里的 MinerU 资产）。离线包内嵌的是 tiny/small 小模型，故**两档都要**在用户未显式传
+# --ocr-tier 时注入包内档位——否则 `anydoc x.pdf` 会去下载包里根本没有的模型。
 make_launcher() {
   local STAGE="$1"
-  local INJECT=""
-  if [ "$TIER" = "small" ]; then
-    INJECT='for a in "$@"; do [ "$a" = "--ocr-tier" ] && break; done
-[ "$a" = "--ocr-tier" ] || set -- "$@" --ocr-tier small
+  # INJECT 里的 \$a / \"\$@\" 是给生成的 run.sh 用的（外层 heredoc 是 <<EOF，
+  # 必须转义才能原样落盘）；只有 $TIER 在本脚本展开成包内档位。
+  local INJECT='for a in "$@"; do [ "$a" = "--ocr-tier" ] && break; done
+[ "$a" = "--ocr-tier" ] || set -- "$@" --ocr-tier '"$TIER"'
 '
-  fi
   cat > "$STAGE/run.sh" <<EOF
 #!/usr/bin/env bash
 DIR="\$(cd "\$(dirname "\$0")" && pwd)"

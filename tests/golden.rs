@@ -30,6 +30,10 @@ fn samples() -> Vec<(&'static str, bool)> {
         ("tests/samples/image.ofd", true),
         ("tests/samples/image_table.pdf", true),
         ("tests/samples/image_table.ofd", true),
+        // #10b 行为变更（印章默认开）钉在这里：该样本含一枚章，基线里带
+        // `【印章】…` 行——若默认值再被翻转或印章行位置漂移，这里会红。
+        // 字节契约的另一半（"只多这一行"）由 tests/ocr_post.rs 守。
+        ("tests/samples/seal_scan.pdf", true),
         // 真实样本（gitignored）：需 OCR env 才跑，本地存在才生成快照
         ("tests/real_samples/gwy_ling825_xingzhengzhifa.pdf", true),
         ("tests/real_samples/gwy_gongbao2026_01.pdf", true),

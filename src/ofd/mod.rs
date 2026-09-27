@@ -21,7 +21,9 @@ use ofd_core::{OfdReader, RenderOptions};
 
 use crate::ConvertRequest;
 use crate::docir::{DocIR, PageSource};
-use crate::error::{Result as CResult, Stage, from_ofd_error, runtime};
+use crate::error::{
+    ConvertError, ErrorKind, Result as CResult, Stage, from_ofd_error, runtime,
+};
 use crate::gfm_adapter;
 use crate::reading_order;
 use crate::region::{Region, RegionKind};
@@ -48,13 +50,37 @@ enum PageData {
 }
 
 /// OFD → Markdown 总入口（P1.8 拆阶段）：分类 → 质量路由 → OCR → DocIR 装配。
-pub fn convert_ofd(path: &Path, opts: &ConvertRequest, ofd_force_ocr: bool) -> CResult<String> {
+///
+/// `text_only`（#13 `--text-only`）：绝不建 OCR 引擎、不提交 ORT 线程池；需要 OCR
+/// 的页按"全篇需 OCR → `needsOcr` 显式报错；部分页需 OCR → 出文字层 + 告警列页号"
+/// 处理（与 PDF 侧 `route_pdf` 的 text_only 分支同一条契约，两格式口径一致）。
+pub fn convert_ofd(
+    path: &Path,
+    opts: &ConvertRequest,
+    ofd_force_ocr: bool,
+    text_only: bool,
+) -> CResult<String> {
+    // #13：与 `--ofd-force-ocr` 互斥（语义直接对立，静默取其一比报错更坏）。
+    if text_only && ofd_force_ocr {
+        return Err(ConvertError::new(
+            ErrorKind::Unsupported,
+            Stage::Convert,
+            format!(
+                "--text-only 与 --ofd-force-ocr 互斥（前者绝不跑 OCR，后者强制跑）: {}",
+                path.display()
+            ),
+        ));
+    }
     // 审计 #9：dpi 合法闸（OFD 走 PerDoc 通路、不经 route_pdf，闸在自家入口）。
     crate::limits::validate_dpi(opts.render.dpi)?;
     let mut t = StageTimer::new();
     // F2：OFD 主路径直接 `OcrEngine::build`（探针/路径 B），不经 `ocr_images`，
     // 须在首个 ONNX session 创建前提交进程级 ORT 线程池（Ticket A）。
-    crate::ocr_engine::init_runtime(&opts.parallel);
+    // text_only 下不提交：这条逃生口要能在"只有 pdfium/ofd-core、没有可用模型"
+    // 的机器上照常出文字层，尽量少碰运行环境。
+    if !text_only {
+        crate::ocr_engine::init_runtime(&opts.parallel);
+    }
     let mut reader = OfdReader::open(path).map_err(from_ofd_error)?;
     // clone 出来避免遍历时与 reader 的 &mut 借用冲突
     let doc_bodies = reader.ofd().doc_bodies.clone();
@@ -63,16 +89,53 @@ pub fn convert_ofd(path: &Path, opts: &ConvertRequest, ofd_force_ocr: bool) -> C
     let mut pages = classify_pages(&mut reader, path, &doc_bodies, opts, ofd_force_ocr)?;
 
     // 第二遍：OCR（F3 乱码页批量 + 图片型页 P3 流水线），tier 由质量路由决定。
-    let has_ocr_pages = pages
+    let ocr_idx: Vec<u32> = pages
         .iter()
-        .any(|p| matches!(p, PageData::OcrFull(_) | PageData::OcrPendingImage { .. }));
-    let route_tier = probe_route_tier(&mut reader, &doc_bodies, opts, has_ocr_pages);
-    let mut full_out = ocr_garbled_pages(&mut pages, route_tier, opts)?;
-    full_out.extend(ocr_pending_pages(&pages, path, route_tier, opts, &mut t)?);
+        .enumerate()
+        .filter(|(_, p)| matches!(p, PageData::OcrFull(_) | PageData::OcrPendingImage { .. }))
+        .map(|(i, _)| i as u32)
+        .collect();
+    let has_ocr_pages = !ocr_idx.is_empty();
+    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+    if text_only {
+        reject_ofd_ocr_pages(path, &ocr_idx, pages.len())?;
+    } else {
+        let route_tier = probe_route_tier(&mut reader, &doc_bodies, opts, has_ocr_pages);
+        full_out = ocr_garbled_pages(&mut pages, route_tier, opts)?;
+        full_out.extend(ocr_pending_pages(&pages, path, route_tier, opts, &mut t)?);
+    }
     t.stage("gfm");
 
     // 第三遍：DocIR 装配（跨页表合并 pass + 统一渲染）。
     Ok(assemble_docir(&pages, &mut full_out))
+}
+
+/// #13：OFD 侧 text_only 的"需 OCR 页"裁决（全篇 → 报错，部分 → 告警）。
+///
+/// 全篇判定用 `ocr_idx.len() == pages.len()`：一页文字层都没有时，输出空文档
+/// 是"假装成功"，不如显式 `needsOcr`（与 PDF 图片型同口径）。
+/// 页号按 1 基报出（与告警/错误里给用户的其它页号一致）。
+fn reject_ofd_ocr_pages(path: &Path, ocr_idx: &[u32], total_pages: usize) -> CResult<()> {
+    if ocr_idx.is_empty() {
+        return Ok(());
+    }
+    if ocr_idx.len() == total_pages {
+        return Err(ConvertError::new(
+            ErrorKind::NeedsOcr,
+            Stage::Convert,
+            format!(
+                "--text-only 不跑 OCR，但整篇无可用文字层（图片型/坏字体页）: {}",
+                path.display()
+            ),
+        ));
+    }
+    let listed: Vec<String> = ocr_idx.iter().map(|&i| (i + 1).to_string()).collect();
+    eprintln!(
+        "警告: --text-only 不跑 OCR，{} 的以下页按图片型/坏字体判定、已按文字层输出（可能缺内容）: {}",
+        path.display(),
+        listed.join(",")
+    );
+    Ok(())
 }
 
 /// 第一遍：逐页判定类型并收集数据。渲染在循环内完成（需要 per-body `doc`）。
@@ -168,7 +231,7 @@ fn probe_route_tier(
     opts: &ConvertRequest,
     has_ocr_pages: bool,
 ) -> crate::models::OcrTier {
-    if !(has_ocr_pages && opts.quality_route == crate::quality::QualityRoute::Auto) {
+    if !(has_ocr_pages && crate::quality::routing_applies(opts)) {
         return opts.ocr.tier;
     }
     const PROBE_DPI: f64 = 100.0;
@@ -329,11 +392,11 @@ fn ocr_pending_pages(
     t.stage("ocr");
     timings.report();
 
-    // T2：按页失败重试（仅 quality_route=Auto）。与 PDF 侧同语义——pipeline 后逐页
-    // `page_needs_retry`，低质量页用更高档局部重跑（重渲染失败页 + 更高档 OCR），
-    // 成功页保留。只升一档；更高档仍失败/渲染失败则保留原结果（防循环）。
-    // `pending` 提供 gi → (body_idx, page_idx) 映射供重渲染定位。
-    if opts.quality_route == crate::quality::QualityRoute::Auto {
+    // T2：按页失败重试（仅质量路由可用时，见 `quality::routing_applies`）。与 PDF
+    // 侧同语义——pipeline 后逐页 `page_needs_retry`，低质量页用更高档局部重跑
+    // （重渲染失败页 + 更高档 OCR），成功页保留。只升一档；更高档仍失败/渲染失败
+    // 则保留原结果（防循环）。`pending` 提供 gi → (body_idx, page_idx) 映射供重渲染定位。
+    if crate::quality::routing_applies(opts) {
         if let Some(higher) = route_tier.next() {
             let by_gi: std::collections::HashMap<usize, (usize, usize)> =
                 pending.iter().map(|&(gi, b, p)| (gi, (b, p))).collect();

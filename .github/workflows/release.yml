@@ -67,7 +67,9 @@ jobs:
           export LD_LIBRARY_PATH="$ORT_LIB_LOCATION:$PDFIUM_LIB_DIR"
           target/release/anydoc-ocr tests/samples/image.pdf --ocr-tier tiny  -o /tmp/warm-t.md
           target/release/anydoc-ocr tests/samples/image.pdf --ocr-tier small -o /tmp/warm-s.md
-          target/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny --ocr-layout table -o /tmp/warm-tt.md
+          # --ocr-layout 已从 CLI 撤下（table 版面会替掉 mineru-basic 的 PP-DocLayoutV2，
+          # 与默认流程互斥）：包内仍带 picodet_layout_1x_table.onnx，故直接落盘预热。
+          target/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny -o /tmp/warm-tt.md
 
       - name: Package installer (x86_64 × small, tiny embedded)
         env:
@@ -142,7 +144,7 @@ jobs:
           export LD_LIBRARY_PATH="$ORT_LIB_LOCATION:$PDFIUM_LIB_DIR"
           target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image.pdf --ocr-tier tiny  -o /tmp/warm-t.md
           target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image.pdf --ocr-tier small -o /tmp/warm-s.md
-          target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny --ocr-layout table -o /tmp/warm-tt.md
+          target/aarch64-unknown-linux-gnu/release/anydoc-ocr tests/samples/image_table.pdf --ocr-tier tiny -o /tmp/warm-tt.md
 
       - name: Package installer (aarch64 × small, tiny embedded)
         env:

@@ -20,14 +20,24 @@ pub enum DocKind {
     /// Office 系（doc/docx/xls/xlsx/ppt/pptx/odt/ods/odp/rtf/epub）——
     /// anydoc 兜底前端已覆盖，单列变体仅为分流显式化。
     Office,
+    /// 位图图片（#12，对齐 MinerU `IMAGE_EXTENSIONS` 8 种：png/jpg/jpeg/webp/
+    /// gif/bmp/tiff/jp2）——单页直接进 OCR 通路，不经渲染、没有文字层。
+    ///
+    /// 判定按**魔数 + 扩展名**双路：魔数（[`looks_like_raster`]）是为 stdin 兜底
+    /// （`-` 落地的 NamedTempFile 没有扩展名）；扩展名保证内容损坏的图片（截断
+    /// JPEG）仍归 `Image` 并报"解码失败"，而不是掉进 `Other` 拿 anydoc 兜底的
+    /// 误导结论。真解码在 `convert::load_image_for_ocr`（`image` crate 按魔数解），
+    /// 解不出报 `malformed`；jp2 能识别但 `image` 0.25 无 JPEG2000 解码器 →
+    /// 显式 `unsupported`。
+    Image,
     /// 未识别 → anydoc 兜底（行为与旧 `Other` 一致）
     Other,
 }
 
-/// 魔数 + 扩展名分流（对齐 MinerU flash 的 doc_analyze 路由表）。
+/// 魔数 + 扩展名分流（对齐 MinerU flash 的 doc_analyze 路由表 + #12 图片输入）。
 ///
 /// 判定顺序：`%PDF` 魔数 → PK zip 且含 `OFD.xml` → HTML 魔数 / html 系扩展名
-/// → csv/tsv 扩展名 → office 扩展名 → `Other`。
+/// → csv/tsv 扩展名 → **图片扩展名（#12）** → office 扩展名 → `Other`。
 ///
 /// P0-3：文件打不开/读不到返回 `Err(io::Error)`——此前静默归 `Other` 会被误判为
 /// "格式不支持"而走 anydoc 兜底，丢失真实 IO 错误分类（不存在/无权限等）。
@@ -53,6 +63,12 @@ pub fn detect(path: &Path) -> std::io::Result<DocKind> {
     if head.starts_with(b"PK\x03\x04") && is_ofd_zip(&mut f) {
         return Ok(DocKind::Ofd);
     }
+    // #12：图片魔数（签名唯一且只看前几字节，代价为零）。走魔数而不只靠扩展名
+    // 的**实因是 stdin**：`-` 入口落地的 NamedTempFile 没有扩展名，纯扩展名分流
+    // 会把扫描图误判成 `Other` 交给 anydoc 兜底（必然失败）。
+    if looks_like_raster(head) {
+        return Ok(DocKind::Image);
+    }
     if starts_as_html(head) {
         return Ok(DocKind::Html);
     }
@@ -60,6 +76,9 @@ pub fn detect(path: &Path) -> std::io::Result<DocKind> {
     match ext_of(path).as_str() {
         "html" | "htm" | "xhtml" => Ok(DocKind::Html),
         "csv" | "tsv" => Ok(DocKind::DelimitedText),
+        // #12：图片 8 种后缀与 MinerU `filetypes.IMAGE_EXTENSIONS` 逐一对齐
+        // （不增不减：多出来的本仓没有解码依据，少了就是 MinerU 能吃我们吃不了）。
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tiff" | "jp2" => Ok(DocKind::Image),
         "doc" | "docx" | "docm" | "xls" | "xlsx" | "xlsm" | "xlsb" | "ppt" | "pptx" | "pptm"
         | "pps" | "ppsx" | "odt" | "ods" | "odp" | "rtf" | "epub" => Ok(DocKind::Office),
         _ => Ok(DocKind::Other),
@@ -102,11 +121,34 @@ fn starts_as_html(head: &[u8]) -> bool {
     lower.starts_with("<!doctype html") || lower.starts_with("<html")
 }
 
-fn ext_of(path: &Path) -> String {
-    path.extension()
+fn ext_of(path: &Path) -> String {    path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+/// 位图魔数（#12）：签名唯一、只看前 12 字节，故放在扩展名判定之前也能命中
+/// stdin 落地文件（无扩展名）。**不**用来替代扩展名分流——两件事各自成立：
+/// 有扩展名的图片文件即使内容损坏（截断 JPEG）也应归 `Image` 并报"解码失败"，
+/// 而不是掉进 `Other` 走 anydoc 兜底给出"格式不支持"的误导结论。
+///
+/// 覆盖范围 = `image` crate 能解的 7 种 + MinerU 认但本仓解不了的 jp2
+/// （`image` 0.25 无 JPEG2000 解码器；命中后由 OCR 通路显式报 `unsupported`，
+/// 见 [`crate::convert`] 的图片入口——比静默走 anydoc 兜底诚实）。
+fn looks_like_raster(head: &[u8]) -> bool {
+    head.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) // PNG
+        || head.starts_with(&[0xFF, 0xD8, 0xFF]) // JPEG（JFIF/EXIF 皆此前缀）
+        || head.starts_with(b"GIF87a")
+        || head.starts_with(b"GIF89a")
+        || (head.starts_with(b"BM")
+            && head.len() >= 10
+            && head[6..10] == [0, 0, 0, 0]) // BMP：'BM' + 4 字节文件大小 + 4 字节保留 0
+        // （只验 "BM" 会把以这两个字母开头的文本误判成图片，保留位是唯一便宜的区分）
+        || (head.starts_with(b"RIFF") && head.len() >= 12 && &head[8..12] == b"WEBP")
+        || head.starts_with(b"II*\0")
+        || head.starts_with(b"MM\0*") // TIFF（little/big endian）
+        // JP2 签名盒固定 12 字节：长度 0x0000000C + `jP  `（两个空格）+ CR LF 0x87 LF
+        || (head.len() >= 12 && head[4..12] == *b"jP  \r\n\x87\n") // JPEG2000 codestream
 }
 
 /// 已知文档扩展名全集（大小写不敏感）。`detect` 的扩展名分流与
@@ -114,7 +156,10 @@ fn ext_of(path: &Path) -> String {
 pub fn is_known_extension(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "pdf" | "ofd" | "html" | "htm" | "xhtml" | "csv" | "tsv" | "doc" | "docx" | "docm"
+        "pdf" | "ofd" | "html" | "htm" | "xhtml" | "csv" | "tsv"
+            // #12：图片 8 种（与 detect 的 Image 分支同一张表，批目录才收得到）
+            | "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tiff" | "jp2"
+            | "doc" | "docx" | "docm"
             | "xls" | "xlsx" | "xlsm" | "xlsb" | "ppt" | "pptx" | "pptm" | "pps" | "ppsx"
             | "odt" | "ods" | "odp" | "rtf" | "epub"
     )
@@ -266,5 +311,60 @@ mod tests {
         let (_, p) = tmpfile("short", "p.bin", b"%P");
         assert!(detect(&p).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #12 魔数表：8 种位图签名都要命中 Image（无扩展名形态 = stdin 落地文件的形状）。
+    #[test]
+    fn magic_raster_images() {
+        let (dir, p) = tmpfile("img", "blob", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "PNG");
+        let (_, p) = tmpfile("img", "blob", b"\xFF\xD8\xFF\xE0JFIF");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "JPEG");
+        let (_, p) = tmpfile("img", "blob", b"GIF89a\x01\x00");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "GIF");
+        let (_, p) = tmpfile("img", "blob", b"RIFF\x00\x00\x00\x00WEBPVP8 ");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "WEBP");
+        let (_, p) = tmpfile("img", "blob", b"II*\0\x28\x00\x00\x00");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "TIFF LE");
+        let (_, p) = tmpfile("img", "blob", b"MM\0*\0\x2a");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "TIFF BE");
+        let (_, p) = tmpfile("img", "blob", b"\0\0\0\x0cjP  \r\n\x87\n\x1a\x1a");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "JPEG2000");
+        // BMP：'BM' + 4 字节大小 + 4 字节保留 0
+        let (_, p) = tmpfile("img", "blob", b"BM\x36\x28\x00\x00\x00\x00\x00\x00\x36\x00");
+        assert_eq!(detect(&p).unwrap(), DocKind::Image, "BMP");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #12 护栏：以 "BM" 开头的**文本**不得被当 BMP（保留 4 字节非 0 即排除）。
+    #[test]
+    fn bmp_reserved_bytes_guard() {
+        let (dir, p) = tmpfile("bmpg", "note.bin", b"BMP file or plain text here");
+        assert_eq!(detect(&p).unwrap(), DocKind::Other, "'BM' 后跟文本非 BMP");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #12 扩展名表：8 种图片后缀（含大写）→ Image；未知后缀仍 Other。
+    #[test]
+    fn ext_images() {
+        let dir = std::env::temp_dir().join(format!("anydoc_detect_imgext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for e in ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "jp2", "PNG", "Jpeg"] {
+            let p = dir.join(format!("a.{e}"));
+            std::fs::write(&p, b"not a real image body at all").expect("write");
+            assert_eq!(detect(&p).unwrap(), DocKind::Image, "扩展名 .{e} 应归 Image");
+        }
+        let p = dir.join("a.svg");
+        std::fs::write(&p, b"<svg/>").expect("write");
+        assert_eq!(detect(&p).unwrap(), DocKind::Other, "svg 不在 MinerU 8 种之内");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #12：批目录收集表与 detect 同步——8 种图片扩展名必须在 `is_known_extension` 里。
+    #[test]
+    fn known_extension_covers_images() {
+        for e in ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "jp2"] {
+            assert!(is_known_extension(e), "{e} 应进批处理收集表");
+        }
     }
 }

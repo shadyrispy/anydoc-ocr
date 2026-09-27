@@ -20,6 +20,12 @@ use oar_ocr::domain::structure::StructureResult;
 ///
 /// 注意：默认 **Off**——实测 tiny/100dpi 对清晰件已达标，路由只在显式开启时
 /// 承担"污染件升级 small"的额外首页 OCR 开销。
+///
+/// **CLI 已不再暴露本开关**（`--quality-route` 撤下）：路由的两端是 tiny/small，
+/// 而 CLI 默认档已改为 mineru-basic——让路由生效等于把"默认走 MinerU 流程"悄悄
+/// 换成 PP-OCRv6 小模型流程，与默认档语义正面冲突。库调用方显式构造
+/// `Auto` 时仍可用（`tier.next()` 对 MinerU 返回 `None`，按页重试自动免疫），
+/// 故此处保留枚举与全部算法，只撤参数面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum QualityRoute {
     /// 后验门控：tiny 跑首页，平均置信度低于阈值 → 升级 small 全篇重跑
@@ -27,6 +33,15 @@ pub enum QualityRoute {
     /// 关闭路由，用显式 `--ocr-tier`
     #[default]
     Off,
+}
+
+/// 质量路由对当前请求是否**可用**：显式 `Auto` 且基础档不是 MinerU 复刻档。
+///
+/// 这是 PDF/OFD 两个通路唯一的判定入口（不再各处 `== Auto` 内联），理由见
+/// [`QualityRoute`]：MinerU 档下 tiny→small 的升档链与默认流程互斥，路由必须
+/// 让位于用户显式选的档，而不是反过来把默认档劫持成小模型。
+pub fn routing_applies(opts: &crate::convert::ConvertRequest) -> bool {
+    opts.quality_route == QualityRoute::Auto && !opts.ocr.tier.is_mineru()
 }
 
 /// 升级阈值：首页 OCR 平均置信度低于此值视为"识别不可靠"，升级 higher tier 重跑。
@@ -130,5 +145,27 @@ mod tests {
         assert!(!page_needs_retry(&good));
         // 无文本区域保守判重试
         assert!(page_needs_retry(&StructureResult::new("t", 0)));
+    }
+
+    /// 路由适用性（CLI 默认档改为 mineru-basic 后的关键闸门）：默认请求
+    /// （`ConvertRequest::default()` = MinerU + Off）绝不触发路由，且即使库调用方
+    /// 显式给 `Auto`，MinerU 档下也必须让位——否则"默认走 MinerU 流程"会被
+    /// tiny/small 悄悄劫持。
+    #[test]
+    fn routing_never_applies_to_the_mineru_default() {
+        use crate::convert::{ConvertRequest, OcrConfig};
+        assert!(
+            !routing_applies(&ConvertRequest::default()),
+            "默认请求不得启用路由"
+        );
+        let mut mineru = ConvertRequest::default();
+        mineru.quality_route = QualityRoute::Auto;
+        assert_eq!(mineru.ocr.tier, crate::models::OcrTier::MineruBasic);
+        assert!(!routing_applies(&mineru), "MinerU 档显式 Auto 也应让位");
+
+        let mut tiny = ConvertRequest::default();
+        tiny.ocr = OcrConfig { tier: crate::models::OcrTier::Tiny, ..Default::default() };
+        tiny.quality_route = QualityRoute::Auto;
+        assert!(routing_applies(&tiny), "小模型档 + Auto 才是路由的设计场景");
     }
 }

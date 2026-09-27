@@ -10,17 +10,21 @@ pub mod detect;
 pub(crate) mod docir;
 pub(crate) mod fallback;
 pub(crate) mod gfm_adapter;
+pub(crate) mod heading_levels;
 pub(crate) mod html;
 pub(crate) mod limits;
 pub mod models;
+pub(crate) mod orientation;
 pub mod ocr_engine; // 对外高级 API：OcrEngine 单例（build/predict/clear_cache），README 已文档化
 pub(crate) mod ofd;
+pub(crate) mod ocr_post;
 pub(crate) mod pagerange;
 pub(crate) mod pdf;
 pub(crate) mod pipeline;
 pub mod quality;
 pub(crate) mod reading_order;
 pub(crate) mod region;
+pub(crate) mod seal;
 pub(crate) mod table_grid;
 pub(crate) mod text_health;
 pub(crate) mod timing;
@@ -28,7 +32,8 @@ pub(crate) mod timing;
 pub use convert::{ConvertRequest, ForceFlags, OcrConfig, ParallelConfig, RenderConfig, convert_to_markdown};
 pub use detect::DocKind;
 pub use error::{ConvertError, ErrorKind, Result, Stage};
-pub use models::OcrTier;
+pub use models::{OcrLayout, OcrTier};
+pub use quality::QualityRoute;
 
 /// `--dpi` 合法性校验（审计 #9：NaN/Inf 或超出 [50, 400] → `Unsupported` Err）。
 /// 库转换入口内部各通道已自带同语义闸；导出此函数供 CLI（及绑定层）提前拒绝，

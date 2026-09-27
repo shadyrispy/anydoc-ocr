@@ -314,6 +314,31 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
         if let Some(g) = img_grid {
             out.push(Region::new(0.0, 0.0, 0.0, 0.0, String::new()).with_kind(RegionKind::Grid(g)));
         }
+        // 印章识别行（#10b 起**默认开启**，`ANYDOC_NO_SEAL_OCR` 关闭）：`ocr_post::seal_pass` 已把
+        // 识别文本写回 Seal 元素的 `LayoutElement.text`（默认路径该字段恒
+        // None——上游 stitching 把 Seal 排除在 OCR 匹配外且标记重叠区域已用，
+        // 印章文字本就整体丢失，写回不会与正文行重复）。按 y 升序输出，
+        // 每枚章一行 `【印章】<文本>`。
+        if crate::ocr_post::seal_on() {
+            let mut seals: Vec<(f32, String)> = page
+                .layout_elements
+                .iter()
+                .filter(|el| el.element_type == LayoutElementType::Seal)
+                .filter_map(|el| {
+                    el.text.as_ref().map(|t| (el.bbox.y_min(), t.clone()))
+                })
+                .collect();
+            seals.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, t) in seals {
+                out.push(Region::new(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    format!("{}{}", crate::seal::SEAL_TAG, t),
+                ));
+            }
+        }
         doc.push_page(pi as u32, PageSource::Ocr, out);
     }
     doc
@@ -397,12 +422,38 @@ fn is_noise_fragment(line: &str) -> bool {
 /// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
 ///
 /// MinerU 式标题检测：仅对 `LayoutElementType::is_title()`（DocTitle/ParagraphTitle）
-/// 的块加前缀；级别来自编号启发式 `title_level`，无编号的短标题（<=40 字符、
+/// 的块加前缀；级别默认来自编号启发式 `title_level`，无编号的短标题（<=40 字符、
 /// 不以 。，；： 结尾）回落为 `##`。匹配规则：输出行 trim 后与标题文本相等
 /// 或一方包含另一方；已带 `#` 前缀的行跳过，防双重标记。
+///
+/// `ANYDOC_HEADINGS_LAYOUT`（存在即开启、默认关闭）：为**无编号**的标题候选补上
+/// 两条布局信号（行高、缩进），与编号语义做三信号加权投票（见
+/// [`crate::heading_levels`]），把默认被抹平为同级的标题按字号/缩进拉开层级。
+/// 编号命中的标题维持原级别（语义权重 2 恒 ≥ 任一单布局信号），故开关只影响
+/// 原本回落 `##` 的那批；默认（关闭）时 `titles` 向量逐字节等价旧行为。
 fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<String> {
-    let mut titles: Vec<(String, usize)> = Vec::new();
-    for el in &page.layout_elements {
+    let layout_on = std::env::var("ANYDOC_HEADINGS_LAYOUT").is_ok();
+    let titles = title_hints(page, layout_on);
+    // 布局驱动：hints 来自版面标题块，numbering=false 不抹平文字层差异。
+    crate::text_health::apply_title_prefixes(&lines, &titles, false)
+}
+
+/// 从版面 title 块计算 `(标题文本, markdown 级别)` 提示，供 [`apply_title_prefixes`] 注入。
+///
+/// `layout_on` 为纯参数而非直接读环境，便于无 `unsafe set_var` 的单测覆盖两条分支：
+/// - `false`（默认）：级别 = 编号语义 或 无编号短标题回落 2，逐字节等价旧行为；
+/// - `true`：无编号候选额外走行高/缩进 k-means 投票，可拉出 1..=6 级。
+fn title_hints(page: &StructureResult, layout_on: bool) -> Vec<(String, usize)> {
+    struct Candidate {
+        text: String,
+        semantic: Option<usize>,
+        idx: usize,
+        doc_title: bool,
+    }
+    let mut cands: Vec<Candidate> = Vec::new();
+    let mut heights: Vec<(usize, f32)> = Vec::new();
+    let mut indents: Vec<(usize, f32)> = Vec::new();
+    for (idx, el) in page.layout_elements.iter().enumerate() {
         if !el.element_type.is_title() {
             continue;
         }
@@ -411,17 +462,55 @@ fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<Strin
         if t.is_empty() {
             continue;
         }
-        // 编号启发式；无编号且像标题（短、无句末标点）→ 2
-        let level = title_level(t).or_else(|| {
+        let semantic = title_level(t);
+        // 无编号时用旧的"短标题"判据决定是否算标题；否则维持不检出。
+        let fallback_ok = {
             let n = t.chars().count();
-            (n > 0 && n <= 40 && !t.ends_with(['。', '，', '；', '：'])).then_some(2)
-        });
-        if let Some(lv) = level {
-            titles.push((t.to_string(), lv));
+            n > 0 && n <= 40 && !t.ends_with(['。', '，', '；', '：'])
+        };
+        if semantic.is_none() && !fallback_ok {
+            continue;
         }
+        let doc_title = el.element_type == LayoutElementType::DocTitle;
+        // 布局投票样本仅取 ParagraphTitle（对齐上游：其只聚 ParagraphTitle，
+        // 编号/无编号都入样本，投票阶段再由语义权重决定编号项级别）。
+        // 无编号 DocTitle 是文档主标题，纳入样本会挤占聚类把小节层级带偏，故排除。
+        if layout_on && !doc_title {
+            let height = ((el.bbox.y_max() - el.bbox.y_min()).max(1.0))
+                / el.num_lines.unwrap_or(1).max(1) as f32;
+            heights.push((idx, height.max(1.0)));
+            indents.push((idx, el.bbox.x_min()));
+        }
+        cands.push(Candidate { text: t.to_string(), semantic, idx, doc_title });
     }
-    // 布局驱动：hints 来自版面标题块，numbering=false 不抹平文字层差异。
-    crate::text_health::apply_title_prefixes(&lines, &titles, false)
+    let (font_levels, indent_levels) = if layout_on {
+        (
+            crate::heading_levels::cluster_levels(&heights, true),
+            crate::heading_levels::cluster_levels(&indents, false),
+        )
+    } else {
+        (Default::default(), Default::default())
+    };
+
+    let mut titles: Vec<(String, usize)> = Vec::new();
+    for c in &cands {
+        // 编号命中：语义级别（默认路径同源，开关不改）。
+        // 无编号 ParagraphTitle：关闭 → 旧的固定 2；开启 → 行高/缩进聚类投票
+        //   （vote_level 在布局信号缺失时自动回落 fallback=2，故与关闭态兼容）。
+        // 无编号 DocTitle：两分支都是 2（收集处已排除出样本，见上）。
+        let level = match c.semantic {
+            Some(lv) => lv,
+            None if layout_on && !c.doc_title => crate::heading_levels::vote_level(
+                None,
+                font_levels.get(&c.idx).copied(),
+                indent_levels.get(&c.idx).copied(),
+                2,
+            ),
+            None => 2,
+        };
+        titles.push((c.text.clone(), level));
+    }
+    titles
 }
 
 /// 剥离 oar-ocr 表格 HTML 的 `<html>/<body>` 包裹（若有），仅保留 `<table>…</table>`。
@@ -584,6 +673,110 @@ mod tests {
             LayoutElementType::Image,
             0.9,
         )
+    }
+
+    /// 构造版面 title 块（含行高特征所需的 num_lines）。
+    fn title_el(
+        kind: LayoutElementType,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        text: &str,
+        num_lines: u32,
+    ) -> LayoutElement {
+        let mut el = LayoutElement::new(BoundingBox::from_coords(x0, y0, x1, y1), kind, 0.9);
+        el.text = Some(text.into());
+        el.num_lines = Some(num_lines);
+        el
+    }
+
+    /// 无编号标题：默认分支全部回落 `##`（字节兼容），布局分支按行高拉开层级。
+    #[test]
+    fn title_hints_unnumbered_levels() {
+        // 四个同级候选分两簇（行高 30 vs 14），避免 2 样本 kmeans 每样本自成一簇
+        // 的退化形态——那正是上游算法的行为，测试要覆盖的是"拉开层级"而非退化。
+        let page = StructureResult {
+            layout_elements: vec![
+                title_el(LayoutElementType::ParagraphTitle, 40.0, 0.0, 200.0, 30.0, "总则", 1),
+                title_el(LayoutElementType::ParagraphTitle, 40.0, 50.0, 200.0, 80.0, "分类", 1),
+                title_el(LayoutElementType::ParagraphTitle, 40.0, 90.0, 200.0, 104.0, "适用范围", 1),
+                title_el(LayoutElementType::ParagraphTitle, 120.0, 110.0, 260.0, 124.0, "术语定义", 1),
+            ],
+            text_regions: None,
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        // 关闭（默认）：全部是无编号短标题 → 一律 2。
+        let off = title_hints(&page, false);
+        assert_eq!(
+            off,
+            vec![
+                ("总则".to_string(), 2),
+                ("分类".to_string(), 2),
+                ("适用范围".to_string(), 2),
+                ("术语定义".to_string(), 2),
+            ]
+        );
+        // 开启（两信号联合）：
+        // - 总则/分类：font=1；indent 同簇(40)=1 → 一致 → 1 级；
+        // - 适用范围：font=2、indent=1 → 平手取小 → 1 级（缩进信号把它拉高，
+        //   这是上游三信号投票的既定语义，非本实现缺陷）；
+        // - 术语定义：font=2、indent=2 → 一致 → 2 级。
+        // 断言重点 = 默认被抹平的标题被拉开，且逐项与投票语义吻合。
+        let on = title_hints(&page, true);
+        assert_eq!(on[0], ("总则".to_string(), 1), "大字号 → 一级");
+        assert_eq!(on[1], ("分类".to_string(), 1));
+        assert_eq!(on[2], ("适用范围".to_string(), 1), "font2/indent1 平手取小");
+        assert_eq!(on[3], ("术语定义".to_string(), 2), "小字号 + 深缩进 → 二级");
+    }
+
+    /// 编号命中的标题在两个分支下级别一致（语义优先，开关不动它）。
+    #[test]
+    fn title_hints_numbered_stable_across_flag() {
+        let page = StructureResult {
+            layout_elements: vec![
+                title_el(LayoutElementType::DocTitle, 0.0, 0.0, 300.0, 60.0, "GB 3836.1—2021", 1),
+                title_el(LayoutElementType::ParagraphTitle, 0.0, 70.0, 200.0, 100.0, "2.1 环境条件", 1),
+            ],
+            text_regions: None,
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        assert_eq!(title_hints(&page, false), title_hints(&page, true));
+        assert_eq!(title_hints(&page, true)[1], ("2.1 环境条件".to_string(), 3));
+    }
+
+    /// 句末标点/超长行不是标题（两分支同判，旧 or_else 语义保持）。
+    #[test]
+    fn title_hints_rejects_sentence_like_candidates() {
+        let page = StructureResult {
+            layout_elements: vec![
+                title_el(
+                    LayoutElementType::ParagraphTitle,
+                    0.0,
+                    0.0,
+                    400.0,
+                    20.0,
+                    "本部分规定了设备的通用要求。",
+                    1,
+                ),
+                title_el(
+                    LayoutElementType::ParagraphTitle,
+                    0.0,
+                    30.0,
+                    900.0,
+                    50.0,
+                    &"长".repeat(41),
+                    1,
+                ),
+            ],
+            text_regions: None,
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        assert!(title_hints(&page, false).is_empty());
+        assert!(title_hints(&page, true).is_empty());
     }
 
     /// 构造带 Image 块 + Image 内 2 列网格文本的页（表头 + 数据行）。

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::Result;
 use crate::detect::DocKind;
-use crate::error::{ConvertError, Stage};
+use crate::error::{ConvertError, ErrorKind, Stage};
 use crate::{models::OcrLayout, models::OcrTier, ofd, pdf, quality::QualityRoute};
 
 /// 渲染配置（P2 分层）：文档页 → 位图。
@@ -95,6 +95,18 @@ pub struct ForceFlags {
     pub ofd_force_ocr: bool,
     /// PDF 强制走 OCR（文字型 PDF 当图片渲染后 OCR，用于图片型校准）
     pub pdf_force_ocr: bool,
+    /// `--text-only`（#13，MinerU `--ocr-mode txt` 的**更严**版）：只走文字层，
+    /// **一个模型都不加载**（不是"少跑几次 OCR"，是彻底不碰 OCR 通路）。
+    ///
+    /// 与 `pdf_force_ocr`/`ofd_force_ocr` 同时给出 → `Unsupported` 显式拒绝
+    /// （两者语义直接对立，静默取其一比报错更坏）。
+    ///
+    /// 与 MinerU 的差异（口径要写清，否则对比会误判）：MinerU `txt` 在 medium
+    /// 档仍会加载版面/OCR 去处理非文字块（`pipeline.py:54-59`、`ocr.py:38-54`）；
+    /// 本开关是给"这台机器不联网、不下模型"和调试用的逃生口，故严格——
+    /// 图片型/坏字体文档直接 `needsOcr` 报错，混合文档按 `ANYDOC_NO_HYBRID`
+    /// 既有语义出文字层（缺页显式告警列出，不静默）。
+    pub text_only: bool,
 }
 
 /// PDF 预分流结论（P1.10）。
@@ -125,7 +137,12 @@ pub(crate) enum PdfRoute {
 /// 2. `--pages` 显式给出时求值（rN 换算 / 越界裁剪 / 空集报错），绝对页号下发
 ///    三条通路——文字层探针只装配所选页、混合只补所选缺页、OCR 只渲所选页；
 /// 3. 未给 `--pages` 且页数合规 → 行为与历史逐字节一致（多付一次 classify 元数据）。
-pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> PdfRoute {
+pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, force: &ForceFlags) -> PdfRoute {
+    // #13：`--text-only` 与 `--pdf-force-ocr` 语义直接对立，同时给出即拒（纯参数
+    // 校验，放在任何 IO 之前——不打开文档就能判定，错误也不该随文档内容漂移）。
+    if force.text_only && force.pdf_force_ocr {
+        return PdfRoute::Done(Err(text_only_conflict(path, "--pdf-force-ocr")));
+    }
     // 审计 #9：dpi 合法闸（OCR 前置条件，越界直接标错，不跑半途）。
     if let Err(e) = crate::limits::validate_dpi(opts.render.dpi) {
         return PdfRoute::Done(Err(e));
@@ -142,20 +159,147 @@ pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool)
         Ok(s) => s,
         Err(e) => return PdfRoute::Done(Err(e)),
     };
-    match pdf::text_layer_probe(path, opts, sel.as_ref()) {
-        // 图片型（无可用文字层）→ OCR pipeline
+    match pdf::text_layer_probe(path, opts, sel.as_ref(), force.text_only) {
+        // 图片型（无可用文字层）→ OCR pipeline；
+        // #13 `--text-only`：图片型没有文字层可退，显式 needsOcr 报错（绝不建引擎）。
+        Ok(None) if force.text_only => PdfRoute::Done(Err(text_only_needed(path, "整篇无可用文字层（扫描件/坏字体）"))),
         Ok(None) => PdfRoute::Ocr { pages: sel },
         // force_ocr：丢弃文字层结果整篇送 OCR（图片型校准，行为不变）
-        Ok(_) if pdf_force_ocr => PdfRoute::Ocr { pages: sel },
+        Ok(_) if force.pdf_force_ocr => PdfRoute::Ocr { pages: sel },
         // 文字层命中且无缺页：快速路径（与旧行为字节一致）
         Ok(Some(pdf::TextHit::Complete(md))) => PdfRoute::Done(Ok(md)),
-        // 混合：只补缺页
+        // 混合：只补缺页；#13 `--text-only` 下按 `ANYDOC_NO_HYBRID` 既有语义出
+        // 文字层（缺页丢弃），但**必须显式告警列出页号**——静默丢页正是当初
+        // hybrid 路由要修掉的缺陷，这里不是"悄悄降级"。
         Ok(Some(pdf::TextHit::Hybrid { text, missing_pages, .. })) => {
+            if force.text_only {
+                let mut pages: Vec<String> = missing_pages.iter().map(u32::to_string).collect();
+                pages.sort();
+                eprintln!(
+                    "警告: --text-only 不跑 OCR，{} 的以下页无文字层内容、已按文字层输出（可能缺内容）: {}",
+                    path.display(),
+                    pages.join(",")
+                );
+                return PdfRoute::Done(Ok(pdf::finalize_text_docir(text)));
+            }
             PdfRoute::Hybrid { text, missing_pages }
         }
         // 加密/损坏 → 直接标错（§5/§6，含 force_ocr 路径的加密预检）
         Err(e) => PdfRoute::Done(Err(e)),
     }
+}
+
+/// #13：`--text-only` 下"本该走 OCR"的显式拒绝（纯函数，可单测）。
+///
+/// 用 `NeedsOcr`（code=`needsOcr`）而非 `Unsupported`：文档本身没坏、格式也支持，
+/// 缺的是"允许我跑 OCR"这一句话——绑定层与 `error_hint` 的既有语义正好接得上。
+fn text_only_needed(path: &Path, why: &str) -> ConvertError {
+    ConvertError::new(
+        ErrorKind::NeedsOcr,
+        Stage::Convert,
+        format!("--text-only 不跑 OCR，但{}: {}", why, path.display()),
+    )
+}
+
+/// `--text-only` 与 `--*-force-ocr` 冲突的显式错误（纯函数，可单测）。
+fn text_only_conflict(path: &Path, other: &str) -> ConvertError {
+    ConvertError::new(
+        ErrorKind::Unsupported,
+        Stage::Convert,
+        format!(
+            "--text-only 与 {other} 互斥（前者绝不跑 OCR，后者强制跑）: {}",
+            path.display()
+        ),
+    )
+}
+
+/// #12/#13：裸图片输入的 OCR 通道入口（`convert_per_doc` 与单文档共用）。
+///
+/// 图片没有文字层可言，故 `--text-only` 下直接 `needsOcr` 拒绝——与 PDF 侧
+/// "图片型 + text_only → 显式报错"同一条契约，也守住"绝不加载模型"这一半。
+fn convert_image(path: &Path, opts: &ConvertRequest, text_only: bool) -> Result<String> {
+    if text_only {
+        return Err(ConvertError::new(
+            ErrorKind::NeedsOcr,
+            Stage::Convert,
+            format!(
+                "图片输入只能 OCR，--text-only 下拒绝处理: {}",
+                path.display()
+            ),
+        ));
+    }
+    let img = load_image_for_ocr(path)?;
+    crate::ocr_engine::init_runtime(&opts.parallel);
+    let results = crate::ocr_engine::ocr_images(
+        vec![img],
+        opts.ocr.tier,
+        opts.ocr.layout,
+        opts.parallel.page_parallel,
+        None,
+    )?;
+    Ok(crate::gfm_adapter::to_markdown(&results))
+}
+
+/// 图片解码 + 像素闸（#12）：任一边超过 [`crate::limits::render_edge_cap`]（默认
+/// 3500，对齐 docvortex `DEFAULT_MAX_RENDER_EDGE`）→ **显式** `ResourceLimit` 报错。
+///
+/// 与 PDF 渲染通路的分工要说清：PDF 侧"长边超钳"是**降 scale 重渲**（渲染参数
+/// 是我们自己选的，可以退）；图片的像素是文档自带的，静默缩放=悄悄降质，违反
+/// 本仓"超限显式拒绝、绝不静默降质"的硬契约（README 安全闸一行）。要处理大图，
+/// 请显式缩放到 `ANYDOC_RENDER_EDGE_CAP` 以内再来。
+///
+/// 尺寸闸在 `decoder.dimensions()` 上判（**解码前**），故 2 万像素的超大图不会
+/// 先把位图分配出来再报错。
+///
+/// EXIF 朝向：按 `Orientation` 转正后再送 OCR——手机拍的文件照几乎恒带
+/// `Orientation != 1`，不转正就是把整页内容侧着喂检测模型（静默精度损失，
+/// 比报错严重）。本仓 `--ocr-tier` 各档的 `doc_ori` 方向模型在 mineru 档是关闭的
+/// （对齐 MinerU，见 `models::spec_for`），故这里不指望它兜底。
+///
+/// 多帧（gif）/多页（tiff）只取**首帧**（未使用 `AnimationDecoder::into_frames`
+/// 之外的帧）；该语义已在 `--help`/README 注明，不是"待补的多页支持"。
+fn load_image_for_ocr(path: &Path) -> Result<image::RgbImage> {
+    use image::ImageDecoder as _;
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| ConvertError::io(Stage::Detect, e))?
+        // 格式按魔数判定，不靠扩展名（`-` 入口的临时文件根本没有扩展名）。
+        .with_guessed_format()
+        .map_err(|e| ConvertError::io(Stage::Detect, e))?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| from_image_error(Stage::Detect, e))?;
+    // dimensions() 不消费解码器也不失败（头信息已解析）。
+    let (w, h) = decoder.dimensions();
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let cap = crate::limits::render_edge_cap();
+    let long = w.max(h) as f32;
+    if long > cap {
+        return Err(ConvertError::new(
+            ErrorKind::ResourceLimit,
+            Stage::Convert,
+            format!(
+                "图片长边超限: {} = {w}×{h}px，长边 {long:.0}px > {cap:.0}px（ANYDOC_RENDER_EDGE_CAP 可调；请先等比缩放，本仓不静默降质）",
+                path.display()
+            ),
+        ));
+    }
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| from_image_error(Stage::Detect, e))?;
+    img.apply_orientation(orientation);
+    Ok(img.to_rgb8())
+}
+
+/// `image` 错误 → `ConvertError`：`Unsupported`（没有该格式解码器，jp2 即此类：
+/// MinerU 认、`image` 0.25 不带 JPEG2000）归 `unsupported`，其余解码类问题与损坏
+/// PDF 同类归 `malformed`——都不是运行环境问题（`runtime`）。
+fn from_image_error(stage: Stage, e: image::ImageError) -> ConvertError {
+    let kind = match &e {
+        image::ImageError::Unsupported(_) => ErrorKind::Unsupported,
+        _ => ErrorKind::Malformed,
+    };
+    ConvertError::new(kind, stage, format!("图片解码失败: {e}"))
 }
 
 /// 文档级预分流结论（P1.10）：单文档入口与 `BatchConverter` 共用。
@@ -192,11 +336,13 @@ pub(crate) fn route_doc(path: &Path, opts: &ConvertRequest, force: &ForceFlags) 
         return DocRoute::Done(Err(e));
     }
     match kind {
-        DocKind::Pdf => match route_pdf(path, opts, force.pdf_force_ocr) {
+        DocKind::Pdf => match route_pdf(path, opts, force) {
             PdfRoute::Done(r) => DocRoute::Done(r),
             PdfRoute::Ocr { pages } => DocRoute::Ocr { pages },
             PdfRoute::Hybrid { text, missing_pages } => DocRoute::Hybrid { text, missing_pages },
         },
+        // #12：裸图片（`DocKind::Image`）与其余非 PDF 同走 per-doc——`--pages`
+        // 拒绝、大小闸已由上方统一覆盖，差异只在 [`convert_per_doc`] 的通道选择。
         other => {
             if let Some(raw) =
                 opts.pages.as_deref().filter(|r| !crate::pagerange::is_unrestricted(r))
@@ -208,7 +354,7 @@ pub(crate) fn route_doc(path: &Path, opts: &ConvertRequest, force: &ForceFlags) 
     }
 }
 
-/// 统一调度第二步：per-doc 通路（OFD / anydoc 兜底）。
+/// 统一调度第二步：per-doc 通路（图片 / OFD / anydoc 兜底）。
 /// `kind` 来自 [`route_doc`]（Pdf 分支不可能到达，防御式兜底重走 PDF 通路）。
 pub(crate) fn convert_per_doc(
     path: &Path,
@@ -217,7 +363,11 @@ pub(crate) fn convert_per_doc(
     force: &ForceFlags,
 ) -> Result<String> {
     match kind {
-        DocKind::Ofd => ofd::convert_ofd(path, opts, force.ofd_force_ocr),
+        // #13：OFD 侧与 PDF 侧同一契约——`--text-only` 下不加载任何模型；与
+        // `--ofd-force-ocr` 的互斥在 convert_ofd 入口判（各通道入口统一校验惯例）。
+        DocKind::Ofd => ofd::convert_ofd(path, opts, force.ofd_force_ocr, force.text_only),
+        // #12：裸图片 → 单页 OCR 通道（无渲染、无文字层；text_only 下显式拒绝）。
+        DocKind::Image => convert_image(path, opts, force.text_only),
         // Step 5：HTML 结构化通道（htmd → GFM，对齐 MinerU flash analyze_html）
         DocKind::Html => crate::html::convert_html(path),
         // Step 5：CSV/TSV 分隔文本。anydoc 0.2.4 的 `Format::from_extension` 无 tsv
@@ -231,7 +381,10 @@ pub(crate) fn convert_per_doc(
         DocKind::Office | DocKind::Other => {
             anydoc::to_markdown(path).map_err(ConvertError::from)
         }
-        DocKind::Pdf => pdf::convert_pdf(path, opts, force.pdf_force_ocr),
+        // 防御分支：`route_doc` 的 Pdf 分支不会走到这里（P1.10 起单文档/批处理
+        // 同一预分流）。整包透传 force，互斥判定仍在 route_pdf 开头——与本文件
+        // 主分支语义严格一致。
+        DocKind::Pdf => pdf::convert_pdf(path, opts, force),
     }
 }
 

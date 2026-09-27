@@ -42,11 +42,15 @@ pub mod render;
 mod text_layer;
 pub(crate) use text_layer::{TextHit, classify_pages, finalize_text_docir, text_layer_probe};
 
-pub fn convert_pdf(path: &Path, opts: &ConvertRequest, pdf_force_ocr: bool) -> Result<String> {
+pub fn convert_pdf(
+    path: &Path,
+    opts: &ConvertRequest,
+    force: &crate::convert::ForceFlags,
+) -> Result<String> {
     let mut t = StageTimer::new();
     // P1.10：文字层预分流统一走 convert::route_pdf（单文档与 BatchConverter
     // 共用同一判定；force_ocr 路径含加密预检 ADR-0006 §6）。
-    match crate::convert::route_pdf(path, opts, pdf_force_ocr) {
+    match crate::convert::route_pdf(path, opts, force) {
         crate::convert::PdfRoute::Done(r) => r,
         crate::convert::PdfRoute::Ocr { pages } => {
             t.stage("ocr"); // render 已被 OCR 掩盖，合并记为 ocr
@@ -203,7 +207,11 @@ pub(crate) fn convert_pdf_ocr_docs(
     // 平均置信度低于阈值 → 升级 small 全篇重跑；Off 用显式 opts.ocr.tier。
     // 探针失败不阻断，回退显式参数。dpi 始终由用户显式控制（后验只升级 tier，
     // 不再改 dpi）。
-    let tier = if opts.quality_route == crate::quality::QualityRoute::Auto {
+    //
+    // mineru-basic 是 CLI 与 `ConvertRequest::default()` 的默认档，而本路由的两端
+    // （tiny / small）都不是它：让路由在 MinerU 档生效等于把默认流程换掉。故
+    // `is_mineru()` 时整段路由跳过（用显式档），见 `quality::routing_applies`。
+    let tier = if crate::quality::routing_applies(opts) {
         probe_first_doc_confidence(&paths[0], opts)?
             .map(|needs| {
                 if needs {
@@ -242,13 +250,14 @@ pub(crate) fn convert_pdf_ocr_docs(
     .run()?;
     timings.report();
 
-    // T2：按页失败重试（仅 quality_route=Auto）。首页门控只决定基础档；pipeline
-    // 跑完后逐页 `page_needs_retry`（均值<阈值/无 regions/全缺 → 低质量页），
-    // 用更高档**局部重跑**失败页（重渲染该页 + 更高档 OCR），成功页保留。
+    // T2：按页失败重试（仅质量路由可用时，见 `quality::routing_applies`）。首页
+    // 门控只决定基础档；pipeline 跑完后逐页 `page_needs_retry`（均值<阈值/无
+    // regions/全缺 → 低质量页），用更高档**局部重跑**失败页（重渲染该页 + 更高档
+    // OCR），成功页保留。
     // - 只升一档（OcrTier::next），更高档仍失败则保留原结果，防循环；
     // - 重试页渲染失败（pipeline 缺失）→ 保留原结果；
-    // - Off 时行为完全不变（golden 稳定）。
-    if opts.quality_route == crate::quality::QualityRoute::Auto {
+    // - 路由不适用（Off，或基础档为 MinerU）时行为完全不变（golden 稳定）。
+    if crate::quality::routing_applies(opts) {
         if let Some(higher) = tier.next() {
             let bad: Vec<(usize, usize)> = results
                 .iter()

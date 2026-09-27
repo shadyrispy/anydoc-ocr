@@ -72,11 +72,20 @@ pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
     });
 }
 
-/// 缓存键：模型档 + 版面模型。热切换 tier/layout 必须用不同 session，故两者都进 key。
+/// 缓存键：模型档 + 版面模型 + 后处理开关位。热切换 tier/layout 必须用不同
+/// session，故两者都进 key；印章开关（默认开，`ANYDOC_NO_SEAL_OCR` 关闭）与
+/// `ANYDOC_TABLE_FILL` 改变的是
+/// 引擎是否附带后处理模型（seal det / cell det 额外 session），同理进 key——
+/// 否则同 (tier, layout) 先后两种开关状态会命中同一缓存、后处理时有时无。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct EngineKey {
     tier: OcrTier,
     layout: OcrLayout,
+    seal_ocr: bool,
+    table_fill: bool,
+    /// #7 A/B 位（`ANYDOC_WIRELESS_CELLS`）：给不给这张 129MB 的 cell-det 件会
+    /// 造出两个**结构不同**的 analyzer，共用一个缓存键就会"这次有、下次没有"。
+    wireless_cells: bool,
 }
 
 /// 进程级 OCR 引擎缓存（同 key 只建一次模型）。
@@ -134,18 +143,32 @@ pub struct OcrEngine {
     infer_lock: Mutex<()>,
     /// A1：build 时按池配置定格——true 才允许 analyzer 并发触达。
     concurrent_infer: bool,
+    /// 后处理层（#4 空单元格回捞 / #5 印章识别）：仅当对应开关开启时非 None。
+    /// 放在引擎内保证与 analyzer 同生命周期、同缓存键，模型 session 懒建。
+    post: Option<Arc<crate::ocr_post::PostPass>>,
 }
 
 impl OcrEngine {
-    /// 按 `(tier, layout)` 取/建引擎。首次命中才下载+构建 ONNX 模型（缓存于 $OAR_HOME），
-    /// 后续同 key 零重载——OFD 双 OCR 调用、库模式重复 convert 均复用同实例。
+    /// 按 `(tier, layout, 后处理开关)` 取/建引擎。首次命中才下载+构建 ONNX 模型
+    /// （缓存于 $OAR_HOME），后续同 key 零重载——OFD 双 OCR 调用、库模式重复
+    /// convert 均复用同实例。
     pub fn build(tier: OcrTier, layout: OcrLayout) -> Result<Arc<OcrEngine>> {
-        let key = EngineKey { tier, layout };
+        let key = EngineKey {
+            tier,
+            layout,
+            seal_ocr: crate::ocr_post::seal_on(),
+            table_fill: crate::ocr_post::table_fill_on(),
+            wireless_cells: crate::models::wireless_cells_wanted() && tier.is_mineru(),
+        };
         let mut cache = CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(e) = cache.get(&key) {
             return Ok(Arc::clone(e));
+        }
+        // 首次真的要建模型 → 先告知是否要联网下载（缓存命中路径不打扰）。
+        if tier.is_mineru() {
+            announce_mineru_download();
         }
         let mut t = crate::timing::StageTimer::new();
         // A1：池 >1 时 core 已建多 session（build_analyzer 内读取同一 env），
@@ -154,6 +177,8 @@ impl OcrEngine {
             analyzer: Arc::new(build_analyzer(tier, layout)?),
             infer_lock: Mutex::new(()),
             concurrent_infer: session_pool_wanted() > 1,
+            post: crate::ocr_post::PostPass::wanted()
+                .then(|| Arc::new(crate::ocr_post::PostPass::new(tier))),
         });
         t.stage("model-load");
         // 注意：build_analyzer 返回 OARStructure（predict_images 在其上），非 Builder。
@@ -216,8 +241,13 @@ impl OcrEngine {
                     start.elapsed().as_secs_f64() * 1000.0,
                 );
             }
-            for r in group {
-                out.push(r.map_err(|e| runtime(Stage::Ocr, None, format!("OCR 推理失败: {e}")))?);
+            for (j, r) in group.into_iter().enumerate() {
+                let mut r = r.map_err(|e| runtime(Stage::Ocr, None, format!("OCR 推理失败: {e}")))?;
+                // 后处理（#4/#5，默认 None → 零触达）：页图与结果同 chunk 内对齐
+                if let Some(post) = &self.post {
+                    post.run(&chunk[j], &mut r);
+                }
+                out.push(r);
             }
         }
         if out.len() != n {
@@ -244,6 +274,8 @@ impl OcrEngine {
         timings: Option<&crate::timing::PageTimings>,
     ) -> Result<oar_ocr::domain::structure::StructureResult> {
         let start = Instant::now();
+        // 仅在开启后处理时才克隆页图（默认路径零额外分配）
+        let post_img = self.post.as_ref().map(|_| img.clone());
         let r = {
             // P0-1b：默认（池=1）引擎级串行——pipeline 多 worker 并发进来时在此
             // 排队，analyzer 内部的单 session 锁永不受竞态触达。
@@ -259,10 +291,16 @@ impl OcrEngine {
             );
         }
         let label = format!("doc {doc_idx} page {page_idx}");
-        match r.into_iter().next() {
-            Some(Ok(s)) => Ok(s),
-            Some(Err(e)) => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 推理失败: {e}"))),
-            None => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 返回空结果"))),
+        match (r.into_iter().next(), post_img) {
+            (Some(Ok(mut s)), Some(im)) => {
+                if let Some(post) = &self.post {
+                    post.run(&im, &mut s);
+                }
+                Ok(s)
+            }
+            (Some(Ok(s)), None) => Ok(s),
+            (Some(Err(e)), _) => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 推理失败: {e}"))),
+            (None, _) => Err(runtime(Stage::Ocr, Some(page_idx), format!("{label}: OCR 返回空结果"))),
         }
     }
 
@@ -297,6 +335,51 @@ fn model_path(name: &str) -> String {
         }
         _ => name.to_string(),
     }
+}
+
+/// 后处理层（`ocr_post`）取模型路径的同一入口（`pub(crate)` 复用，避免两处
+/// `ANYDOC_MODEL_DIR` 语义漂移）。
+pub(crate) fn model_path_for_post(name: &str) -> String {
+    model_path(name)
+}
+
+/// 默认档首跑下载告知（进程内一次）。
+///
+/// 放在 `build` 而不是 CLI 入口：只有真要走 OCR 时才加载模型，文字型 PDF 一个
+/// 模型都不碰——在 CLI 里无条件预告"正在下载 240MB"对纯文字文档是假告警。
+/// mineru-basic 是默认档且单是 `pp-doclayoutv2.onnx` 就 204MB（七件合计 240MB），
+/// 静默下载在慢链路上看起来就是"卡住"，故先把清单与体积写到 stderr
+/// （`$OAR_HOME` 缓存后不再出现）。
+fn announce_mineru_download() {
+    static ANNOUNCED: Once = Once::new();
+    let st = crate::models::mineru_asset_status(
+        std::env::var("ANYDOC_MODEL_DIR").ok().as_deref(),
+        std::env::var("OAR_HOME").ok().as_deref(),
+    );
+    if !st.needs_download() {
+        return;
+    }
+    ANNOUNCED.call_once(|| {
+        eprintln!(
+            "[anydoc-ocr] 引擎档 mineru-basic：{} 件模型需联网下载（约 {:.1} MB，缓存于 $OAR_HOME，之后离线复用）：{}",
+            st.needs_download.len(),
+            st.download_bytes as f64 / (1024.0 * 1024.0),
+            st.needs_download.join(", ")
+        );
+    });
+}
+
+/// 公式件缺失告警（进程内只说一次；`OcrEngine` 按缓存键可能多次 `build`）。
+fn formula_off_once() {
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "[anydoc-ocr] 提示：未找到公式识别资产（{}/{}），公式块将不输出 LaTeX；\
+             正文与表格不受影响。需要公式请把 mineru-ocr 资产目录设为 ANYDOC_MODEL_DIR。",
+            crate::models::MINERU_FORMULA_ASSETS[0],
+            crate::models::MINERU_FORMULA_ASSETS[1],
+        );
+    });
 }
 
 /// 构建 oar-ocr 分析器：版面模型按 `layout` 选（Doc 默认文档结构 / Table 表格专用），
@@ -340,12 +423,24 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         // 出 token IDs）。tokenizer JSON 从 MFR yml 的 fast_tokenizer_file 提取；
         // batch=8 与 MinerU CPU_BATCH_SIZE 对齐。core 预处理链已对拍：384² 短边、
         // 黑边居中、mean .7931/std .1738、BGR 灰度、pad 1.0、EOS=2 截断。
+        //
+        // **默认档下公式是可选件**：这两件（591MB + 1.8MB）不在 ModelScope 注册表
+        // 内、永不 auto-download，唯一来路是 ANYDOC_MODEL_DIR。mineru-basic 已是
+        // 默认档，不能让"没配公式资产"变成"整个默认档跑不了"（那会让所有没放
+        // 591MB 的机器直接不可用），故按资产就位与否条件挂载：缺件 → 版面/det/rec/
+        // 表格全部照常，只是公式块不出 LaTeX，并打一行一次性告警说明降级原因。
         if !spec.formula.is_empty() {
-            builder = builder.with_formula_recognition(
-                model_path(spec.formula),
-                model_path(spec.formula_tokenizer),
-                "pp_formulanet",
-            );
+            if crate::models::mineru_formula_ready(
+                std::env::var("ANYDOC_MODEL_DIR").ok().as_deref(),
+            ) {
+                builder = builder.with_formula_recognition(
+                    model_path(spec.formula),
+                    model_path(spec.formula_tokenizer),
+                    "pp_formulanet",
+                );
+            } else {
+                formula_off_once();
+            }
         }
     } else {
         // P1：文档方向矫正（0°/90°/180°/270°）——扫描件旋转/歪斜时 det/rec 召回关键。
@@ -363,6 +458,19 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
         .filter(|&n| n > 0)
     {
         builder = builder.region_batch_size(n);
+    }
+    // #7 A/B：无线表"单元格检测 → cells→HTML"通路。默认**不挂**（见
+    // `models::wireless_cells_wanted` 的成本理由），`ANYDOC_WIRELESS_CELLS` 存在
+    // 且当前是 mineru 档才接。挂上后 wireless 分支改由 cell 检测框推网格出 HTML，
+    // 不再单靠 slanet_plus 的 structure tokens；有线表不受影响（走 wired 分支）。
+    if crate::models::wireless_cells_wanted() && tier.is_mineru() && !spec.wireless_cell_det.is_empty() {
+        eprintln!(
+            "[anydoc-ocr] #7 A/B：ANYDOC_WIRELESS_CELLS 已开，无线表走 cells→HTML（额外加载 {}，129MB，$OAR_HOME 缓存）",
+            spec.wireless_cell_det
+        );
+        builder = builder
+            .with_wireless_table_cell_detection(model_path(spec.wireless_cell_det))
+            .use_wireless_table_cells_trans_to_html(true);
     }
     // A1/#1：池>1 时必须给 builder 传 ort_session 配置——core 的 session 池只在
     // `OrtInfer::from_config` 路径激活（adapter `ort_config.is_some()` 分支），
