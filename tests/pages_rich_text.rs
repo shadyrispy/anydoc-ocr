@@ -5,8 +5,9 @@
 //!   倒序/非法/空集报错、非 PDF 拒绝、目录早拒、`all` 不触发拒绝；
 //! - `ANYDOC_MAX_PAGES` 页数闸（对齐 MinerU `max_pages_per_file=1000`）：
 //!   报错发生在 OCR/渲染之前；
-//! - `ANYDOC_RICH_TEXT` 行内样式注入（对齐 MinerU `prepare/apply_text_evidence`）：
-//!   默认关闭字节不变，开启后 `**`/`*` 注入且标题前缀共存。
+//! - `ANYDOC_RICH_TEXT` **已废弃**（#6 决策 (c)）：设与不设输出逐字节相同，
+//!   命中时 stderr 打一次废弃说明。样本 `rich_text.pdf` 保留——默认通路仍要
+//!   一个含 bold/italic 字体文字层的文档来钉"纯文本里不得冒出样式标记"。
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -173,24 +174,78 @@ fn page_gate_rejects_before_ocr() {
     assert_eq!(r.code, Some(0), "limit=10 应通过: {}", r.err);
 }
 
-// ── ANYDOC_RICH_TEXT 行内样式注入 ──
+// ── ANYDOC_RICH_TEXT 已废弃（#6 决策 (c)）──
 
-/// 默认关闭：无样式标记、字节行为与历史一致；开启：bold/italic 注入且
-/// 标题前缀与样式共存（`## **1. General Rules**`，判定走剥标记视图）。
+/// 废弃契约的两半：**行为半**——设与不设 stdout 逐字节相同，且无论哪种情况都
+/// 不出行内样式标记（旧路径开启时会产出 `**Bold lead-in text**` / `*Italic styled
+/// text*` / `## **1. General Rules**`，这三处形状是废弃最敏感的残留点）；
+/// **反馈半**——命中时 stderr 打一次废弃说明，绝不静默（老脚本设了值却没任何
+/// 反应是最难查的一类问题）。
+///
+/// 样本用 `rich_text.pdf`（`gen_rich_text.py`）：它是仓内唯一带 bold/italic
+/// 字体证据的文字层 PDF，废弃后仍用于钉"producer 不再注入样式字面量"。
 #[test]
-fn rich_text_off_by_default_on_when_enabled() {
+fn rich_text_env_is_a_no_op_with_notice() {
     let pdf = sample("rich_text.pdf");
     assert!(pdf.exists(), "缺样本 rich_text.pdf（gen_rich_text.py 生成）");
+
     let off = run(&[pdf.to_str().unwrap()], &[]);
     assert_eq!(off.code, Some(0), "默认路径应成功: {}", off.err);
     assert!(off.out.contains("## 1. General Rules"), "标题前缀行为不变:\n{}", off.out);
     assert!(off.out.contains("Bold lead-in text"), "正文不丢");
     assert!(!off.out.contains("**"), "默认不得注入样式标记:\n{}", off.out);
+    assert!(
+        !off.err.contains("ANYDOC_RICH_TEXT"),
+        "未设置该变量时不得凭空告警: {}",
+        off.err
+    );
 
-    let on = run(&[pdf.to_str().unwrap()], &[("ANYDOC_RICH_TEXT", "1")]);
-    assert_eq!(on.code, Some(0), "rich 路径应成功: {}", on.err);
-    assert!(on.out.contains("## **1. General Rules**"), "加粗标题应共存:\n{}", on.out);
-    assert!(on.out.contains("**Bold lead-in text**"), "bold 注入失效:\n{}", on.out);
-    assert!(on.out.contains("*Italic styled text*"), "italic 注入失效:\n{}", on.out);
-    assert!(on.out.contains("Plain tail line."), "无样式行不受影响");
+    let legacy = run(&[pdf.to_str().unwrap()], &[("ANYDOC_RICH_TEXT", "1")]);
+    assert_eq!(legacy.code, Some(0), "设了废弃变量仍应成功: {}", legacy.err);
+    assert_eq!(
+        legacy.out, off.out,
+        "废弃变量必须不改变任何行为：设了它之后的 stdout 应与默认逐字节相同"
+    );
+    assert!(!legacy.out.contains("**"), "开启语义已移除，不得产出样式标记:\n{}", legacy.out);
+    assert!(
+        legacy.err.contains("ANYDOC_RICH_TEXT") && legacy.err.contains("已废弃"),
+        "stderr 应含废弃说明: {}",
+        legacy.err
+    );
+
+    // 判据同旧开关：存在即命中，不限值——`=0` 也告警（否则用户会以为值写错了）。
+    let zero = run(&[pdf.to_str().unwrap()], &[("ANYDOC_RICH_TEXT", "0")]);
+    assert!(zero.err.contains("已废弃"), "=0 同样应告警: {}", zero.err);
+
+    // 文档面：废弃口径必须出现在 `--help`（MINERU_ENGINE_HELP 的 after_help 段）。
+    // 此前该变量**从未**在 `--help` 里出现过，故这一断言是新增契约，不是回归网。
+    let help = run(&["--help"], &[]);
+    assert_eq!(help.code, Some(0), "--help 应成功: {}", help.err);
+    let text = format!("{}{}", help.out, help.err);
+    assert!(
+        text.contains("ANYDOC_RICH_TEXT") && text.contains("已废弃"),
+        "--help 应写明 ANYDOC_RICH_TEXT 已废弃:\n{text}"
+    );
+}
+
+/// 告警**每进程一次**：批处理目录逐文件都过 `route_doc`，不记忆就会每行刷屏。
+#[test]
+fn rich_text_notice_prints_once_per_process() {
+    let dir = std::env::temp_dir().join(format!("anydoc_rich_dep_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::copy(sample("rich_text.pdf"), dir.join("a.pdf")).expect("copy");
+    std::fs::copy(sample("rich_text.pdf"), dir.join("b.pdf")).expect("copy");
+    let out = dir.join("md");
+    let r = run(
+        &[dir.to_str().unwrap(), "-o", out.to_str().unwrap()],
+        &[("ANYDOC_RICH_TEXT", "1")],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(r.code, Some(0), "批处理应成功: {}", r.err);
+    assert_eq!(
+        r.err.matches("ANYDOC_RICH_TEXT 已废弃").count(),
+        1,
+        "两文件批处理应只告警一次: {}",
+        r.err
+    );
 }

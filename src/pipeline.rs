@@ -140,10 +140,10 @@ impl<F: RenderFn> PagePipeline<F> {
         //
         // 背压语义不变：channel bound = threads×BOUND_MULT，OCR 忙时渲染线程
         // 在 `send` 上阻塞，峰值内存 ~(2+消费者数)×页图。
-        let dump_on = std::env::var("ANYDOC_DUMP_DIR")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .is_some();
+        // 页尺寸采集**不再**受 ANYDOC_DUMP_DIR 门控（#6 第 1 步）：`PageIR.dims`
+        // 是 IR 的一等字段，下游投影要用它做 bbox 归一化，若只在调试开关下填，
+        // 正常路径会静默拿到 `Unknown`。成本是每页两次 u32 读 + 一次 BTreeMap
+        // 插入（每页一次，非每区块一次），相对整页 OCR 推理可忽略。
         let consumers = if self.engine.concurrent_infer() { self.threads } else { 1 };
         let shared = Arc::new(ConsumerState {
             results: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -188,10 +188,8 @@ impl<F: RenderFn> PagePipeline<F> {
                                 continue;
                             }
                         };
-                        if dump_on {
-                            let dims = (img.width(), img.height());
-                            state.page_dims.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, dims);
-                        }
+                        let dims = (img.width(), img.height());
+                        state.page_dims.lock().unwrap_or_else(|p| p.into_inner()).insert(idx, dims);
                         // P0-1：与批量路径共用同一推理入口（错误包装/计时契约一致）
                         let res = engine.predict_one(img, idx.0, idx.1, timings.as_deref());
                         state

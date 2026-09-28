@@ -157,7 +157,7 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 | `ANYDOC_MAX_INPUT_BYTES` | 输入字节上限（默认 200 MiB，对齐 MinerU 上传档）。stdin 有界读、文件入口（含 HTML/CSV 等 anydoc 通道）预检，超限显式 `resourceLimit` 拒绝、不截断；非法值（不可解析/≤0）回落默认 |
 | `ANYDOC_NATIVE_TEXT_CHARS` | 单页原生文字层字符上限（默认 65535，对齐 MinerU `MAX_NATIVE_TEXT_CHARS_PER_PAGE`）。超限页放弃文字层抽取直判 OCR 缺页，防超大文字层拖垮抽取；非法值回落默认 |
 | `ANYDOC_MAX_PAGES` | 单文档页数上限（默认 1000，对齐 MinerU `max_pages_per_file`）。PDF 在 classify 元数据阶段、OFD 在逐页判定循环内拦截，超限显式 `resourceLimit` 报错，发生在渲染/OCR 之前；非法值回落默认 |
-| `ANYDOC_RICH_TEXT` | 存在即开启 PDF 文字层**行内样式**注入（借鉴 MinerU `prepare/apply_text_evidence`）：消费 pdf-inspector 的 bold/italic/underline/strikeout 证据，产出 `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>`；标题启发式在剥标记后的判定视图上跑，前缀与样式共存（`## **一、总则**`）。**默认关闭**（守护现网字节一致），精度增益按语料自行 A/B——`is_bold` 部分来自字体名启发，中文公文加粗小标题已由标题前缀承担 |
+| `ANYDOC_RICH_TEXT` | **已废弃（#6 决策 (c)）：设与不设都不再改变任何行为**——它曾把 PDF 文字层的行内样式（bold/italic/underline/strikeout）注入成 `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>` 字面量（借鉴 MinerU `prepare/apply_text_evidence`），标题启发式则在剥掉标记的判定视图上跑。废弃理由：样式是**结构**信息，焊进正文再靠正则剥回来会让 markdown 与 IR 分叉，也让"输出什么"取决于一个环境变量。**替代 = 结构化 span**（内部 IR 的 `Region.spans`，`BACKLOG.md` #6 第 4 步；不打算再提供渲染开关）。变量存在时（不限值，与原判据一致）stderr 打一次 `[anydoc-ocr] 警告：ANYDOC_RICH_TEXT 已废弃…`，每进程一次、批处理不刷屏；`--help` 的"已废弃变量"一节同口径 |
 | `ANYDOC_HEADINGS_LAYOUT` | 存在即开启**布局驱动标题分级**（仅 OCR 通路，借鉴上游 `infer_paragraph_title_levels`）：默认路径只有编号语义一条信号，无编号标题（"总则""适用范围"）一律抹平为 `##`；开启后追加行高、缩进两条 k-means 布局信号做三信号加权投票（语义 2 > 行高 1 = 缩进 1），把同级标题按字号/缩进拉开。编号命中的标题级别不变，故开关只影响原本回落 `##` 的那批。**默认关闭**（字节一致） |
 | `ANYDOC_NO_SEAL_OCR` | 存在即关闭**印章文字识别**（**#10b 行为变更**：此前为 `ANYDOC_SEAL_OCR` 存在即开启、默认关闭；现**默认开启**，对齐 MinerU basic=medium 档默认跑 seal OCR）。链路不变：版面模型的 `Seal` 元素 → 页图裁剪 → 印章专用 DB 检测（`pp-ocrv4_mobile_seal_det`/`seal_ppocrv4_det`，auto-download 或 `ANYDOC_MODEL_DIR`）→ 行框摆正 → tier 同款 rec → 输出 `【印章】…` 行。**代价可控**：页面无 `Seal` 元素时 `seal_pass` 早退、一个额外模型都不加载，成本只落在真含章的页上。**限制**：环排（弧形）公司名当前显式跳过（弧行摆正只会产出残缺字，取证见 `BACKLOG.md` #5a），章内直排文字（"专用章"等）可识别 |
 | `ANYDOC_SEAL_OCR` | （遗留别名）#10b 前的开关名，现**恒为等价默认值的 no-op**——设不设都是开，绝不把默认翻转成关（老脚本 `ANYDOC_SEAL_OCR=1` 行为不变）。与 `ANYDOC_NO_SEAL_OCR` 同时设置时以关闭为准并 stderr 提示一次 |
@@ -288,7 +288,7 @@ scripts/             build-x64 / build-aarch64 / package-single / install-font
 - **印章默认开对离线包的影响**（#10b 行为变更）：tiny/small 离线包**不内置**印章检测模型（4.8MB，注册表资产）。含章文档在离线机上会触发一次 auto-download 尝试，失败只告警一次并跳过，主链路结果不受影响；确定不需要印章的环境可 `ANYDOC_NO_SEAL_OCR=1` 彻底关掉这次尝试。
 - **后处理层（印章默认开 / `ANYDOC_TABLE_FILL`）不改 vendored 管线**：模型缺失或单框推理失败只告警一次并跳过该项填充，主链路结果原样返回；两者都进引擎缓存键（开关切换重建引擎，防串会话）。不含 `Seal` 版面元素的页在 `seal_pass` 早退，印章默认开对无章文档零额外推理。
 - **安全闸（口径对齐 MinerU，超限显式报错、绝不静默截断/降质）**：输入 200 MiB（`ANYDOC_MAX_INPUT_BYTES`，stdin 有界读 + 文件入口预检）；单文档 1000 页（`ANYDOC_MAX_PAGES`，PDF 在 classify 元数据阶段拦、OFD 在逐页判定循环拦，均先于渲染/OCR）；`--dpi` 限 50–400；整页渲染长边 3500px（超则整体降 scale，`ANYDOC_RENDER_EDGE_CAP`）；单页原生文字 >65535 字符放弃文字层直判 OCR（`ANYDOC_NATIVE_TEXT_CHARS`）。
-- **`--pages` 仅 PDF 通道**：每个 PDF 调度时多付一次 classify 元数据读取（~10–50ms，不渲图）用于页数闸与选页求值，输出不变。行内样式注入（`ANYDOC_RICH_TEXT`）默认关闭、仅作用于 PDF 文字层通路，开启后 OCR/网格表格通路不受影响。
+- **`--pages` 仅 PDF 通道**：每个 PDF 调度时多付一次 classify 元数据读取（~10–50ms，不渲图）用于页数闸与选页求值，输出不变。行内样式注入（`ANYDOC_RICH_TEXT`）**已废弃**——现在设与不设输出逐字节相同，仅 stderr 提醒一次；样式信息的替代是结构化 span（见上方环境变量表）。
 
 ## 许可
 

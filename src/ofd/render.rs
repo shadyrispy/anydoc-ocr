@@ -95,6 +95,23 @@ fn collect_image_objects<'a>(
     }
 }
 
+/// 页物理框（mm）解析链，与 ofd-core 渲染器同口径：本页 `Area` → 文档默认
+/// `PageArea` → `None`（**不**兜底成 A4——审计 #9 的 dpi 钳位可以按 A4 估，
+/// #6 第 1 步的 `PageIR.dims` 不行：伪造一个没读到的页面框会污染归一化分母，
+/// 拿不到就返回 `None` 让该页记 `Unknown`）。
+pub(crate) fn page_physical_box(
+    reader: &mut OfdReader<File>,
+    doc: &LoadedDocument,
+    idx: usize,
+) -> Option<ofd_core::StBox> {
+    doc.pages()
+        .get(idx)
+        .and_then(|p| reader.load_page(doc, p).ok())
+        .and_then(|page| page.area)
+        .or_else(|| doc.document.common_data.page_area.as_ref().cloned())
+        .map(|a| a.physical_box)
+}
+
 /// 审计 #9（默认启用）：ofd-core 像素 = mm/25.4×dpi 且只有 20000px 硬错误、
 /// 无钳位，故在调用侧按页物理框把长边钳到 cap（默认 3500px，
 /// `ANYDOC_RENDER_EDGE_CAP`）——等价换算为有效 dpi（[`crate::limits::effective_dpi_mm`]），
@@ -107,14 +124,7 @@ pub(crate) fn page_render_dpi(
     idx: usize,
     dpi: f32,
 ) -> f32 {
-    let area = doc
-        .pages()
-        .get(idx)
-        .and_then(|p| reader.load_page(doc, p).ok())
-        .and_then(|page| page.area)
-        .or_else(|| doc.document.common_data.page_area.as_ref().cloned())
-        .map(|a| a.physical_box)
-        .unwrap_or(ofd_core::StBox::A4_MM);
+    let area = page_physical_box(reader, doc, idx).unwrap_or(ofd_core::StBox::A4_MM);
     crate::limits::effective_dpi_mm(dpi, area.width.max(area.height))
 }
 

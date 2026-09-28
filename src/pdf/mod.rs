@@ -124,9 +124,14 @@ pub(crate) fn convert_pdf_hybrid(
 /// 无区块 → `None`（调用方报 NeedsOcr，绝不产出缺页文档）。
 /// 页号口径：文字层 `page_no` 取自 `TextItem.page`（1 基），OCR 页同样给 1 基
 /// 页号（整篇 OCR 通路用 0 基本地下标，两通路不交叉，golden 不变）。
+///
+/// `dims`（#6 第 1 步）：与 `pages` **同序**的页尺寸（像素），供 OCR 页写入
+/// `PageIR.dims`；长度不足或 `None` 的槽位记 `Unknown`。渲染层不消费它，
+/// 故传与不传的输出逐字节相同。
 pub(crate) fn merge_hybrid(
     mut text: DocIR,
     pages: &[(u32, oar_ocr::domain::structure::StructureResult)],
+    dims: &[Option<(u32, u32)>],
 ) -> Option<String> {
     let covered: std::collections::BTreeSet<u32> = pages.iter().map(|(p, _)| *p).collect();
     if covered.len() != pages.len() {
@@ -141,13 +146,17 @@ pub(crate) fn merge_hybrid(
     //    空白扫描页产出的页区块可以为**空**（渲染成功但 OCR 无文本，
     //    hybrid_pdf_with_blank_page_still_succeeds 锁死该行为：空页照常并入，
     //    绝不因"无区块"把整篇文档降级 NeedsOcr）。
-    for (page_no, res) in pages {
-        let doc = gfm_adapter::to_docir(std::slice::from_ref(res));
-        let regions = doc.pages.into_iter().next().map(|p| p.regions)?;
+    for (i, (page_no, res)) in pages.iter().enumerate() {
+        let doc = gfm_adapter::to_docir(
+            std::slice::from_ref(res),
+            &[dims.get(i).copied().unwrap_or(None)],
+        );
+        let page = doc.pages.into_iter().next()?;
         text.pages.push(crate::docir::PageIR {
             page_no: *page_no,
-            regions,
+            regions: page.regions,
             source: crate::docir::PageSource::Ocr,
+            dims: page.dims,
         });
     }
     // 3) 页号升序：跨页表 pass 按 vec 序判定相邻性、渲染按 page_no 分桶归位，
@@ -328,6 +337,21 @@ pub(crate) fn convert_pdf_ocr_docs(
     Ok(out)
 }
 
+/// pipeline 的 `(doc_idx, page_idx) → 位图宽高` 表摊平成与 `pages` **同序**的
+/// dims 向量（#6 第 1 步）。
+///
+/// 单独抽出来是因为这是 dims 通路上**唯一可能悄悄错配**的地方：`to_docir` 按
+/// 下标取 dims，而下标来自 `pages` 的迭代序；markdown 里看不见 dims，golden
+/// 永远抓不到"页 A 配了页 B 的尺寸"，只能靠 `align_page_dims_*` 两条单测钉住。
+/// 查不到 → `None`（该页记 `Unknown`），绝不顺延邻居的尺寸。
+fn align_page_dims(
+    doc_idx: usize,
+    page_indices: &[usize],
+    page_dims: &BTreeMap<(usize, usize), (u32, u32)>,
+) -> Vec<Option<(u32, u32)>> {
+    page_indices.iter().map(|pi| page_dims.get(&(doc_idx, *pi)).copied()).collect()
+}
+
 /// 单文档装配：整文档错误优先 → 混合合并（缺页未取回 → NeedsOcr）→ 图片型
 /// 整篇 OCR（与旧通路字节一致）。dump 在装配前落盘（覆盖两种路由）。
 ///
@@ -362,6 +386,10 @@ fn assemble_doc_result(
     match text {
         // 混合：OCR 页号 = page_idx + 1（pipeline 的 page_idx 是 0 基 pdfium 页号）
         Some(text) => {
+            // dims 与 pages 同序（#6 第 1 步）：按 (doc_idx, page_idx) 查真实位图尺寸，
+            // 查不到给 None → 该页 `PageDimsKind::Unknown`（不拿内容外扩冒充）。
+            let idxs: Vec<usize> = pages.iter().map(|(pi, _)| *pi).collect();
+            let ocr_dims = align_page_dims(doc_idx, &idxs, page_dims);
             let ocr: Vec<(u32, _)> =
                 pages.into_iter().map(|(pi, res)| ((pi as u32) + 1, res)).collect();
             let got: std::collections::BTreeSet<u32> =
@@ -384,7 +412,7 @@ fn assemble_doc_result(
                     },
                 ));
             }
-            merge_hybrid(text, &ocr).ok_or_else(|| {
+            merge_hybrid(text, &ocr, &ocr_dims).ok_or_else(|| {
                 crate::error::ConvertError::new(
                     crate::error::ErrorKind::NeedsOcr,
                     crate::error::Stage::Ocr,
@@ -396,9 +424,16 @@ fn assemble_doc_result(
             })
         }
         // 图片型整篇 OCR（旧行为）
-        None => Ok(gfm_adapter::to_markdown(
-            &pages.into_iter().map(|(_, res)| res).collect::<Vec<_>>(),
-        )),
+        None => {
+            // dims 与 pages **同序**（#6 第 1 步）：to_docir 按下标取 dims，而这里
+            // 的页号就是 vec 下标（0 基），故先按 page_idx 升序再摊平尺寸。
+            let mut ordered: Vec<_> = pages.into_iter().collect();
+            ordered.sort_by_key(|(pi, _)| *pi);
+            let idxs: Vec<usize> = ordered.iter().map(|(pi, _)| *pi).collect();
+            let dims = align_page_dims(doc_idx, &idxs, page_dims);
+            let res: Vec<_> = ordered.into_iter().map(|(_, r)| r).collect();
+            Ok(gfm_adapter::to_markdown(&res, &dims))
+        }
     }
 }
 
@@ -478,6 +513,7 @@ mod tests {
                 page_no: *no,
                 regions: vec![Region::new(0.0, 100.0, 0.0, 10.0, *text)],
                 source: crate::docir::PageSource::TextLayerPdf,
+                dims: crate::docir::PageDims::default(),
             });
         }
         doc
@@ -503,6 +539,7 @@ mod tests {
                     has_header: false,
                 }))],
             source: crate::docir::PageSource::TextLayerPdf,
+            dims: crate::docir::PageDims::default(),
         }
     }
 
@@ -511,7 +548,7 @@ mod tests {
     fn merge_hybrid_inserts_ocr_pages_in_page_order() {
         let text = body_doc(&[(1, "第一页"), (3, "第三页")]);
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages).expect("merge ok");
+        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
         let i1 = md.find("第一页").expect("p1");
         let i2 = md.find("第二页扫描件").expect("p2 ocr");
         let i3 = md.find("第三页").expect("p3");
@@ -525,7 +562,7 @@ mod tests {
     fn merge_hybrid_rejects_duplicate_page_no() {
         let text = body_doc(&[(1, "第一页")]);
         let pages = vec![(2u32, ocr_page("甲")), (2u32, ocr_page("乙"))];
-        assert!(merge_hybrid(text, &pages).is_none());
+        assert!(merge_hybrid(text, &pages, &[]).is_none());
     }
 
     /// OCR 页与文字层同号页共存时，文字层空占位页被 OCR 页替换（不双份）。
@@ -533,7 +570,7 @@ mod tests {
     fn merge_hybrid_replaces_same_page_no_placeholder() {
         let text = body_doc(&[(1, "第一页"), (2, "")]);
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages).expect("merge ok");
+        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
         assert!(md.contains("第二页扫描件"));
         // 空文字层页被丢弃后只剩两页段
         assert_eq!(md, "第一页\n\n第二页扫描件");
@@ -547,12 +584,35 @@ mod tests {
         text.pages.push(grid_page(1, 2, &["a1", "a2"]));
         text.pages.push(grid_page(3, 2, &["b1", "b2"]));
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages).expect("merge ok");
+        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
         let n_open = md.matches("<table").count();
         let n_close = md.matches("</table>").count();
         assert_eq!(n_open, 2, "两表应各自定格，got {n_open}: {md}");
         assert_eq!(n_open, n_close);
         assert!(md.contains("第二页扫描件"));
+    }
+
+    /// 摊平按**传入页序**逐槽查表（不是按 map 的键序）：页序 2/0/1 必须得到
+    /// 2/0/1 各自的尺寸，错一个槽位就是"页 A 配页 B 的分母"。
+    #[test]
+    fn align_page_dims_follows_input_order() {
+        let mut m = BTreeMap::new();
+        m.insert((0, 0), (100u32, 200u32));
+        m.insert((0, 1), (300, 400));
+        m.insert((0, 2), (500, 600));
+        let got = align_page_dims(0, &[2, 0, 1], &m);
+        assert_eq!(got, vec![Some((500, 600)), Some((100, 200)), Some((300, 400))]);
+    }
+
+    /// 跨文档隔离（同一批多文档时 doc_idx 不同）+ 缺槽为 `None`（不得顺延邻居）。
+    #[test]
+    fn align_page_dims_isolates_docs_and_leaves_gaps_none() {
+        let mut m = BTreeMap::new();
+        m.insert((0, 0), (100u32, 200u32));
+        m.insert((1, 0), (900, 1000));
+        assert_eq!(align_page_dims(0, &[0, 1], &m), vec![Some((100, 200)), None]);
+        assert_eq!(align_page_dims(1, &[0, 1], &m), vec![Some((900, 1000)), None]);
+        assert_eq!(align_page_dims(7, &[0], &m), vec![None], "未知文档整篇 Unknown");
     }
 
     /// fmt_pages：错误 detail 用的页号串。

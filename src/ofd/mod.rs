@@ -20,7 +20,7 @@ use image::RgbImage;
 use ofd_core::{OfdReader, RenderOptions};
 
 use crate::ConvertRequest;
-use crate::docir::{DocIR, PageSource};
+use crate::docir::{DocIR, PageDims, PageSource};
 use crate::error::{
     ConvertError, ErrorKind, Result as CResult, Stage, from_ofd_error, runtime,
 };
@@ -37,9 +37,14 @@ use text_layer::{collect_text_lines, count_images, is_garbled_text, to_regions};
 const IMAGE_PAGE_MIN_TEXT_CHARS: usize = 5;
 
 /// 单页数据处理方式（按页序保存，OCR 结果后填）。
+///
+/// `dims`（#6 第 1 步）：该页 `PageIR.dims` 的值，producer 在第一遍就按
+/// **本页区块所在坐标空间**定死——文字层页 = `PhysicalBox`（mm，与
+/// `OfdTextLine` 的 `boundary` 同单位），OCR 页 = 送推理的位图（px，见
+/// [`OcrPage::dims`]）。拿不到页面框时记 `Unknown`，绝不伪造。
 enum PageData {
-    /// 纯文字层：坐标行 `Region`（`x_min/x_max/y_min/y_max/文本`）。
-    Text(Vec<Region>),
+    /// 纯文字层：坐标行 `Region`（`x_min/x_max/y_min/y_max/文本`）+ 页框（mm）。
+    Text(Vec<Region>, PageDims),
     /// F3 坏字体乱码页：第一遍已立即渲染（少量，需保留 fallback 文字层）。
     /// img 用 Option 以便第二遍 `take` 转移所有权，避免双持（T04）。
     OcrFull(Option<RgbImage>),
@@ -47,6 +52,15 @@ enum PageData {
     /// 记录 (body_idx, page_idx) 待第二遍 P3 流水线渲染+OCR（ADR-0002）。
     /// 全图片型文档的渲染被 OCR 掩盖，峰值内存从 N×页图降到 ~2×页图。
     OcrPendingImage { body_idx: usize, page_idx: usize },
+}
+
+/// OCR 页的产出：成品 markdown 段 + 该页 `PageIR.dims`（#6 第 1 步）。
+///
+/// `dims` 单位固定为 px（送推理的位图宽高）；链路没交出图时记 `Unknown`
+/// （`PageDims::default()`），**不**用页框冒充——版面框活在像素空间里。
+struct OcrPage {
+    md: String,
+    dims: PageDims,
 }
 
 /// OFD → Markdown 总入口（P1.8 拆阶段）：分类 → 质量路由 → OCR → DocIR 装配。
@@ -96,7 +110,7 @@ pub fn convert_ofd(
         .map(|(i, _)| i as u32)
         .collect();
     let has_ocr_pages = !ocr_idx.is_empty();
-    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+    let mut full_out: BTreeMap<u32, OcrPage> = BTreeMap::new();
     if text_only {
         reject_ofd_ocr_pages(path, &ocr_idx, pages.len())?;
     } else {
@@ -108,6 +122,34 @@ pub fn convert_ofd(
 
     // 第三遍：DocIR 装配（跨页表合并 pass + 统一渲染）。
     Ok(assemble_docir(&pages, &mut full_out))
+}
+
+/// #6 第 1 步：文字层页的页尺寸 = 该页 `PhysicalBox`（mm，与 `OfdTextLine` 的
+/// `boundary` 同单位，见 `text_layer` 头注）。页未声明 `Area` → 回落文档默认
+/// `PageArea`；两处都没有 → 记 `Unknown`（**不**按 A4 伪造，与审计 #9 的 dpi
+/// 钳位口径不同：那里估算无害，这里伪造会污染归一化分母）。
+///
+/// `classify_pages` 已把两处的 `Area` 都取到手，故这里只收两个 `Option<&CtPageArea>`
+/// （页声明 / 文档默认）而不是一整个 `LoadedDocument`——`Document` 没有 `Default`，
+/// 收整个 doc 就没法纯单测这条解析链。审计 #9 的 dpi 钳位走
+/// `render::page_physical_box`，那条要自己重新 load_page，与此无关。
+fn mm_dims(
+    page_area: Option<&ofd_core::model::document::CtPageArea>,
+    doc_area: Option<&ofd_core::model::document::CtPageArea>,
+) -> PageDims {
+    let physical = page_area.map(|a| a.physical_box).or_else(|| doc_area.map(|a| a.physical_box));
+    match physical {
+        Some(b)
+            if b.width > 0.0
+                && b.height > 0.0
+                && b.width.is_finite()
+                && b.height.is_finite() =>
+        {
+            PageDims::page_box_mm(b.width as f32, b.height as f32)
+        }
+        // 尺寸非法（0/负/NaN）按"拿不到"处理：记 Unknown，绝不给下游一个假分母。
+        _ => PageDims::default(),
+    }
 }
 
 /// #13：OFD 侧 text_only 的"需 OCR 页"裁决（全篇 → 报错，部分 → 告警）。
@@ -168,6 +210,8 @@ fn classify_pages(
                 }
             };
 
+            // #6 第 1 步：文字层页的尺寸分母解析链（页 Area → 文档默认 PageArea）。
+            let doc_area = doc.document.common_data.page_area.as_ref();
             let texts = collect_text_lines(&page);
             let text_len: usize = texts.iter().map(|line| line.text.chars().count()).sum();
             let img_count = count_images(&page);
@@ -198,8 +242,12 @@ fn classify_pages(
             } else if route.is_ocr() {
                 // F3：坏字体乱码页 → 整页 OCR（渲染失败时回落文字层，不炸文档）
                 match render_page(reader, &doc, idx, opts) {
+                    // #6 第 1 步：送 OCR 的位图尺寸即该页归一化分母（px），在
+                    // take 处现取（见 `ocr_garbled_pages`），这里不必记。
                     Ok(img) => pages.push(PageData::OcrFull(Some(img))),
-                    Err(_) => pages.push(PageData::Text(to_regions(texts))),
+                    Err(_) => {
+                        pages.push(PageData::Text(to_regions(texts), mm_dims(page.area.as_ref(), doc_area)))
+                    }
                 }
             } else {
                 // 双列/多列阅读顺序：复用共享 `reading_order`（PDF 文字层同一算法）。
@@ -211,7 +259,7 @@ fn classify_pages(
                 // Ticket B：移除首/末页"强制入可疑表格页探针集"（无证据召回，代价
                 // 是整页渲染+版面 OCR）；表格改由 F1 网格重建（免 OCR）承担，与
                 // PDF 侧取舍对称（PDF 另有 probe_last_page_table 兜底末页）。
-                pages.push(PageData::Text(to_regions(texts)));
+                pages.push(PageData::Text(to_regions(texts), mm_dims(page.area.as_ref(), doc_area)));
             }
         }
     }
@@ -260,22 +308,27 @@ fn probe_route_tier(
 
 /// 路径 A：F3 乱码页批量 OCR（少量，第一遍已渲染 img）。
 /// T04：直接 `take` 转移 img 所有权（不 clone），峰值从 2× 降到 1×。
+///
+/// #6 第 1 步：位图在 `take` 处现取一次宽高（px）随成品段落进 [`OcrPage::dims`]——
+/// `ocr_images` 会把图 move 走，事后再问不到。
 fn ocr_garbled_pages(
     pages: &mut [PageData],
     route_tier: crate::models::OcrTier,
     opts: &ConvertRequest,
-) -> CResult<BTreeMap<u32, String>> {
+) -> CResult<BTreeMap<u32, OcrPage>> {
     let mut full_pages: Vec<u32> = Vec::new();
     let mut full_imgs: Vec<RgbImage> = Vec::new();
+    let mut full_px: Vec<(u32, u32)> = Vec::new();
     for (i, d) in pages.iter_mut().enumerate() {
         if let PageData::OcrFull(img) = d
             && let Some(im) = img.take()
         {
             full_pages.push(i as u32);
+            full_px.push((im.width(), im.height()));
             full_imgs.push(im);
         }
     }
-    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+    let mut full_out: BTreeMap<u32, OcrPage> = BTreeMap::new();
     if full_imgs.is_empty() {
         return Ok(full_out);
     }
@@ -292,8 +345,15 @@ fn ocr_garbled_pages(
         },
     )?;
     timings.report();
-    for (page, res) in full_pages.into_iter().zip(results) {
-        full_out.insert(page, gfm_adapter::to_markdown(std::slice::from_ref(&res)));
+    for ((page, px), res) in full_pages.into_iter().zip(full_px).zip(results) {
+        let dims = PageDims::page_box_px(px.0, px.1);
+        full_out.insert(
+            page,
+            OcrPage {
+                md: gfm_adapter::to_markdown(std::slice::from_ref(&res), &[Some(px)]),
+                dims,
+            },
+        );
     }
     Ok(full_out)
 }
@@ -352,13 +412,16 @@ fn ofd_pending_render_fn(
 
 /// 路径 B：图片型页 P3 流水线——render_fn 闭包内重新 open reader + load + 逐页渲染，
 /// 与 OCR 池并发。OfdReader 非 Send → 渲染在专属线程（闭包内 open，不跨线程）。
+///
+/// #6 第 1 步：位图尺寸由 pipeline 交出（`page_dims`，键 `(0, gi)`），随成品段落进
+/// [`OcrPage::dims`]；重试轮的新尺寸覆盖首轮（该页最终用的是重渲染的图）。
 fn ocr_pending_pages(
     pages: &[PageData],
     path: &Path,
     route_tier: crate::models::OcrTier,
     opts: &ConvertRequest,
     t: &mut StageTimer,
-) -> CResult<BTreeMap<u32, String>> {
+) -> CResult<BTreeMap<u32, OcrPage>> {
     // (全局页下标 gi, body_idx, page_idx)
     let pending: Vec<(usize, usize, usize)> = pages
         .iter()
@@ -368,7 +431,7 @@ fn ocr_pending_pages(
             _ => None,
         })
         .collect();
-    let mut full_out: BTreeMap<u32, String> = BTreeMap::new();
+    let mut full_out: BTreeMap<u32, OcrPage> = BTreeMap::new();
     if pending.is_empty() {
         return Ok(full_out);
     }
@@ -378,7 +441,7 @@ fn ocr_pending_pages(
     let path = path.to_path_buf();
     let dpi = opts.render.dpi;
     let render_fn = ofd_pending_render_fn(path.clone(), pending.clone(), dpi);
-    let (mut results, _render_errors, _page_dims) = crate::pipeline::PagePipeline::new(
+    let (mut results, _render_errors, mut page_dims) = crate::pipeline::PagePipeline::new(
         render_fn,
         engine,
         opts.parallel.page_parallel,
@@ -414,7 +477,7 @@ fn ocr_pending_pages(
                     let higher_engine =
                         crate::ocr_engine::OcrEngine::build(higher, opts.ocr.layout)?;
                     let retry_render_fn = ofd_pending_render_fn(path.clone(), bad_pending, dpi);
-                    let (retry_results, _retry_errors, _) = crate::pipeline::PagePipeline::new(
+                    let (retry_results, _retry_errors, retry_dims) = crate::pipeline::PagePipeline::new(
                         retry_render_fn,
                         higher_engine,
                         opts.parallel.page_parallel,
@@ -430,6 +493,10 @@ fn ocr_pending_pages(
                     for ((_, gi), res) in results.iter_mut() {
                         if let Some(new) = retry_map.get(gi) {
                             *res = new.clone();
+                            // 该页最终用的是重渲染的图 → 尺寸以重试轮为准。
+                            if let Some(px) = retry_dims.get(&(0, *gi)) {
+                                page_dims.insert((0, *gi), *px);
+                            }
                         }
                     }
                 }
@@ -441,14 +508,21 @@ fn ocr_pending_pages(
     // OFD 单文档 doc_idx 恒 0，page_idx = gi 直接映射 full_out；
     // 渲染失败页 gi 缺失 → full_out 无该页 → 第三遍装配跳过（容错）
     for ((_doc_idx, gi), res) in results {
-        full_out.insert(gi as u32, gfm_adapter::to_markdown(std::slice::from_ref(&res)));
+        let px = page_dims.get(&(0, gi)).copied();
+        full_out.insert(
+            gi as u32,
+            OcrPage {
+                md: gfm_adapter::to_markdown(std::slice::from_ref(&res), &[px]),
+                dims: px.map_or_else(PageDims::default, |(w, h)| PageDims::page_box_px(w, h)),
+            },
+        );
     }
     Ok(full_out)
 }
 
 /// 第三遍：输出装配（P1.5 DocIR producer）。跨页表格（文字层网格，免 OCR）
 /// 合并由 `docir::passes::cross_page_table` 承担；图片型 OCR/普通行各自落页。
-fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, String>) -> String {
+fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> String {
     let mut doc = DocIR::default();
     for (page, data) in pages.iter().enumerate() {
         let page = page as u32;
@@ -456,16 +530,17 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, String>) -> S
             PageData::OcrFull(_) | PageData::OcrPendingImage { .. } => {
                 // 图片型/乱码页：OCR 成品段（gfm_adapter 已产出行 + 表格 HTML 的
                 // 最终 markdown），作为 PreRendered 区块原样落页。
-                if let Some(md) = full_out.remove(&page) {
+                if let Some(op) = full_out.remove(&page) {
                     doc.push_page(
                         page,
                         PageSource::TextLayerOfd,
-                        vec![Region::new(0.0, 0.0, 0.0, 0.0, md)
+                        vec![Region::new(0.0, 0.0, 0.0, 0.0, op.md)
                             .with_kind(RegionKind::PreRendered)],
+                        op.dims,
                     );
                 }
             }
-            PageData::Text(lines) => {
+            PageData::Text(lines, pdims) => {
                 // 1) F1：文字层网格表（免 OCR、跨页续接）。`reconstruct_table_grid`
                 //    内部已做列数/行数/列 x 对齐校验，返回 Some 即"有意义"（列>=2、
                 //    行>=2、对齐），单列/参差双列正文自然返回 None 走普通行。
@@ -501,20 +576,108 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, String>) -> S
                         PageSource::TextLayerOfd,
                         vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
                             .with_kind(RegionKind::Grid(grid))],
+                        *pdims,
                     );
                     continue;
                 }
-                // 2) 普通页：文字层行（F4 加标题前缀）为 Body 区块，docir 渲染层
-                //    按页 join("\n")（历史无标题空行语义）。
+                // 2) 普通页：文字层行（F4 赋标题级别）为 Body 区块，docir 渲染层
+                //    按页 join("\n")（历史无标题空行语义）。#6 第 2 步：`#` 前缀
+                //    由渲染层按 `Region.heading_level` 写出，producer 不再拼字面量。
                 let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
-                let out: Vec<Region> = crate::text_health::apply_title_prefixes(&md, &[], true)
-                    .into_iter()
-                    .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
-                    .collect();
-                doc.push_page(page, PageSource::TextLayerOfd, out);
+                let levels = crate::text_health::title_levels(&md, &[], true);
+                let out = crate::text_health::body_regions(md, levels);
+                doc.push_page(page, PageSource::TextLayerOfd, out, *pdims);
             }
         }
     }
     crate::docir::passes::cross_page_table::run(&mut doc);
     doc.render()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_pages, mm_dims, PageData};
+    use crate::docir::{PageDimsKind, PageUnit};
+    use ofd_core::{OfdReader, StBox};
+    use ofd_core::model::document::CtPageArea;
+
+    fn area(w: f64, h: f64) -> CtPageArea {
+        CtPageArea {
+            physical_box: StBox::new(0.0, 0.0, w, h),
+            application_box: None,
+            content_box: None,
+            bleed_box: None,
+        }
+    }
+
+    /// OFD 文字层页的尺寸来源是 `PhysicalBox`（mm），与 `OfdTextLine` 的
+    /// `boundary` 同单位，故它是**合法**的归一化分母（与 PDF 侧的
+    /// `ContentExtent` 相反，见 `pdf::text_layer` 同名测试）。
+    #[test]
+    fn ofd_text_layer_dims_are_normalizable_mm_box() {
+        let d = mm_dims(Some(&area(210.0, 297.0)), None);
+        assert_eq!(d.kind, PageDimsKind::PageBox);
+        assert_eq!(d.unit, PageUnit::Mm);
+        assert!((d.w - 210.0).abs() < 1e-3 && (d.h - 297.0).abs() < 1e-3);
+        assert!(d.normalizable());
+    }
+
+    /// 页未声明 `Area` → 回落文档默认 `PageArea`（与 ofd-core 渲染器同一条链）。
+    #[test]
+    fn ofd_dims_fall_back_to_document_default_area() {
+        let d = mm_dims(None, Some(&area(297.0, 210.0)));
+        assert!(d.normalizable(), "文档默认框也算真实页面框");
+        assert!((d.w - 297.0).abs() < 1e-3 && (d.h - 210.0).abs() < 1e-3);
+        // 页声明优先于文档默认。
+        let p = mm_dims(Some(&area(210.0, 297.0)), Some(&area(297.0, 210.0)));
+        assert!((p.w - 210.0).abs() < 1e-3);
+    }
+
+    /// 两处都没有、或尺寸为 0/负/NaN → 记 `Unknown`。
+    /// **不**按 A4 伪造（与审计 #9 的 dpi 钳位口径不同：那里 A4 兜底只影响
+    /// 渲染分辨率估算，这里伪造会直接污染 bbox 归一化分母）。
+    #[test]
+    fn ofd_dims_unknown_when_box_unavailable_or_invalid() {
+        for case in [
+            (None, None),
+            (Some(&area(0.0, 297.0)), None),
+            (Some(&area(-1.0, 297.0)), None),
+            (Some(&area(210.0, f64::NAN)), None),
+        ] {
+            let d = mm_dims(case.0, case.1);
+            assert_eq!(d.kind, PageDimsKind::Unknown, "case {case:?} 应记 Unknown");
+            assert_eq!(d.unit, PageUnit::Unknown);
+            assert!(!d.normalizable());
+        }
+    }
+
+    /// **接线路证**（不是 helper 的单测）：走真实 `classify_pages` 通路的 OFD
+    /// 文字层页，dims 必须是"该页 PhysicalBox 的 mm 值"。上面三条只证明
+    /// `mm_dims` 本身正确，证明不了 producer 真的调了它、也没证明单位没串
+    /// ——这里补上（text.ofd 无 OCR，不需要模型环境）。
+    #[test]
+    fn classify_pages_populates_mm_page_box() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples/text.ofd");
+        let mut reader = OfdReader::open(&path).expect("open text.ofd");
+        let bodies = reader.ofd().doc_bodies.clone();
+        let opts = crate::ConvertRequest::default();
+        let pages = classify_pages(&mut reader, &path, &bodies, &opts, false).expect("classify");
+        assert!(!pages.is_empty(), "text.ofd 应有页");
+        let mut seen = 0usize;
+        for data in &pages {
+            // 本样本是纯文字层文档：任何页都不该落到 OCR 分支。
+            let PageData::Text(lines, d) = data else {
+                panic!("text.ofd 出现非文字层页（图片型/乱码），测试前提变了");
+            };
+            assert!(!lines.is_empty());
+            assert_eq!(d.kind, PageDimsKind::PageBox);
+            assert_eq!(d.unit, PageUnit::Mm, "文字层行与页框同为 mm，单位不得串成 px/pt");
+            assert!(d.normalizable(), "OFD 有真实页面框，应可归一化");
+            // A4 mm 量级（不是 pt 的 595×842、也不是位图 px）——把单位钉死。
+            assert!((100.0..=500.0).contains(&d.w), "页宽应为 mm 量级, got {}", d.w);
+            seen += 1;
+        }
+        assert_eq!(seen, pages.len());
+    }
+}
+

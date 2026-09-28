@@ -276,17 +276,24 @@ mod tests {
         assert!(!is_garbled_text(&mixed));
     }
 
+    /// OFD 文字层同款口径（#6 第 2 步：级别进 IR，`#` 由渲染层写）。
+    /// 第三条是**来源自带 `#` 字面量**——级别取自字面量、不叠加。
     #[test]
-    fn title_prefix_applied() {
+    fn title_levels_applied() {
         let lines = vec![
             "一、总则".to_string(),
             "这是正文句子。".to_string(),
             "# 已带前缀的标题".to_string(),
         ];
-        let out = crate::text_health::apply_title_prefixes(&lines, &[], true);
-        assert_eq!(out[0], "## 一、总则");
-        assert_eq!(out[1], "这是正文句子。");
-        assert_eq!(out[2], "# 已带前缀的标题");
+        let levels = crate::text_health::title_levels(&lines, &[], true);
+        assert_eq!(levels, vec![Some(2), None, Some(1)]);
+        let rendered: Vec<String> = crate::text_health::body_regions(lines, levels)
+            .into_iter()
+            .map(|r| r.rendered_line().into_owned())
+            .collect();
+        assert_eq!(rendered[0], "## 一、总则");
+        assert_eq!(rendered[1], "这是正文句子。");
+        assert_eq!(rendered[2], "# 已带前缀的标题");
     }
 
     /// 造一页：单个 leaf 区块外包 `depth` 层 `PageBlock::Block`。

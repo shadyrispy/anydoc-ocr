@@ -2,7 +2,7 @@
 //! `oar-ocr-core` 的 `infer_paragraph_title_levels` 三信号投票。
 //!
 //! 现网默认路径只有**编号语义**一条信号：
-//! - 文字层（PDF/OFD）：`apply_title_prefixes(lines, &[], numbering=true)`——
+//! - 文字层（PDF/OFD）：`title_levels(lines, &[], numbering=true)`——
 //!   `一、`/`1.1` 之类能分级，**无编号的"总则""适用范围"整类标题检不出**；
 //! - OCR 路（gfm）：版面已给出 title 块，但级别仍走编号启发式，
 //!   无编号时统一回落 `##`（一篇文档里一级/二级/三级标题被抹平为同级）。

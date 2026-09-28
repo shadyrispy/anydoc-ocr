@@ -66,6 +66,11 @@ pub const MINERU_ENGINE_HELP: &str = "\
     · 内存受限：mineru-basic 峰值 ≈1.9GB，tiny 档 ≈0.5GB（实测 4 核 x86_64）
     · 完全离线的目标机：用小模型档（包内可带）
     · 精度校准 / A-B 对比
+
+已废弃变量（设了也不再改变任何行为，命中时 stderr 只提醒一次）：
+  ANYDOC_RICH_TEXT —— 曾把 PDF 文字层的行内样式（粗体/斜体/下划线/删除线）注入成
+    `**…**`/`*…*`/`<u>`/`<s>` 字面量。样式属结构而非排版字符串，替代方案是结构化
+    span（内部 IR 的 `Region.spans`，随 #6 第 4 步落地），届时也不提供渲染开关。
 ";
 
 /// MinerU 默认档**必需**资产（全部在 ModelScope 注册表内，可 auto-download）。

@@ -9,6 +9,10 @@
 //! [`confidence`](Region::confidence)（OCR 识别置信度；文字层源恒 `None`），
 //! 成为三源统一的版面级区块载体。
 //!
+//! #6 第 2 步：再加 [`heading_level`](Region::heading_level)。标题从此是
+//! **数据**——producer 只赋级别，`#` 前缀由 `docir/render.rs` 写出，投影层
+//! （content_list / middle_json，#10/#11）直接读级别而不用反解 markdown 字面量。
+//!
 //! 整宽判定阈值集中于此，消除 `reading_order` 内 0.92/0.08 的重复魔法数。
 
 use crate::table_grid::TableGrid;
@@ -18,11 +22,16 @@ pub const FULL_WIDTH_THRESHOLD: f32 = 0.92;
 /// 整宽判定：区域左缘须 < 此比例 × 页宽（贴近左页边）。
 pub const EDGE_MARGIN: f32 = 0.08;
 
+/// markdown 标题级别上限（与 [`crate::heading_levels::LEVEL_MAX`]、`title_level`
+/// 的 clamp 同口径）。#6 第 2 步起 `Region.heading_level` 用它做上界。
+pub const HEADING_LEVEL_MAX: usize = 6;
+
 /// 区块版面语义（P1.5）：标注 Region 在 DocIR 装配/后处理中的角色。
 /// 渲染层按 kind 分流（正文行/表格 HTML/网格表/成品块），不依赖来源类型。
 #[derive(Clone, Debug, PartialEq)]
 pub enum RegionKind {
-    /// 正文文本行：producer 已完成阅读顺序还原与标题前缀注入，`text` 即最终行。
+    /// 正文文本行：producer 已完成阅读顺序还原与**标题级别赋值**（`text` 是
+    /// 未加 `#` 前缀的最终行文本，前缀由渲染器按 [`Region::heading_level`] 写出）。
     Body,
     /// 网格重建表（文字层网格 / OCR Image 块补救）：跨页表合并 pass 的对象。
     Grid(TableGrid),
@@ -44,6 +53,32 @@ pub struct Region {
     pub kind: RegionKind,
     /// 识别置信度（P1.5）：OCR 源为 `Some(score)`；文字层源无此概念（`None`）。
     pub confidence: Option<f32>,
+    /// 标题级别（#6 第 2 步）：`Some(1..=6)` 表示该行为标题行。`#` 前缀**不在
+    /// `text` 里**，由 [`Region::rendered_line`] 在渲染时写出——级别从此是 IR
+    /// 数据，投影层（#10/#11）直接读它，不必反解 markdown 字面量。
+    ///
+    /// 来源文本自带 `#` 字面量时（markdown 被印进 PDF/OFD 文字层、OCR 读到
+    /// `#` 开头的行）级别由字面量的 `#` 段数解析，`rendered_line` 据此
+    /// **不重复写前缀**。这是旧 `apply_title_prefixes` "防双重标记"规则的原样
+    /// 搬迁，不是新语义。
+    pub heading_level: Option<u8>,
+    /// 跨页续接标记（#6 第 3 步）：`Some(true)` = **本区块的内容已并入前面某页
+    /// 的同列网格表**，自身只作占位保留（对齐 MinerU `continues_prev: bool | None`，
+    /// `schema.py:506-509`/`:707`，仅顶层块携带，嵌套块禁止 `schema.py:1057-1058`）。
+    ///
+    /// 由 `docir/passes/cross_page_table` 写入，producer 恒 `None`。与 MinerU 的
+    /// **内容口径差别**要在投影层（#10/#11）注意：MinerU 里带标记的块自己仍带正文
+    /// （合并发生在更后置的通路），本仓的合并发生在**这个 pass 里**——首表页那份是
+    /// 合并结果，续页标记块保留的是 producer 原始 grid（未去重、未并入）。两者内容
+    /// 不会重复输出：渲染层按 [`Region::is_continues_prev`] 跳过标记块，这条与
+    /// "删除区块"的旧形状渲染逐字节相同（单测
+    /// `absorbed_stub_renders_identically_to_deletion`）。投影层若把标记块当正文输出
+    /// 就会**重行**，必须同样跳过或只取 `continues_prev` 这个事实。
+    ///
+    /// 其余取值：`None` = 非续接块（绝大多数区块，含每页表格的首块）；
+    /// `Some(false)` = 显式"不是续接"，与 `None` 渲染行为相同，仅供投影层显式
+    /// 落 `false` 时使用（MinerU 允许三态）。
+    pub continues_prev: Option<bool>,
 }
 
 impl Region {
@@ -56,6 +91,8 @@ impl Region {
             text: text.into(),
             kind: RegionKind::Body,
             confidence: None,
+            heading_level: None,
+            continues_prev: None,
         }
     }
 
@@ -69,6 +106,8 @@ impl Region {
             text: text.into(),
             kind: RegionKind::Body,
             confidence: None,
+            heading_level: None,
+            continues_prev: None,
         }
     }
 
@@ -82,6 +121,61 @@ impl Region {
     pub fn with_confidence(mut self, confidence: Option<f32>) -> Self {
         self.confidence = confidence;
         self
+    }
+
+    /// 附加标题级别（builder，#6 第 2 步）。
+    pub fn with_heading_level(mut self, level: Option<u8>) -> Self {
+        self.heading_level = level;
+        self
+    }
+
+    /// 是否为"内容已并入前页表格"的占位块（#6 第 3 步）。
+    ///
+    /// 渲染层据此**跳过**该块（输出与旧通路"物理删除续页区块"逐字节相同）；
+    /// 投影层（#10）据此在续页上落 `continues_prev: true` 的块而不是"表格消失"。
+    /// 只认 `Some(true)`：`None`/`Some(false)` 均按普通块渲染。
+    pub fn is_continues_prev(&self) -> bool {
+        self.continues_prev == Some(true)
+    }
+
+    /// 文本**开头**连续 `#` 的级数，无则 `None`；超过 [`HEADING_LEVEL_MAX`] 按上限计。
+    ///
+    /// 不做 trim：视图由调用方决定（判定视图用 `trim_start()` 后的文本，与旧
+    /// `apply_title_prefixes` 规则 1 同口径）。用途：来源文本自带 markdown
+    /// 字面量的行（markdown 被印进 PDF/OFD 文字层、OCR 读到 `#` 开头的行），
+    /// 级别由字面量给出，渲染时 `rendered_line` 不重复写前缀。
+    pub fn leading_hash_level(text: &str) -> Option<u8> {
+        let run = text.chars().take_while(|c| *c == '#').count();
+        (run > 0).then(|| run.min(HEADING_LEVEL_MAX as usize) as u8)
+    }
+
+    /// 该行的**渲染文本**（#6 第 2 步：`#` 前缀在此写出，不进 IR）。
+    ///
+    /// `heading_level = Some(lv)` 且判定视图不带字面量前缀 →
+    /// `"#".repeat(lv) + " " + text`；其余（正文行、或文本已自带 `#` 字面量）→
+    /// 原样。与旧 `text_health::apply_title_prefixes` 的输出逐字节等价。
+    pub fn rendered_line(&self) -> std::borrow::Cow<'_, str> {
+        match self.heading_level {
+            Some(lv) if !self.text.trim_start().starts_with('#') => {
+                format!("{} {}", "#".repeat(usize::from(lv)), self.text).into()
+            }
+            _ => std::borrow::Cow::Borrowed(&self.text),
+        }
+    }
+
+    /// 标题行判定（**渲染视图**）：渲染后的行字面以 `#` 开头，**不 trim**。
+    /// 与旧 `docir/render.rs` 里 `t.starts_with('#')`（空行语义的依据）逐字节等价
+    /// ——含"`  # 字面量`"（前导空白 + `#`）这种形态在两处都判为非标题。
+    pub fn is_heading(&self) -> bool {
+        self.rendered_line().starts_with('#')
+    }
+
+    /// 标题行判定（**判定视图**）：渲染后行 `trim_start()` 再以 `#` 开头。
+    /// 对齐旧代码里 `line.trim_start().starts_with('#')`（列表配对跨项判别）与
+    /// `line.trim().starts_with('#')`（噪声碎片剔除）两处口径——它们都带 trim，
+    /// 故与 [`is_heading`](Self::is_heading) 的差别只在"前导空白 + `#`"一种形态。
+    pub fn is_heading_trimmed(&self) -> bool {
+        self.rendered_line().trim_start().starts_with('#')
     }
 
     pub fn width(&self) -> f32 {

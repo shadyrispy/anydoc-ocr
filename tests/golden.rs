@@ -25,6 +25,11 @@ fn samples() -> Vec<(&'static str, bool)> {
         ("tests/samples/text_font.ofd", false),
         ("tests/samples/multipage.pdf", false),
         ("tests/samples/real_table.pdf", false),
+        // #6 第 3 步：跨页表合并分支的入库覆盖件。此前这条分支只由
+        // `tests/real_samples/crosspage_table.pdf` 钉着，而它是 gitignored、
+        // 常缺的真实样本 → 合并分支在入库语料里**零覆盖**。生成器
+        // `tests/gen_cross_page_table.py`（含该件为何是 3 页的实测记录）。
+        ("tests/samples/cross_page_table.pdf", false),
         // OCR 类（需 env）
         ("tests/samples/image.pdf", true),
         ("tests/samples/image.ofd", true),

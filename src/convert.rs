@@ -86,6 +86,33 @@ pub struct ConvertRequest {
     pub pages: Option<String>,
 }
 
+/// 已废弃环境变量的一次性告警。
+///
+/// 语义：变量**存在即命中**（不限值）——与它生效时的判据完全一致，这样老脚本
+/// `ANYDOC_RICH_TEXT=1`（以及 `=0`、`=`）都会拿到同一句"该变量已废弃且不再改变
+/// 行为"，而不是"设了值却什么都没发生"的静默。命中只告警，**不改变任何行为**。
+///
+/// 只打一次（`OnceLock`，手法同 `models.rs:240`/`ocr_post.rs:421`）：批处理目录
+/// 逐文件都过 `route_doc`，不记忆就会每行刷屏。
+pub(crate) fn warn_deprecated_env() {
+    if !deprecated_env_present_from(std::env::var("ANYDOC_RICH_TEXT").ok().as_deref()) {
+        return;
+    }
+    static NOTICED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    // 文案里的"ANYDOC_RICH_TEXT 已废弃"这段连续文本被 `tests/pages_rich_text.rs`
+    // 按出现次数断言（用它数"每进程一次"），改措辞要同步改测试。
+    NOTICED.get_or_init(|| {
+        eprintln!(
+            "[anydoc-ocr] 警告：ANYDOC_RICH_TEXT 已废弃，不再改变任何行为；行内样式改由结构化 span 承载（详见 README 环境变量表）"
+        );
+    });
+}
+
+/// 告警判据（纯函数，可单测）：存在即命中，未设置不命中。
+fn deprecated_env_present_from(v: Option<&str>) -> bool {
+    v.is_some()
+}
+
 /// 通路私有开关（ADR 候选 4 聚类）：`ofd_force_ocr`/`pdf_force_ocr` 不再混入
 /// 公共 `ConvertRequest`，下沉为各 convert 签名显式参数。此处是唯一的显式参数载体，
 /// 单文档入口与 `BatchConverter` 持有后透传给对应 convert。
@@ -229,6 +256,9 @@ fn convert_image(path: &Path, opts: &ConvertRequest, text_only: bool) -> Result<
         ));
     }
     let img = load_image_for_ocr(path)?;
+    // #6 第 1 步：图片输入的"页"就是这张位图，PageBox 单位 = 像素。尺寸必须在
+    // img 被 move 进 ocr_images 之前取。
+    let (w, h) = img.dimensions();
     crate::ocr_engine::init_runtime(&opts.parallel);
     let results = crate::ocr_engine::ocr_images(
         vec![img],
@@ -237,7 +267,7 @@ fn convert_image(path: &Path, opts: &ConvertRequest, text_only: bool) -> Result<
         opts.parallel.page_parallel,
         None,
     )?;
-    Ok(crate::gfm_adapter::to_markdown(&results))
+    Ok(crate::gfm_adapter::to_markdown(&results, &[Some((w, h))]))
 }
 
 /// 图片解码 + 像素闸（#12）：任一边超过 [`crate::limits::render_edge_cap`]（默认
@@ -328,6 +358,10 @@ pub(crate) enum DocRoute {
 /// `--pages` 仅 PDF 有效（MinerU 对非 PDF 报 `page_range_invalid` 同口径）：
 /// 显式给出（非 `all`/空白）且输入非 PDF → `Unsupported` 拒绝。
 pub(crate) fn route_doc(path: &Path, opts: &ConvertRequest, force: &ForceFlags) -> DocRoute {
+    // 已废弃变量的现场告警放在这一层：单文档 / 批处理 / 库入口都必经此处，
+    // 且**与文档类型无关**——废弃变量的持有者不该因为"这次喂的是 OFD"就
+    // 拿不到任何反馈。
+    warn_deprecated_env();
     let kind = match crate::detect::detect(path) {
         Ok(k) => k,
         Err(e) => return DocRoute::Done(Err(ConvertError::io(Stage::Detect, e))),
@@ -415,5 +449,22 @@ pub fn convert_to_markdown(
             pdf::convert_pdf_hybrid(path, opts, text, &missing_pages)
         }
         DocRoute::PerDoc(kind) => convert_per_doc(path, kind, opts, &force),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deprecated_env_present_from;
+
+    /// `ANYDOC_RICH_TEXT` 废弃告警的判据：与它生效时的语义**逐字一致**（存在即
+    /// 命中，不限值），这样老脚本 `=1` / `=0` / `=` 都会收到同一句"已废弃"，
+    /// 而不是设了值却静默无反馈。命中只影响是否打告警，不产生行为差异——
+    /// "行为不变"这一半由 `tests/pages_rich_text.rs` 从 CLI 侧钉住。
+    #[test]
+    fn deprecated_env_presence_matches_legacy_switch_semantics() {
+        assert!(!deprecated_env_present_from(None));
+        assert!(deprecated_env_present_from(Some("1")));
+        assert!(deprecated_env_present_from(Some("0")));
+        assert!(deprecated_env_present_from(Some("")));
     }
 }

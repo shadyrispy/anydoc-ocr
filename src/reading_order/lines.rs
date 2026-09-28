@@ -27,9 +27,10 @@ pub(super) fn merge_into_paragraphs(lines: &[(f32, String)]) -> Vec<String> {
     let mut cur = lines[0].1.clone();
     for w in lines.windows(2) {
         let gap = (w[1].0 - w[0].0).abs();
-        // F3：标题检测需同时覆盖两条通路——OCR 通路标题前缀(`#`)在装配后才加，
-        // 合并时只有编号启发式(`title_level`)可用；文字层通路行已带 `#` 前缀。
-        // 两者取并集，否则任一路径的标题行都可能被并入正文段。
+        // F3：标题检测需覆盖两类来路——编号启发式（`title_level`）在任何通路都
+        // 可能命中；`#` 开头只可能是**来源文本自带的 markdown 字面量**（#6 第 2 步
+        // 之后标题级别一律在装配**之后**才赋，故此处看不到 IR 级别；改造前三条
+        // 通路同样如此，口径未变）。漏一条即会把标题并入正文段。
         let is_heading = |s: &str| title_level(s).is_some() || s.trim_start().starts_with('#');
         let next_is_heading = is_heading(&w[1].1);
         let cur_is_heading = is_heading(&w[0].1);

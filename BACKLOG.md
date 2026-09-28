@@ -90,7 +90,7 @@
 
 | # | 问题（谁会被卡住） | 第一个动作（第 0 步，不许跳过） | 完成判定 | 依赖 · 规模 |
 |---|---|---|---|---|
-| #6 | 只有 markdown 一种输出；想加任何结构化输出都得改主链路 | 用 `ANYDOC_DUMP_DIR` 对照 MinerU item 字段，**列** IR 缺失字段清单（块边界/标题级别/span/页尺寸），不改代码 | 块级类型+级别+bbox+span 可单测断言，且 markdown 对 6 样本 hash 全等（**未**用 UPDATE） | 阻塞 #10/#11 · 大 |
+| #6 | 只有 markdown 一种输出；想加任何结构化输出都得改主链路 | 用 `ANYDOC_DUMP_DIR` 对照 MinerU item 字段，**列** IR 缺失字段清单（块边界/标题级别/span/页尺寸），不改代码 | 块级类型+级别+bbox+span 可单测断言，且 markdown 对 6 样本 hash 全等（**未**用 UPDATE） | **第 0/1/2 步已完成**（第 2 步：标题级别进 IR、`#` 前缀下移到渲染层，**输出逐字节不变，本步也未用 UPDATE**）、**决策 (c) 已落地**（`ANYDOC_RICH_TEXT` 废弃：行为移除 + stderr 告警 + `--help`/README 标废弃）；第 3 步起 · 大 |
 | #7 | 无线表/合并单元格表的结构识别**怀疑**不如 MinerU basic | 拿同一张无线表跑「现状」vs「`rt-detr-l_wireless_table_cell_det.onnx` cells→HTML（已在注册表）」，比结构正确率；并确认 UNet 能否进 `with_wireless_table_structure` | 无线表与 MinerU basic 的表格 HTML 结构不一致数**下降**；有线表逐字节不变 | **第 0 步已完成、两条路都不进默认**（(ii) 判死，(i) 已实现为默认关闭的 `ANYDOC_WIRELESS_CELLS`）· 剩余部分待现网语料 |
 | #10b | 含章公文页默认不出印章文字，而 MinerU basic 默认出 | 决定"默认开"能否接受为行为变更（普通安装多 4.8MB 下载 + 新增 `【印章】` 行） | seal_scan 默认档出直排行文字 + golden 重基线 + README 记一笔 | **已完成** · 小 |
 | #12 | `anydoc scan.png` 进不了 OCR 管线（MinerU 直接吃 8 种图片） | `detect` 加 `DocKind::Image`，复用整页 OCR；像素闸要在**加载**处补算一次 | png 出 markdown；>3500px 显式 `resourceLimit`；gif/tiff 只取首帧且 `--help` 注明 | **已完成** · 小（本节最便宜） |
@@ -136,8 +136,10 @@
 
 取证事实（这是本条目的真正工作量所在）：
 
-- `RegionKind::Body` 的 `text` 已由 producer 完成"阅读顺序还原 + **标题前缀注入**"
-  （`src/region.rs:26-28` 注释明写"`text` 即最终行"）；
+- ~~`RegionKind::Body` 的 `text` 已由 producer 完成"阅读顺序还原 + **标题前缀注入**"~~
+  —— **第 2 步已消除**：`text` 现在是未加前缀的行文本，级别在 `Region.heading_level`。
+  这条取证事实保留，是为了说明"字符串焊死"这个起点确实存在过（原注释见
+  `git show 8b46773:src/region.rs`）。
 - `RegionKind::PreRendered` 存的是"成品 markdown 片段（含精确分隔符），渲染层原样
   追加、不二次加工"（`src/region.rs:31-34`）；
 - 块级语义只剩 4 个 kind（Body/Grid/TableHtml/PreRendered），**没有**：标题级别、
@@ -197,7 +199,7 @@ coordinates"）。content_list v2 再乘 1000 成整数框
 | `type: BlockType`（29 值，实数） | `schema.py:70-108` | **部分**：`RegionKind` 4 值（`region.rs:24-34`），无 image/code/formula/index/aside/footnote/header/footer/page_number | `region.rs` 扩枚举（#10 同源） |
 | `DocTitleBlock`/`ParagraphTitleBlock.level` | `schema.py:528-536` | **已永久丢失**：级别焊在 text 前缀（`src/text_health.rs:117`/`:123` `format!("{} {}", "#".repeat(lv), line)`） | `Region` 加 `heading_level: Option<u8>`；前缀下移渲染器（**触碰字节契约**） |
 | `InlineContentBlock.content: list[InlineSpan]` | `schema.py:494-503` | **已永久丢失**：无 span 概念 | 新增 `Span` + `Region.spans`（三个 producer 都要改） |
-| `TextSpan.styles: [bold\|italic\|underline\|emphasis\|strikethrough\|superscript\|subscript]` | `schema.py:320-338`、`:341-356`（上下标互斥校验） | `ANYDOC_RICH_TEXT` 已把样式注入成 `**`/`<u>` 字面量，**非结构化** | 判定视图/渲染视图分离手法改造 |
+| `TextSpan.styles: [bold\|italic\|underline\|emphasis\|strikethrough\|superscript\|subscript]` | `schema.py:320-338`、`:341-356`（上下标互斥校验） | **决策 (c) 已落地**：`ANYDOC_RICH_TEXT` 废弃，`**`/`<u>` 字面量通路整体删除 → 样式现状是**完全没有**（比"非结构化"更干净） | 第 4 步直接从 pdf-inspector 的 `is_bold`/`is_italic`/几何装饰证据产 `Span`，不从 markdown 反解 |
 | `EquationInlineSpan`（`equation_inline`，**不含外层定界符**） | `schema.py:358-371` | 无行内公式载体 | `SpanKind::Equation`；与 #9 对拍后再定 |
 | `CodeInlineSpan` / `HyperlinkSpan` | `schema.py:373-397` | 无 | 同上（span 层一次性补齐） |
 | `continues_prev: bool\|None`（仅顶层块） | `schema.py:506-509`；嵌套块禁止携带 `schema.py:1058` | **可推出**：跨页表合并 pass 已知续接关系（`docir/passes/cross_page_table`），但未存字段 | `Region` 加 `continues_prev`，pass 顺带写 |
@@ -223,44 +225,370 @@ coordinates"）。content_list v2 再乘 1000 成整数框
 
 1. `PageIR` 加 `page_w`/`page_h`（pt），三个 producer 各传一次 → **不触碰**（渲染层
    不消费即输出不变）。解锁 bbox 归一化与 content_list 的 `bbox` 字段。
+   **已落地，但"pt"这个前提是错的**——见下"第 1 步已落地"。
 2. `Region` 加 `heading_level: Option<u8>`，producer 改"设字段"而前缀**下移到
-   `docir/render.rs`** → **触碰**，必须"双写 + 新 renderer 与旧通路逐字节等值"
-   来证伪风险（本节"风险"段的手法）。解锁 #11 的标题级别与 #10 的 DOC_TITLE。
-3. `Region` 加 `continues_prev`，由既有跨页表 pass 写入 → **不触碰**。
+   `docir/render.rs`** → **已落地**（见下"第 2 步已落地"）。解锁 #11 的标题级别与
+   #10 的 DOC_TITLE。
+   计划里标的"**触碰**字节契约"这一格**没有兑现**：原以为前缀下移必然改 markdown
+   字面输出（所以决策 (a) 预备了 `ANYDOC_GOLDEN_UPDATE` 重基线），做完后 21 个 CLI
+   样本与 10 条 golden 快照逐字节不变——原因见该节"为什么本步没用到 UPDATE"。
+3. `Region` 加 `continues_prev`，由既有跨页表 pass 写入 → **不触碰**。**已落地**，
+   但这格计划里"pass 顺带写"四个字把真正的难点写没了：pass 原先是**删掉**被吸收的
+   续页区块，删了就没有任何对象可以承载 `continues_prev`。落地形状改成"续页区块
+   **原位保留 + 打标记**，渲染层按标记跳过"（等价性由单测
+   `absorbed_stub_renders_identically_to_deletion` 钉住，见下"第 3 步已落地"）。
 4. 新增 `Span` + `Region.spans`（先只装 text + styles） → **不触碰**（默认渲染
-   忽略 spans 即输出不变），但 #10 的 `ANYDOC_RICH_TEXT` 通路要一并改造成结构化。
+   忽略 spans 即输出不变）。样式那一半**没有旧通路可改**：`ANYDOC_RICH_TEXT` 已随
+   决策 (c) 废弃并删除，本步是从 pdf-inspector 的样式证据直接产 spans 的**第一版**。
 5. `RegionKind` 扩 Image/Code/Formula/Index/Aside/Footnote + 图片裁切落盘通路 →
    **不触碰**既有块，新类别出现才改输出（依赖 #10 的样本）。
 6. `TableGrid`/表格 HTML 侧补 `cell_merge` 与真实 row/col → **不触碰**（但若从
    HTML 反解 span 是错路，必须回到 oar-ocr 的 cell 信息，成本高）。
 
-**待决断**（开工前需要一句话答复，不要各自猜）：
+### 第 1 步已落地（2026-09-27）：页尺寸进 IR
 
-- (a) 第 2 步"前缀下移"是否接受**双写过渡**（producer 同时设字段与保留前缀，
-  渲染器优先用字段、字段缺时走前缀），还是一次切干净 + `ANYDOC_GOLDEN_UPDATE`？
-  本仓口径历来是"行为变更须显式重基线"（#10b 即先例），但本节验收判据又明写
-  "**未使用** UPDATE"——两条要求在第 2 步上**互相冲突**，必须先定一个。
-- (b) 图片资产（第 5 步的落盘通路）要不要做：它是唯一引入"除 markdown 之外的
-  产物文件"的项，会改变本仓"单文件输出"的分发口径。
-- (c) `styles` 与 `ANYDOC_RICH_TEXT` 的关系：统一到结构化 span 后，`ANYDOC_RICH_TEXT`
-  这个 env 是保留为渲染开关（同一 IR 两种 markdown 详略），还是废弃？
+**清单里"pt"这一格不成立**（三个 producer 的页尺寸根本不同单位，且 PDF 文字层
+拿不到页面框）。落地形状改成"值 + 来源 + 单位"三元组（`src/docir/mod.rs`）：
+
+- `PageDims{w,h,kind,unit}`；`kind ∈ {Unknown, PageBox, ContentExtent}`、
+  `unit ∈ {Unknown, Px, Pt, Mm}`；`normalizable()` 只在 `PageBox` 且两维 >0 时为真。
+- 每页记的是**该页自己区块所在坐标空间**的分母，不做任何单位换算——ADR-0008
+  直提分支下位图是内嵌 image object 的原生像素（`src/pdf/render.rs:192-201`），
+  与页面物理尺寸不成固定比例，反算必错。
+- 三源实际取值（逐条查证，非推断）：
+  | 通路 | 拿得到什么 | kind/unit | 可归一化 |
+  |---|---|---|---|
+  | OCR（PDF/OFD 皆然） | 送推理的位图宽高 | `PageBox`/px | ✅ |
+  | OFD 文字层 | `PageObject.area.physical_box`（页 → 文档默认 → 无） | `PageBox`/mm | ✅ |
+  | PDF 文字层 | **只有内容外扩**（max x+w / max y+h） | `ContentExtent`/pt | ❌ |
+  | 裸图片输入 | 位图本身 | `PageBox`/px | ✅ |
+- PDF 文字层为什么只有 `ContentExtent`：pdf-inspector 的 `CropBox ∩ MediaBox`
+  是 `pub(crate)`（`extractor/mod.rs:14,125`），不 vendor 不改上游就拿不到真页框。
+  **故意不伪造**——用内容外扩冒充分母，归一化 bbox 会系统性偏大甚至 >1。
+
+**接线的三处非显然决定**：
+
+1. `src/pipeline.rs` 的页尺寸采集**去掉 `ANYDOC_DUMP_DIR` 门控**。 dims 是 IR 一等
+   字段，只在调试开关下填的话，正常路径会静默拿到 `Unknown`（第 0 步取证的那条
+   旁路 JSON 就是唯一现状来源）。成本：每页两次 u32 读 + 一次 map 插入。
+2. `assemble_doc_result` 里"map → 与 pages 同序的向量"这步抽成纯函数
+   `align_page_dims(doc_idx, &[page_idx], &map)` + 两条单测。理由：`to_docir` 按
+   **下标**取 dims，而 markdown 里看不见 dims，**golden 永远抓不到"页 A 配了页
+   B 的分母"这类静默错配**——这是本步唯一可能悄悄错的缝，必须有非 golden 的钉。
+3. `src/pdf/text_layer.rs` 的末页/可疑表探针把 `dims` 传**空**（该页是文字层页，
+   成品块 `PreRendered` 的 dims 归页级 `ContentExtent`；把探针位图 px 塞进去就是
+   同页两单位混用）。
+
+**零回归证据**（本步渲染层不消费 dims，故要求"逐字节不变"，**未**用 UPDATE）：
+
+- `cargo test --release` 全套 R=0（含 `ANYDOC_GOLDEN_OCR=1`）；
+  golden 判据 **"10 checked"**、29 个快照文件校验和改动前后一致（未被写）。
+- 机制性单测 `dims_do_not_affect_rendered_markdown`：传真实尺寸与传空数组的
+  markdown 必须全等——比"跑一次没红"更强，因为它钉的是"渲染层不读它"这件事。
+- 逐样本**文本**对拍（快照只有 16 位 hash、看不到内容，所以另建语料）：
+  改前/改后各跑 21 个可产出样本的 markdown，`cmp` 全等；两个必然失败样本
+  （corrupt/encrypted）的 stderr 也逐字节一致。
+- 真实通路的量级证据（临时探针跑完即删）：`text.ofd` 文字层页 = 210×297
+  `PageBox`/mm 且 `normalizable()`；`image.ofd` OCR 页 = 820×1160 `PageBox`/px。
+  单位串了（比如 mm 写成 px）会当场露。
+- **`tests/page_dims_ir.rs` 没有建**：`docir`/`gfm_adapter` 是 `pub(crate)`，
+  集成测试看不见 IR，"dims 不进输出"这类断言只能在库内钉。原计划那句改指
+  `gfm_adapter` / `pdf::text_layer` / `ofd` 三处同名单测。
+
+**已知边界（别在第 2 步之后忘了）**：
+
+- PDF 文字层页 `normalizable() == false`。#10/#11 的 bbox 投影对这类页只能出
+  **未归一化 pt**，或先解决页框来源（vendor pdf-inspector / 自己用 lopdf 读
+  MediaBox/CropBox），**不能**拿外扩除。
+- 沙箱没有 13 个 gitignored real_samples：本步"零回归"只对 10 个可跑样本 +
+  21 个 CLI 样本成立，现网语料的字面等值要到有样本的环境补跑（第 2 步 UPDATE
+  时同一条限制，届时逐条 diff 只能覆盖这 10 条）。
+
+**待决断 → 已决断（2026-09-27，用户答复，按此执行）**：
+
+- (a) **重基线一并做**：第 2 步"前缀下移"**一次切干净**，用 `ANYDOC_GOLDEN_UPDATE`
+  显式重基线，不走双写过渡。→ 本节"验收判据"里那句"**未使用** UPDATE"已作废
+  （它和第 2 步天然冲突：前缀下移必然改 markdown 字面输出）。仍保留的硬要求是
+  **逐条 diff 每条快照**：变化必须只落在"标题前后空行/前缀"这一类，出现任何正文
+  字符差异即视为回归、当 bug 查，不许顺手接受。
+- (b) **图片资产要做，但不经命令行输出面**：第 5 步的裁图落盘只做**库内通路**
+  （写进输出目录/由调用方给的路径），markdown 里给**相对引用**；CLI 不新增
+  "输出图片"这类参数，默认档仍是单文件 markdown。→ 分发口径不变。
+- (c) **`ANYDOC_RICH_TEXT` 废弃**：统一到结构化 span 后不留渲染开关。
+  废弃方式（避免"悄悄改变默认输出"）：env 不再改变行为，命中时 stderr 打一行
+  废弃说明；`--help`/README 标注 deprecated 与替代（span 层）。
+
+### 决策 (c) 已落地（2026-09-28）：`ANYDOC_RICH_TEXT` 废弃
+
+**删掉的东西**（不是隐藏，是整体移除）：
+
+- `src/pdf/text_layer.rs`：`rich_text_enabled*` 与 `rich: bool` 参数链
+  （`build_text_docir` → `build_oriented_page` → `oriented_group_regions` →
+  `build_body_regions` → `push_line_region`），`push_line_region` 恒走 `line.text()`，
+  不再调 `text_with_formatting(true, true, true)`。
+- `src/text_health.rs`：`apply_title_prefixes_styled` 的 `styled` 参数与
+  `strip_inline_style_markers`。**判据**：这两个符号的唯一作用是"为 `ANYDOC_RICH_TEXT`
+  产出的 `**`/`<u>` 字面量提供判定视图"；producer 已经不产字面量，保留一个
+  永远为 `false` 的开关和它服务的正则 = 留死代码。实现留在 git 历史
+  （`git log -p -- src/text_health.rs`），第 4 步做 spans 时按 spans 重做，
+  不回头复活正则路线。
+- `tests/pages_rich_text.rs` 旧用例 `rich_text_off_by_default_on_when_enabled`、
+  单测 `rich_text_switch`。
+
+**新增的东西**：
+
+- `src/convert.rs::warn_deprecated_env`：存在即命中（不限值，与原判据一致）、
+  `OnceLock` 每进程一次的 stderr 告警。放在 `route_doc` 开头而不是文字层分支里，
+  理由是**与文档类型无关**——挂在 PDF 文字层分支会让"OFD / 纯扫描件 + 该变量"
+  静默无提示，而 `route_doc` 是单文档 / `BatchConverter` / 库入口的必经汇合点。
+- 契约测试两条：`rich_text_env_is_a_no_op_with_notice`（设与不设 stdout 逐字节
+  相同 + 不出 `**` + stderr 有告警 + `=0` 同样告警 + `--help` 写明废弃）、
+  `rich_text_notice_prints_once_per_process`（两文件批处理只告警一次）。
+- `MINERU_ENGINE_HELP` 增"已废弃变量"一节（此前该变量**从未**出现在 `--help`，
+  所以这是新增文档面而非改文档面）；README 环境变量表与"限制"一节同步改口径。
+
+**样本 `rich_text.pdf` 保留**：它是仓内唯一带 bold/italic 字体证据的文字层 PDF，
+废弃后用于钉**反面**契约（纯文本里不得冒出样式字面量）。`gen_rich_text.py` 的
+docstring 已改写用途，避免下一个人以为它服务于一个还存在的行为。
+
+**零回归证据**（本步不涉及任何默认行为变化，故同样要求逐字节不变，**未**用 UPDATE）：
+
+- `cargo test --release` 全套 R=0；golden（`ANYDOC_GOLDEN_OCR=1`）
+  **"OK: 10 checked, 13 skipped"**，29 个快照文件的 `md5sum | md5sum` 前后一致
+  （`1d266f9281c7c6d79f5c3093ef620bc5`）且 `git status` 对快照目录零改动。
+- 逐样本文本对拍：21 个可产出样本的 markdown 与第 1 步的 after 语料 `cmp` 全等；
+  21 个 `.err` 同样逐字节一致（告警只在设了废弃变量时出现，默认路径 stderr 不变）。
+- 单测数：lib 239 → 238。删 3（`rich_text_switch`、
+  `strip_inline_style_markers_pairs_only`、`styled_title_judgment_injects_on_original_line`），
+  加 2（`deprecated_env_presence_matches_legacy_switch_semantics`、
+  `literal_style_markers_are_no_special_case`）→ 净 −1。
+
+### 第 2 步已落地（2026-09-28）：标题级别进 IR，`#` 前缀下移到渲染层
+
+**改了什么**（一次切干净，无双写、无过渡开关，按决策 (a)）：
+
+- `src/region.rs`：`Region` 加 `heading_level: Option<u8>` +
+  `with_heading_level()` / `leading_hash_level()` / `rendered_line()` /
+  `is_heading()` / `is_heading_trimmed()`；新增 `HEADING_LEVEL_MAX = 6`。
+  **级别是数据，`#` 是渲染产物**——`Region.text` 不再含前缀。
+- `src/text_health.rs`：`apply_title_prefixes` → `title_levels(...) -> Vec<Option<u8>>`
+  （判定逻辑一字未改，只是不再拼字符串）；新增 `body_regions(lines, levels)` 供
+  三通路共用尾步。
+- 三处 producer 改为**赋级别**：`pdf/text_layer.rs::build_body_regions`、
+  `ofd/mod.rs` 普通页分支、`gfm_adapter.rs::to_docir`（原 `apply_title_prefixes`
+  包装函数删除，`title_hints` 保留原样）。
+- `src/docir/render.rs`：正文循环改收 `&Region`，`is_heading` 用
+  `Region::is_heading()`，行文本用 `Region::rendered_line()`；OFD 分支的
+  `join("\n")` 改成等价循环（原来 join 的是 `&str`，现在要逐项渲染）。
+- `src/gfm_adapter.rs`：`merge_isolated_markers` / `is_noise_fragment` 收发 `Region`
+  ——它们原先靠"producer 已写的 `#` 字面量"判标题，现改判**渲染视图**，
+  口径不变。
+
+**两个刻意保留的旧语义**（改动时最容易顺手"修好"的地方，都不是 bug）：
+
+1. 来源文本自带 `#` 字面量（markdown 被印进 PDF/OFD 文字层、OCR 读到 `#` 行）：
+   级别由字面量的 `#` 段数给出，`rendered_line` **不再叠加前缀**——这是旧
+   "防双重标记"规则的原样搬迁。`is_heading()` 用不 trim 的渲染视图，与旧
+   `t.starts_with('#')` 同口径，所以"`  # 字面量`"这种形态两版都判为非标题行、
+   不加空行。两条都由单测钉住（`existing_hash_prefix_is_not_doubled`、
+   `levels_then_render_equals_legacy_prefixes`）。
+2. `reading_order::merge_into_paragraphs` 里的 `starts_with('#')` **不动**：它在
+   装配阶段跑，那时级别还没赋（改造前同样没改），它唯一能看见的 `#` 就是来源
+   字面量。注释已按新事实重写，避免下一个人以为"漏接了 IR 级别"。
+
+**为什么本步没用到 UPDATE**：前缀下移改的是"字面量由谁写出"，不是"写出什么"。
+`title_levels` + `rendered_line` 与旧 `apply_title_prefixes` 在每一行上都产出同一
+字符串，`render()` 的空行判据又与旧 `t.starts_with('#')` 同口径 → markdown 逐字节
+不变。故 `ANYDOC_GOLDEN_UPDATE` 这条**授权用上了但没用**，第 3 步起若真改字面输出
+再启用。
+
+**零回归证据**：
+
+- `cargo test --release` 全套 R=0；golden（`ANYDOC_GOLDEN_OCR=1`）
+  **"OK: 10 checked, 13 skipped"**，29 个快照 `md5sum | md5sum` 仍
+  `1d266f9281c7c6d79f5c3093ef620bc5`，`git status` 对快照目录零改动。
+- 逐样本**文本**对拍：**最终提交态二进制**（`c334106d…`，脚本 `/tmp/cap_step2_final.sh`）
+  的语料 `/tmp/md_step2f` 与决策 (c) 语料 `/tmp/md_dep` 逐件 `cmp`，**44/44 全等**
+  = 21 个 `.md` + 23 个 `.err`（两个必然失败样本 corrupt/encrypted 只有 stderr）。
+  stderr 一起比是防"输出没变但告警/诊断变了"这种 markdown 检不出的回归。
+  （先跑的 `49cefa23…` 那轮同样 44/44，但它晚于两处注释改动的重新编译，故以
+  `c334106d…` 这轮为准——这条自证流程本身别省：二进制 md5 不同就是不同产物。）
+- 反面证据（防"标题根本没渲染出来"这种假绿）：语料里仍有 5 行 `## ` 开头的标题行
+  （`## OCR Test 123` ×3、`## Monthly Report`、`## 1. General Rules`），
+  即 `rendered_line` 确实在写前缀。
+- `ANYDOC_HEADINGS_LAYOUT=1` 单独对拍 4 个样本（OCR `image.pdf`/`mixed_scan.pdf`、
+  文字层 `rich_text.pdf`、OFD `text.ofd`）**最终二进制 vs 决策 (c) 二进制**产物全等
+  ——布局分支（级别 1..=6）不在默认路径上，默认语料证不到它。
+- 单测数：lib 238 → **242**。加 4：`levels_then_render_equals_legacy_prefixes`
+  （与旧函数逐条等价，含规则叠加/超长行/前导空白）、
+  `level_and_literal_prefix_render_identically`（三源同页，级别 vs 字面量渲染同形）、
+  `heading_level_survives_marker_merge_and_filter`（级别不丢在 T6 改写点）、
+  `producer_stores_level_not_hash_literal`（走真实 `build_text_docir`，钉"级别进 IR、
+  字面量不进 IR"，并验渲染幂等）。改名 4 条
+  （`title_prefixes_by_numbering_heuristic`→`title_levels_by_numbering_heuristic`、
+  `title_prefix_applied`→`title_levels_applied`、
+  `layout_hints_drive_prefix_without_numbering`→`layout_hints_drive_levels_without_numbering`、
+  `existing_hash_prefix_preserved`→`existing_hash_prefix_is_not_doubled`），删 0。
+
+**这一格验收判据已成立**（#6 总验收里那句"块级类型+级别+bbox+span 可单测断言"）：
+标题级别 + `kind` + `confidence` + `dims`（#6 第 1 步）现在都能从 IR 直接断言；
+仍缺 **span**（第 4 步）与 Image/Code/Formula 等块级类别（第 5 步，依赖 #10 样本）。
+
+**下游已解锁**：#11 的 `heading_level` 字段、#10 的 `DOC_TITLE` 判定——投影层
+直接读 `Region.heading_level`，不必再反解 markdown 字面量。
+
+**盲区照实说**：沙箱缺 13 个 gitignored real_samples，本步"逐字节不变"只对
+10 条 golden + 21 个 CLI 样本 + 4 个布局开关样本成立。现网语料里若存在
+"来源自带 `#` 字面量且**前导空白**"或"`#` 后无空格"这类少见的字面量形态，
+两版行为都跟旧版一致（同一判据搬迁），但没被样本覆盖。
+
+### 第 3 步已落地（2026-09-28）：`continues_prev` 进 IR，跨页合并改为"原位占位 + 标记"
+
+**这格计划里"pass 顺带写"是错的**（不是难，是**不可能**）：`cross_page_table::run`
+原先把被吸收的续页 Grid 区块**整块删掉**——续接关系只在那一刻存在于状态机的局部
+变量里，pass 结束后 IR 上没有任何对象承载它。所以第 3 步的实质不是"加字段顺带写"，
+而是**改 pass 的产物形状**：续页区块原位保留、打标记，由渲染层按标记跳过。
+
+**改了什么**：
+
+- `src/region.rs`：`Region` 加 `continues_prev: Option<bool>`（三态，对齐 MinerU
+  `bool | None`）+ `is_continues_prev()`（只认 `Some(true)`）；两个构造点恒 `None`。
+  没加 `with_continues_prev()` builder——写入方只有 pass 一处，直接赋值字段即可，
+  加了是没人用的门面（编译器已替我抓到这一点：unused warning → 删）。
+- `src/docir/passes/cross_page_table.rs`：
+  - 从"`drain` 拆 Grid → 其余存回 → 定格表 push 到末尾"改成**原地遍历
+    `regions.iter_mut()`**：非 Grid 区块完全不碰；被吸收的 Grid 保留**自己的原始
+    grid** 并置 `continues_prev = Some(true)`；定格表**覆盖回首表区块所在位置**。
+  - `pending`/`finalized` 三元组因此多带一个"页内位置"。
+  - 新分支：**已带标记的区块不参与状态机、也不计入"本页有 Grid"**。不加这条，
+    重复 `run` 会把已经并入首表页的行**再并一次**（行数翻倍）；加了之后本 pass
+    可重复调用（单测 `run_is_idempotent_over_stubs`）。
+- `src/docir/render.rs`：第 4) 阶段（网格表）加 `.filter(|r| !r.is_continues_prev())`。
+  **只有这一处消费标记**，正文/成品块/TableHtml 三个阶段一字未动。
+
+**为什么留占位而不是继续删**：MinerU 的标记挂在**续页那个块**上
+（`docvortex/schema.py:506-509`、`:707`；写入点 `content/table/document.py:104`），
+删掉区块就没有承载对象，投影层（#10/#11）只能看到"这张表在这一页凭空消失"。
+留占位让 IR 形状与 MinerU 对齐，渲染字节不变（见下等价性证明）。
+
+**与 MinerU 的内容口径差别（第 4 步/投影层务必读）**：MinerU 里带 `continues_prev`
+的块**自己仍带正文**（它的合并发生在更后置的通路）；本仓的合并**就发生在这个 pass
+里**，首表页那份是合并结果，续页标记块保留的是 producer **原始 grid**（未去重、
+未并入）。→ **投影层若把标记块的 grid 当表格内容输出就会重行**，必须同样跳过，
+或只取 `continues_prev` 这个事实。这条差别写在 `Region::continues_prev` 的文档里。
+
+**零回归证据**：
+
+- 等价性正身（不只是"跑出来一样"，而是**构造上证明两种 IR 形状渲染同形**）：
+  单测 `absorbed_stub_renders_identically_to_deletion` 对同一文档跑 pass 两次，
+  一份留占位、一份 `retain` 删掉占位（= 旧形状），断言 `render()` 逐字节相等，
+  并钉"整篇只输出一份 `<table>`"。
+- `cargo test --release` 全套 **R=0**，**303 passed / 0 failed / 1 ignored**
+  （上一轮 300 → 本步 +3；lib 242 → **245**）。
+- golden：**本步用了一次 UPDATE，但性质是"新增基线"，不是重基线**——新样本进清单
+  时 harness 按设计报 `missing baseline snapshot`（非 UPDATE 不自动建基线），
+  随后 `ANYDOC_GOLDEN_UPDATE=1` 重跑。审计方式：逐文件记录 30 条快照内容
+  （UPDATE 前 `/tmp/snap_pre_final.txt`、UPDATE 后 `/tmp/snap_post2.txt`）再 `diff`：
+  **只有 `tests_samples_cross_page_table.pdf.sha256` 这一行的值变化**
+  （`7efab131…` → `a84d84c1…`，因测试件几何按上文重做），
+  **其余 29 条既有哈希零变化** → 决策 (a) 允许的"仅标题前缀/空行变化"这条都没触发，
+  字面输出确实没动。快照条数 29 → **30**（本步新增一件），去掉新增项后既有基线零漂移。
+  UPDATE 后再跑一次**不带** UPDATE 的 golden：`R=0 / 1 passed`（确认新基线自洽）。
+- 逐样本文本对拍：**本步二进制**（`b1f505e8…`，脚本 `/tmp/cap_step3.sh`，快照副本
+  `/tmp/step3bin`）的语料 `/tmp/md_step3` 与第 2 步语料 `/tmp/md_step2f`
+  逐件 `cmp`：**44/44 全等**（21 `.md` + 23 `.err`），新增 2 件即本步测试件自身。
+- **这条最重要**：现有 21 个样本**没有一个**会走被改的"同列续接"分支——表格样本
+  全是单页表，golden 里唯一相关的 `tests/real_samples/crosspage_table.pdf` 正是那
+  13 个缺失件之一。所以"44/44 全等"在改这条分支时**不含任何被改代码的执行证据**，
+  是空跑。补了入库件 `tests/samples/cross_page_table.pdf`（生成器
+  `tests/gen_cross_page_table.py`，3 页：表 → 同列续表含**两行**重复表头 → 正文页），
+  它**确实走合并分支并走到去重腿**（合并结果 5 行 = 3 + (3 行去重成 2 行)），
+  且新旧二进制对它的产物 `cmp` **全等**（`2049e3bc…`）。该件已进 `tests/golden.rs`
+  清单（`needs_ocr = false`，纯文字层，默认跑），从此这条分支有入库回归覆盖。
+
+  **为什么页 2 要把表头印两行**（先前写成"印一行就够、去重腿自然生效"是**错的**）：
+  `reconstruct_grid`（`table_grid.rs:156-157`）把每页**首行**塞进 `header` 槽、其余进
+  `rows`，而 `extend_table_grid`（`table_grid.rs:268-278`）判的是
+  `next.rows[0] == acc.header` 且合并时**从不读 `next.header`**。→ 续页只印一行表头时，
+  那行已被 header 槽吃掉，判定**永远命不中**，走的是"直接 append"分支。实测对照：
+  续页 1 行表头 与 续页顶行故意写成 `ID2/NM2/…`（不等于页 1 表头）→ 输出**逐字节相同**
+  （都 5 行），证明"续页顶行无条件丢"而非"去重"。要命中的确有**两行**表头（真实跨页表
+  正是"表头槽 + 又印一遍表头"这种形态）：本件 3 + (1 表头行 + 2 数据行) → 去重后 5 行。
+  反向验证（防"腿恒等于 append"这种假通过）：把第二行换成非表头数据 `Z-9` → 输出变 6 行
+  且 `Z-9` 保留 → 该腿在真判。
+
+**做测试件时"撞出来的两个既有缺陷"——撤回：两个都不是缺陷，是我探针写坏的输出**
+（先前本节记为"≥3 网格页表头丢字"与"正文页正文整段消失"，并猜了 `reconstruct_grid`
+列模板的根因。**那个根因猜测也是错的**）。干净几何重测（当前二进制 `b1f505e8…` 与
+第 2 步 `c334106d…` 各跑一遍，18 对输出**逐字节全等**）后，两条归一到一个**既有设计行为**：
+
+`pdf/text_layer.rs` 的 `strip_furniture`（跨页重复文本 → 判页眉/页脚/水印剔除）门槛是
+`pages_needed = max(3, ceil(0.6 × 总页数))`，判据是**同文本 + 同归一化位置**（x 中心、y
+各 1% 箱）出现在 `>= pages_needed` 个不同页。我的合成探针把**同一行字**画在**每页同一
+坐标**，正好撞上它。判别实验：
+
+| 探针 | 形态 | 结果 |
+|---|---|---|
+| P2 | 3 页全表、表头**逐页相同** | 表头最左格被当家具吃掉（`<td></td><td>NM</td>…`） |
+| P1 | 3 页全表、表头**逐页互异** | 表头**完整** → 门槛是"重复"不是"网格页数" |
+| P3 | 6 页、3 个表页表头相同（`pages_needed=4>3`） | 三个表头**都完整** |
+| K 组 | 3 个正文页同文重复 / 同形态每页文本互异 | 前者正文丢、后者**三行全留** |
+| K 组 | 纯正文页同文重复、无表 | 家具判定把整层删空 → 走 `text_layer.rs:118-123` 既有回落 OCR 通路（`ANYDOC_TIMINGS` 实测每页 `ocr` 非零），文本由 OCR 重新给出 |
+
+算术自洽（`pages_needed = max(3, ceil(0.6N))`，N=总页数）：b t b（N=3，正文 2 页 < 3）
+→ 保留；b t b b（N=4，正文 3 页 ≥ 3）→ 丢；b t b t b（N=5，正文 3 页）→ 丢；
+把同形态的正文逐页改成互异文本 → 全部保留。**"正文整段消失"只在文档里还剩别的非家具
+页时才是净损失**——整篇都是家具时回落 OCR，文本反而回来（代价是多付一次 OCR）。
+
+**这里有一个真实的、值得单独记的产品面**（不是本步引入、也不由本步修）：真实跨页表的
+表头行天然"逐页同文本同位置"，所以**总页数 ≤ 5**（`pages_needed` 仍是 3）的短文档里，
+表头跨 3 页重复就会被判成页眉/水印而丢字。这与 MinerU 的家具剔除同族，但阈值口径
+（1% 位置箱 + 3 页下限）值得在 **#10 的"页眉页脚不丢弃而是标注 + 可选输出"**那一并
+复核（该子项在本仓已有记录，见 #10 段末"例外"条）。本步不动它。
+
+测试件因此刻意取"3 页、表头只重复 2 页、正文行全文档仅出现 1 次"——实测表头四格完整，
+家具判定的产物不会混进"跨页合并"的断言面。再加页就会撞上门槛。
+
+**盲区**：`continues_prev` 目前**只有 IR 层消费者（渲染跳过）没有输出面**——按决策 (b)
+本步不新增 CLI 输出，投影层（#10 content_list / #11 middle_json）才是它的使用方。
+真实跨页表（`tests/real_samples/crosspage_table.pdf`）在沙箱里仍然缺件，现网语料的
+合并行为要等有样本的环境补跑。
 
 
 ### 风险（务必先读）
 
-解耦标题前缀会动到**现网字节一致契约**（golden 9 样本 / batch 6 样本守护）。
-缓解：判定视图与渲染视图分离——本仓在 `ANYDOC_RICH_TEXT` 上已有"前缀与样式共存、
-在剥标记后的判定视图上跑启发式"的成熟做法（README 环境变量表），照搬同一手法；
-新增 `--format markdown` 之外的输出时**不动** markdown 渲染器的任何字面输出，
-用"同一 IR 两个 renderer"来证明等价（新 renderer 的 markdown 输出与旧通路
-逐字节等值，是 #6 的硬验收）。
+解耦标题前缀会动到**现网字节一致契约**（golden 10 样本 / batch 6 样本守护）。
+
+**原写的缓解手法已随决策 (c) 失效**（本节此前说"照搬 `ANYDOC_RICH_TEXT` 的
+判定视图/渲染视图分离"——那个判定视图已删除，照搬无从谈起）。第 2 步改用
+这些手法兜底：
+
+- **一次切干净 + 显式重基线**（决策 a）：`heading_level` 进 `Region`、`#` 前缀
+  下移到 `docir/render.rs`，producer 只设字段。
+- **逐条 diff 每条快照**：允许的变化**只**有标题前缀本身与其前后空行；任何正文
+  字符差异判回归。快照是 16 位 hash 看不到内容，所以还要另建改前/改后的
+  CLI markdown 语料做文本对拍（同第 1、决策 (c) 两步的做法）。
+  → 第 2 步实测：连"只允许标题类变化"这个宽容档都没用上，语料 21/21 全等。
+- **机制性单测钉"级别信息来源"**：`heading_levels`/`reading_order::title_level`
+  产出的级别可直接断言，不靠 markdown 字面反推。
+- **盲区照实说**：沙箱缺 13 个 gitignored real_samples，第 2 步的 UPDATE 只能覆盖
+  这 10 条快照；现网语料的等价性要在有样本的环境补跑。
+- 新增结构化输出时**不动** markdown 渲染器的任何字面输出，用"同一 IR 两个
+  renderer"来证明等价（新 renderer 的 markdown 输出与旧通路逐字节等值，
+  是 #6 的硬验收）。
 
 ### 验收判据
 
 - IR 层面：块级类型 + 标题级别 + bbox + span 可被单测直接断言（当前不可）；
-- 零回归：`cargo test --release --test golden`（`ANYDOC_GOLDEN_OCR=1`）在解耦后
-  仍 "9 checked"，且**未使用** `ANYDOC_GOLDEN_UPDATE`；
-- 等价证明：markdown renderer 改造前后对 6 个 batch 样本 hash 全等；
+- 第 1 步（页尺寸入 IR）**单独零回归**：`cargo test --release --test golden`
+  （`ANYDOC_GOLDEN_OCR=1`）仍 "10 checked" 且**不用** `ANYDOC_GOLDEN_UPDATE`
+  ——这一步渲染层不消费新字段，输出必须逐字节不变；
+- 第 2 步（标题前缀下移）**允许并要求重基线**（决策 a）：`ANYDOC_GOLDEN_UPDATE`
+  后逐条 diff 快照，变化**只**允许出现在标题前缀与其前后空行；任何正文字符变化
+  即判回归。原"未使用 UPDATE"的写法作废；
+  **第 2 步实际没有用 UPDATE**（输出逐字节不变）。作废的那句在本步重新成立，但它是
+  **禁令**而非预期：今后任何一步若真改了字面输出，仍照决策 (a) 走 UPDATE + 逐条 diff。
+- 等价证明：markdown renderer 改造前后对 6 个 batch 样本 hash 全等（第 1 步）；
 - 不新增必须项：默认路径（不请求结构化输出）分配/耗时无可见退化。
 
 ---

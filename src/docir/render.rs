@@ -8,6 +8,11 @@
 //!   （表格独占页），Ocr 源 `"\n\n" + html + "\n"`（表格与正文共存于首表页）；
 //! - 表格 HTML（`TableHtml`，Ocr 源）：正文后空行 + html，多表间空行分隔；
 //! - 成品块（`PreRendered`）：producer 已含精确分隔符，原样追加，不二次加工。
+//!
+//! #6 第 2 步：`#` 前缀从 producer 下移到这里——标题级别是 IR 数据
+//! （`Region.heading_level`），字面量由 [`Region::rendered_line`] 写出，空行语义
+//! 由 [`Region::is_heading`] 决定。producer 不再往 `text` 里写 `#`，两视图逐条
+//! 等价，故**本步输出逐字节不变**（BACKLOG #6 验收判据里的第 2 步）。
 
 use std::collections::BTreeMap;
 
@@ -21,28 +26,30 @@ pub(crate) fn render(doc: &DocIR) -> String {
     let mut segments: BTreeMap<u32, String> = BTreeMap::new();
     for page in &doc.pages {
         let mut seg = String::new();
-        // 1) 正文行
-        let bodies: Vec<&str> = page
+        // 1) 正文行：`#` 前缀在此写出（#6 第 2 步下移到渲染层）。
+        let bodies: Vec<&Region> = page
             .regions
             .iter()
             .filter(|r| r.kind == RegionKind::Body)
-            .map(|r| r.text.as_str())
             .collect();
         match page.source {
             // OFD 文字层：朴素单换行拼接（历史行为，无标题空行语义）。
             PageSource::TextLayerOfd => {
-                if !bodies.is_empty() {
-                    seg.push_str(&bodies.join("\n"));
+                for (i, r) in bodies.iter().enumerate() {
+                    if i > 0 {
+                        seg.push('\n');
+                    }
+                    seg.push_str(&r.rendered_line());
                 }
             }
-            // PDF 文字层 / OCR：标题（# 开头）前后空行，正文行段落内单换行。
+            // PDF 文字层 / OCR：标题（渲染后 `#` 开头）前后空行，正文行段落内单换行。
             PageSource::TextLayerPdf | PageSource::Ocr => {
-                for t in bodies {
-                    let is_heading = t.starts_with('#');
+                for r in &bodies {
+                    let is_heading = r.is_heading();
                     if is_heading && !seg.is_empty() && !seg.ends_with("\n\n") {
                         seg.push('\n');
                     }
-                    seg.push_str(t);
+                    seg.push_str(&r.rendered_line());
                     seg.push('\n');
                     if is_heading {
                         seg.push('\n');
@@ -64,7 +71,12 @@ pub(crate) fn render(doc: &DocIR) -> String {
             }
         }
         // 4) 网格表（跨页合并后定格在本页）
-        for r in regions_of(page, |k| matches!(k, RegionKind::Grid(_))) {
+        // #6 第 3 步：带 `continues_prev` 标记的块是"内容已并入前页表格"的占位，
+        // **整块跳过**——跳过与旧通路的"物理删除"逐字节相同（单测
+        // `absorbed_stub_renders_identically_to_deletion` 钉住），标记只为投影层留。
+        for r in regions_of(page, |k| matches!(k, RegionKind::Grid(_)))
+            .filter(|r| !r.is_continues_prev())
+        {
             let html = grid_html(&r);
             match page.source {
                 // 文字层：表格独占一页，html + "\n\n"。
@@ -116,7 +128,7 @@ fn grid_html(r: &Region) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::docir::PageIR;
+    use crate::docir::{PageDims, PageIR};
     use crate::table_grid::{TableCell, TableGrid};
 
     fn cell(t: &str) -> TableCell {
@@ -142,16 +154,18 @@ mod tests {
             page_no: 0,
             regions,
             source,
+            dims: PageDims::default(),
         }
     }
 
-    /// PDF/Ocr 正文行：标题（# 开头）前补空行、后加空行；正文行单换行。
+    /// PDF/Ocr 正文行：标题（有 `heading_level`）前补空行、后加空行；正文行单换行。
+    /// #6 第 2 步：标题是 IR 字段，`#` 字面量由本层写出。
     #[test]
     fn heading_blank_line_semantics_for_pdf_and_ocr() {
         let regions = vec![
-            Region::new(0.0, 1.0, 0.0, 1.0, "## 标题"),
+            Region::new(0.0, 1.0, 0.0, 1.0, "标题").with_heading_level(Some(2)),
             Region::new(0.0, 1.0, 1.0, 2.0, "正文行"),
-            Region::new(0.0, 1.0, 2.0, 3.0, "# 又一标题"),
+            Region::new(0.0, 1.0, 2.0, 3.0, "又一标题").with_heading_level(Some(1)),
         ];
         let doc = DocIR {
             pages: vec![page(PageSource::TextLayerPdf, regions)],
@@ -161,11 +175,42 @@ mod tests {
         assert!(out.starts_with("## 标题\n\n正文行\n\n# 又一标题"), "got: {out}");
     }
 
-    /// OFD 正文行：朴素 join("\n")，标题不加空行。
+    /// #6 第 2 步的等价性正身：**同一页**用 IR 级别表达标题，与旧通路把 `#`
+    /// 字面量焊在 `text` 里，渲染结果必须逐字节相同（三种来源各钉一条）。
+    #[test]
+    fn level_and_literal_prefix_render_identically() {
+        for source in [
+            PageSource::TextLayerPdf,
+            PageSource::TextLayerOfd,
+            PageSource::Ocr,
+        ] {
+            let by_level = page(
+                source,
+                vec![
+                    Region::new(0.0, 1.0, 0.0, 1.0, "一、总则").with_heading_level(Some(2)),
+                    Region::new(0.0, 1.0, 1.0, 2.0, "正文行"),
+                ],
+            );
+            let by_literal = page(
+                source,
+                vec![
+                    Region::new(0.0, 1.0, 0.0, 1.0, "## 一、总则"),
+                    Region::new(0.0, 1.0, 1.0, 2.0, "正文行"),
+                ],
+            );
+            assert_eq!(
+                render(&DocIR { pages: vec![by_level] }),
+                render(&DocIR { pages: vec![by_literal] }),
+                "source={source:?}：级别与字面量必须渲染同形"
+            );
+        }
+    }
+
+    /// OFD 正文行：朴素 join("\n")，标题不加空行（前缀照样由本层写）。
     #[test]
     fn ofd_body_joins_with_single_newline() {
         let regions = vec![
-            Region::new(0.0, 1.0, 0.0, 1.0, "## 标题"),
+            Region::new(0.0, 1.0, 0.0, 1.0, "标题").with_heading_level(Some(2)),
             Region::new(0.0, 1.0, 1.0, 2.0, "正文行"),
         ];
         let doc = DocIR {
@@ -251,11 +296,13 @@ mod tests {
                     page_no: 2,
                     regions: vec![Region::new(0.0, 1.0, 0.0, 1.0, "third")],
                     source: PageSource::TextLayerOfd,
+                    dims: PageDims::default(),
                 },
                 PageIR {
                     page_no: 0,
                     regions: vec![Region::new(0.0, 1.0, 0.0, 1.0, "first")],
                     source: PageSource::TextLayerOfd,
+                    dims: PageDims::default(),
                 },
             ],
         };
@@ -271,11 +318,13 @@ mod tests {
                     page_no: 0,
                     regions: vec![],
                     source: PageSource::TextLayerOfd,
+                    dims: PageDims::default(),
                 },
                 PageIR {
                     page_no: 1,
                     regions: vec![Region::new(0.0, 1.0, 0.0, 1.0, "内容")],
                     source: PageSource::TextLayerOfd,
+                    dims: PageDims::default(),
                 },
             ],
         };

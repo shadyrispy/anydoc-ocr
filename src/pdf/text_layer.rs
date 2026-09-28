@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
-use crate::docir::{DocIR, PageSource};
+use crate::docir::{DocIR, PageDims, PageSource};
 use crate::fallback::{self, FallbackSignal};
 use crate::region::{Region, RegionKind};
 use crate::table_grid::{self};
@@ -150,10 +150,10 @@ pub(crate) fn text_layer_probe(
         &by_page,
         &lines_by_page,
         &page_w,
+        &page_h,
         &table_out,
         last_page,
         last_table_md.as_deref(),
-        rich_text_enabled(),
     );
     if render_of(&text).is_empty() {
         // P1.6：装配输出为空（空层信号，文档级）→ 集中决策表裁决。
@@ -179,25 +179,17 @@ fn hybrid_disabled_from(v: Option<&str>) -> bool {
     v.is_some()
 }
 
-/// `ANYDOC_RICH_TEXT`：文字层**行内样式**注入开关（借鉴 MinerU 4.0
-/// `prepare/apply_text_evidence`——原生文字通道的 bold/italic/underline/strikeout
-/// 证据物化进 Markdown）。
-///
-/// 与 hybrid 开关同族语义：**变量存在即开启**（不限值），默认关闭——
-/// 默认关闭既守住 golden 字节一致（现网输出零变化），也让精度可 A/B：
-/// pdf-inspector 的 `is_bold` 部分来自字体名启发（`Bold`/`Black`/`-Bd`），
-/// 中文公文里加粗小标题已由标题前缀承担，行内 `**` 的增益需按语料自行判断。
-/// 开启后由 `TextLine::text_with_formatting(true, true, true)` 产出
-/// `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>`（嵌套/相邻样式合并规则
-/// 沿上游实现，本仓不重复造）。
-fn rich_text_enabled() -> bool {
-    rich_text_enabled_from(std::env::var("ANYDOC_RICH_TEXT").ok().as_deref())
-}
-
-/// 开关语义（纯函数，可单测）：变量**存在即开启**（不限值），未设置默认关闭。
-fn rich_text_enabled_from(v: Option<&str>) -> bool {
-    v.is_some()
-}
+// `ANYDOC_RICH_TEXT` 已废弃（#6 决策 (c)）：它曾把 PDF 文字层的行内样式
+// （bold/italic/underline/strikeout）注入成 `**粗**`/`*斜*`/`<u>`/`<s>` 字面量
+// （借鉴 MinerU 4.0 `prepare/apply_text_evidence`），由这里读取、再把 `rich: bool`
+// 一路透传给 `build_text_docir` → `build_oriented_page` → `oriented_group_regions`
+// → `build_body_regions` → `push_line_region`。样式属于**结构**，不该以 Markdown
+// 字面量的形式焊进正文再靠正则剥回来（当时为此造的判定视图 `text_health::
+// strip_inline_style_markers` 也一并删除，见该模块注释），故本变量**不再改变
+// 任何行为**，`rich` 参数链整体移除；
+// 替代方案是结构化 span（`Region.spans`，#6 第 4 步），届时也不留渲染开关。
+// 废弃告警在调度层统一打一次：见 [`crate::convert::warn_deprecated_env`]——
+// 挂在本模块的文字层分支里会让"OFD / 纯扫描件 + 该变量"静默无提示。
 
 /// 只渲染本页（不跑 pass）——用于"文字层是否产出了内容"的空判定。
 fn render_of(doc: &DocIR) -> String {
@@ -495,7 +487,14 @@ fn confirm_table_pages(
                 .iter()
                 .any(|e| e.element_type == oar_ocr::domain::structure::LayoutElementType::Table);
             if has_table {
-                table_out.insert(page, gfm_adapter::to_markdown(std::slice::from_ref(&res)));
+                // dims 传空：这里的产物是**文字层页**里的一个 PreRendered 块，该页
+                // `PageIR.dims` 由 `build_text_docir` 按文字层坐标空间（pt 内容外扩）
+                // 定死；把探针位图的 px 塞进来会造成同页两种单位混用（#6 第 1 步
+                // 的单位口径），且渲染层第 1 步根本不消费 dims。
+                table_out.insert(
+                    page,
+                    gfm_adapter::to_markdown(std::slice::from_ref(&res), &[]),
+                );
             }
         }
     }
@@ -507,17 +506,14 @@ fn confirm_table_pages(
 /// （anydoc 0.2.4 缺页上报）要把 OCR 页按页号并进同一文档后再统一跑
 /// `cross_page_table` pass；纯文字文档由 [`finalize_text_hit`] 走 pass +
 /// 渲染，与旧通路字节一致（golden 守护）。
-///
-/// `rich` = `ANYDOC_RICH_TEXT`：普通正文行改出行内样式文本（见
-/// [`build_body_regions`]）；网格表/成品块不受影响。
 fn build_text_docir(
     by_page: &BTreeMap<u32, Vec<pdf_inspector::TextItem>>,
     lines_by_page: &BTreeMap<u32, Vec<pdf_inspector::extractor::TextLine>>,
     page_w_map: &BTreeMap<u32, f32>,
+    page_h_map: &BTreeMap<u32, f32>,
     table_out: &BTreeMap<u32, String>,
     last_page: u32,
     last_table_md: Option<&str>,
-    rich: bool,
 ) -> DocIR {
     let mut doc = DocIR::default();
     for (page, page_items) in by_page.iter() {
@@ -525,6 +521,11 @@ fn build_text_docir(
         else {
             continue; // 不变量：两表均由 build_line_groups 从 by_page 构建，键恒一致
         };
+        // #6 第 1 步：文字层页唯一拿得到的"页尺寸"是**内容外扩**（max x+w / max y+h，
+        // 见 `build_line_groups`），不是页面框（pdf-inspector 的 `CropBox ∩ MediaBox`
+        // 是 `pub(crate)`）。故 kind=`ContentExtent`、单位 pt，`normalizable()` 为
+        // false——下游投影据此拒绝归一化，而不是算出一个系统性偏大的 bbox。
+        let dims = PageDims::extent_pt(page_w, page_h_map.get(page).copied().unwrap_or(0.0));
 
         // 0) 朝向分组（借鉴 MinerU 表格朝向投票的常量族，见 `orientation` 模块）。
         // 整页单一朝向（`groups.len() == 1`，即全仓现网文档）→ 完全跳过本分支，
@@ -540,14 +541,14 @@ fn build_text_docir(
                 &page_items.iter().map(|i| i.rotation).collect::<Vec<f32>>(),
             );
             if groups.len() > 1 {
-                let mut out = build_oriented_page(page_items, &groups, *page, page_w, rich);
+                let mut out = build_oriented_page(page_items, &groups, *page, page_w);
                 if *page == last_page && let Some(tbl) = last_table_md {
                     out.push(
                         Region::new(0.0, 0.0, 0.0, 0.0, format!("\n{tbl}\n"))
                             .with_kind(RegionKind::PreRendered),
                     );
                 }
-                doc.push_page(*page, PageSource::TextLayerPdf, out);
+                doc.push_page(*page, PageSource::TextLayerPdf, out, dims);
                 continue;
             }
         }
@@ -563,6 +564,7 @@ fn build_text_docir(
                 PageSource::TextLayerPdf,
                 vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
                     .with_kind(RegionKind::Grid(grid))],
+                dims,
             );
             continue;
         }
@@ -574,12 +576,13 @@ fn build_text_docir(
                 PageSource::TextLayerPdf,
                 vec![Region::new(0.0, 0.0, 0.0, 0.0, ocr_md.clone())
                     .with_kind(RegionKind::PreRendered)],
+                dims,
             );
             continue;
         }
 
         // 3) 普通页：文字层行（Body 区块）+ 末页表格探针兜底（成品块）
-        let mut out = build_body_regions(full_lines, *page, page_w, rich);
+        let mut out = build_body_regions(full_lines, *page, page_w);
         // R3 兜底：末页布局未确认但 pdf-inspector 探针提取到表格（版权栏等小表格）
         // → 文字层行后追加管道表，保证表格信息不丢（保留正文行，仅追加结构）。
         if *page == last_page
@@ -590,7 +593,7 @@ fn build_text_docir(
                     .with_kind(RegionKind::PreRendered),
             );
         }
-        doc.push_page(*page, PageSource::TextLayerPdf, out);
+        doc.push_page(*page, PageSource::TextLayerPdf, out, dims);
     }
     doc
 }
@@ -599,13 +602,12 @@ fn build_text_docir(
 ///
 /// 逐组独立走「网格表 → 正文行」。输出顺序：0° 组先出（页面自身叙事优先），
 /// 其余按票数降序跟随——单页多朝向本就没有可靠的跨朝向阅读顺序，稳定可复现
-/// 比猜测更值钱。`rich` 透传给正文行构建（`ANYDOC_RICH_TEXT`）。
+/// 比猜测更值钱。
 fn build_oriented_page(
     page_items: &[pdf_inspector::TextItem],
     groups: &[(u16, Vec<usize>)],
     page: u32,
     page_w: f32,
-    rich: bool,
 ) -> Vec<Region> {
     let mut out = Vec::new();
     // groups 已按票数降序；这里只把 0° 组提到最前，其余保持票数降序。
@@ -614,9 +616,7 @@ fn build_oriented_page(
             if (angle == 0) != take_upright {
                 continue;
             }
-            out.extend(oriented_group_regions(
-                page_items, groups, angle, page, page_w, rich,
-            ));
+            out.extend(oriented_group_regions(page_items, groups, angle, page, page_w));
         }
     }
     out
@@ -633,7 +633,6 @@ fn oriented_group_regions(
     angle: u16,
     page: u32,
     page_w_full: f32,
-    rich: bool,
 ) -> Vec<Region> {
     let ids = match groups.iter().find(|(a, _)| *a == angle) {
         Some((_, ids)) => ids,
@@ -691,22 +690,14 @@ fn oriented_group_regions(
         pdf_inspector::extractor::group_into_lines_preserving_all_text(up.clone())
     }))
     .unwrap_or_default();
-    build_body_regions(&lines, page, page_w, rich)
+    build_body_regions(&lines, page, page_w)
 }
 
-/// 普通页正文行构建：列间隙检测 + 双列拆行 → 阅读顺序 → 标题前缀 → Body 区块。
-///
-/// `rich`（`ANYDOC_RICH_TEXT`）：行文本改由 `TextLine::text_with_formatting`
-/// 产出（bold/italic/underline/strikeout 证据 → `**`/`*`/`<u>`/`<s>`，
-/// MinerU text_evidence 同族语义），标题启发式在剥标记视图上判定（见
-/// [`crate::text_health::apply_title_prefixes_styled`]）。行级后处理
-/// （连字合并/全角归一）作用于带标记文本，样式行恰好处于行断点时启发式
-/// 可能少触发——可接受的精度换区，默认关闭时零影响。
+/// 普通页正文行构建：列间隙检测 + 双列拆行 → 阅读顺序 → 赋标题级别 → Body 区块。
 fn build_body_regions(
     full_lines: &[pdf_inspector::extractor::TextLine],
     page: u32,
     page_w: f32,
-    rich: bool,
 ) -> Vec<Region> {
     // 列间隙检测：行级候选间隙聚类。封面/标题的字母间距是单行现象、每行
     // split_x 各不相同，聚类不到 >=3 行；双列正文的 gutter 在每行同一 x 处
@@ -737,28 +728,24 @@ fn build_body_regions(
                 for item in sorted.drain(..idx) {
                     seg.push(item);
                 }
-                push_line_region(&seg, line, page, rich, &mut regions);
+                push_line_region(&seg, line, page, &mut regions);
                 seg = sorted;
-                push_line_region(&seg, line, page, rich, &mut regions);
+                push_line_region(&seg, line, page, &mut regions);
                 continue;
             }
         }
         seg = sorted;
-        push_line_region(&seg, line, page, rich, &mut regions);
+        push_line_region(&seg, line, page, &mut regions);
     }
 
-    // B3-T：标题前缀注入统一于 `text_health::apply_title_prefixes`
+    // B3-T：标题级别判定统一于 `text_health::title_levels`
     // （空 hints + numbering=true，纯编号启发式，与 OFD 文字层同口径）。
-    // 标题（# 开头）前后空行语义由 docir 渲染层统一施加（TextLayerPdf 分支）。
-    crate::text_health::apply_title_prefixes_styled(
-        &reading_order::postprocess_lines(reading_order::order_text_regions(&regions)),
-        &[],
-        true,
-        rich,
-    )
-    .into_iter()
-    .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
-    .collect()
+    // #6 第 2 步：这里只**赋级别**，`#` 前缀与标题前后空行由 docir 渲染层写出
+    // （TextLayerPdf 分支），故 `Region.text` 是未加前缀的行文本。
+    let lines =
+        reading_order::postprocess_lines(reading_order::order_text_regions(&regions));
+    let levels = crate::text_health::title_levels(&lines, &[], true);
+    crate::text_health::body_regions(lines, levels)
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。
@@ -984,7 +971,6 @@ fn push_line_region(
     seg: &[pdf_inspector::TextItem],
     template: &pdf_inspector::extractor::TextLine,
     page: u32,
-    rich: bool,
     regions: &mut Vec<Region>,
 ) {
     if seg.is_empty() {
@@ -996,13 +982,10 @@ fn push_line_region(
         page,
         adaptive_threshold: template.adaptive_threshold,
     };
-    // rich 开：消费 pdf-inspector 的 is_bold/is_italic/几何装饰标记，产出
-    // `**粗**`/`*斜*`/`<u>`/`<s>`；关：走原 text()，字节级行为不变。
-    let text = if rich {
-        line.text_with_formatting(true, true, true)
-    } else {
-        line.text()
-    };
+    // 行内样式（`**`/`<u>` 字面量）曾由已废弃的 `ANYDOC_RICH_TEXT` 经
+    // `TextLine::text_with_formatting` 注入；样式改由结构化 span 承载
+    // （#6 第 4 步），故这里恒走 `text()`。
+    let text = line.text();
     let text = text.trim().to_string();
     if text.is_empty() {
         return;
@@ -1029,8 +1012,8 @@ fn push_line_region(
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerHit, clustered_row_split, drop_oversized_pages, hybrid_disabled_from,
-        is_repeated_furniture, looks_garbled, rich_text_enabled_from,
+        LayerHit, build_line_groups, build_text_docir, clustered_row_split,
+        drop_oversized_pages, hybrid_disabled_from, is_repeated_furniture, looks_garbled,
     };
     use std::collections::BTreeMap;
     use crate::docir::{DocIR, PageSource};
@@ -1287,19 +1270,28 @@ mod tests {
 
     // ── 文字层表格网格重建 + 跨页合并 ──
 
-    /// 编号启发式标题前缀（B3-T）：`一、总则`→`## `，`1.1 适用范围`→`### `；
+    /// 编号启发式标题级别（B3-T）：`一、总则`→2，`1.1 适用范围`→3；
     /// 带结束标点的正文不变；`第X章` 不被 `title_level` 识别 → 不变。
+    /// 编号启发式标题级别（B3-T）：`一、总则`→2，`1.1 适用范围`→3；
+    /// 带结束标点的正文不赋级别；`第X章` 不被 `title_level` 识别 → 不赋级别。
+    /// #6 第 2 步：这里断言的是**级别**（IR 数据），渲染视图单独钉一条。
     #[test]
-    fn title_prefixes_by_numbering_heuristic() {
+    fn title_levels_by_numbering_heuristic() {
         let lines: Vec<String> = vec![
             "一、总则".into(),
             "这是正文第一句。".into(),
             "1.1 适用范围".into(),
             "第二章 附则".into(),
         ];
-        let out = crate::text_health::apply_title_prefixes(&lines, &[], true);
+        let levels = crate::text_health::title_levels(&lines, &[], true);
+        assert_eq!(levels, vec![Some(2), None, Some(3), None]);
+        // 渲染视图 = 旧字面量输出（`#` 前缀由 Region::rendered_line 写出）。
+        let rendered: Vec<String> = crate::text_health::body_regions(lines.clone(), levels)
+            .into_iter()
+            .map(|r| r.rendered_line().into_owned())
+            .collect();
         assert_eq!(
-            out,
+            rendered,
             vec![
                 "## 一、总则".to_string(),
                 "这是正文第一句。".to_string(),
@@ -1358,6 +1350,7 @@ mod tests {
                     page_no: p,
                     regions: vec![body(&format!("第{p}页正文"))],
                     source: PageSource::TextLayerPdf,
+                    dims: crate::docir::PageDims::default(),
                 })
                 .collect(),
         };
@@ -1371,10 +1364,10 @@ mod tests {
     fn missing_pages_is_intersection_of_needs_ocr_and_empty_pages() {
         let doc = DocIR {
             pages: vec![
-                crate::docir::PageIR { page_no: 1, regions: vec![body("有正文")], source: PageSource::TextLayerPdf },
+                crate::docir::PageIR { page_no: 1, regions: vec![body("有正文")], source: PageSource::TextLayerPdf, dims: crate::docir::PageDims::default() },
                 // 页 2 文字层完全无条目（扫描件页）
-                crate::docir::PageIR { page_no: 3, regions: vec![body("   ")], source: PageSource::TextLayerPdf },
-                crate::docir::PageIR { page_no: 4, regions: vec![body("又有正文")], source: PageSource::TextLayerPdf },
+                crate::docir::PageIR { page_no: 3, regions: vec![body("   ")], source: PageSource::TextLayerPdf, dims: crate::docir::PageDims::default() },
+                crate::docir::PageIR { page_no: 4, regions: vec![body("又有正文")], source: PageSource::TextLayerPdf, dims: crate::docir::PageDims::default() },
             ],
         };
         let h = hit_with(4, &[2, 3, 4, 9]);
@@ -1396,6 +1389,7 @@ mod tests {
                 regions: vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
                     .with_kind(RegionKind::Grid(grid))],
                 source: PageSource::TextLayerPdf,
+                dims: crate::docir::PageDims::default(),
             }],
         };
         let h = hit_with(1, &[1]);
@@ -1412,6 +1406,7 @@ mod tests {
                 page_no: 1,
                 regions: vec![],
                 source: PageSource::TextLayerPdf,
+                dims: crate::docir::PageDims::default(),
             }],
         };
         assert!(hit_with(0, &[1]).missing_pages(&doc).is_empty());
@@ -1448,6 +1443,7 @@ mod tests {
                     page_no: p,
                     regions: vec![body("正文")],
                     source: PageSource::TextLayerPdf,
+                    dims: crate::docir::PageDims::default(),
                 })
                 .collect(),
         };
@@ -1478,6 +1474,7 @@ mod tests {
                 page_no: 2,
                 regions: vec![],
                 source: PageSource::TextLayerPdf,
+                dims: crate::docir::PageDims::default(),
             }],
         };
         // 页 1/2/3 都被报 needs_ocr，但只选了 {2} → 缺页只有 2。
@@ -1495,12 +1492,91 @@ mod tests {
         assert_eq!(h3.missing_pages(&doc), vec![1, 3]);
     }
 
-    /// 富文本开关语义：与 hybrid 开关同族——变量存在即开启，默认关闭
-    /// （守护 golden 字节一致）。
+    // `rich_text_switch`（"变量存在即开启"）随 #6 决策 (c) 一并作废：现在这个
+    // 判据只服务告警，且住在调度层，测试见 `convert::tests::deprecated_env_*`。
+    // 本模块不再有任何样式开关——`push_line_region` 恒走 `line.text()`，
+    // 由 `tests/pages_rich_text.rs::rich_text_env_is_a_no_op_with_notice` 从
+    // CLI 侧钉住"设了也不出标记"。
+
+    // ── #6 第 1 步：PDF 文字层 producer 的 dims 口径 ──
+
+    /// 文字层页只能拿到**内容外扩**（max x+width / max y+height），拿不到页面框
+    /// （pdf-inspector 的 `CropBox ∩ MediaBox` 是 `pub(crate)`）。故 kind 必须是
+    /// `ContentExtent`、单位 pt，且 `normalizable() == false`——下游投影据此拒绝
+    /// 归一化，而不是拿一个比页面框小的量当分母算出 >1 的 bbox。
     #[test]
-    fn rich_text_switch() {
-        assert!(!rich_text_enabled_from(None));
-        assert!(rich_text_enabled_from(Some("1")));
-        assert!(rich_text_enabled_from(Some("")));
+    fn text_layer_producer_marks_dims_not_normalizable() {
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(
+            1,
+            vec![ti("正文", 50.0, 400.0), ti("下行", 50.0, 200.0)],
+        );
+        let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
+        let doc = build_text_docir(
+            &by_page,
+            &lines_by_page,
+            &page_w,
+            &page_h,
+            &BTreeMap::new(),
+            1,
+            None,
+        );
+        assert_eq!(doc.pages.len(), 1);
+        let dims = &doc.pages[0].dims;
+        assert_eq!(dims.kind, crate::docir::PageDimsKind::ContentExtent);
+        assert_eq!(dims.unit, crate::docir::PageUnit::Pt);
+        assert!(!dims.normalizable(), "内容外扩不得冒充归一化分母");
+        // 外扩值本身 = 内容盒右/下边界（50+400 / 0+10）。
+        assert!((dims.w - 450.0).abs() < 1e-3, "got {}", dims.w);
+        assert!((dims.h - 10.0).abs() < 1e-3, "got {}", dims.h);
+    }
+
+    // ── #6 第 2 步：标题级别进 IR、`#` 字面量不进 IR ──
+
+    /// 走**真实 producer 通路**（`build_text_docir`）断言：编号标题被赋
+    /// `heading_level`，而 `Region.text` **不含** `#` 字面量——前缀只在渲染层出现。
+    /// 这条是"级别是数据、字面量是渲染产物"的唯一端到端钉（其余单测只到函数级）。
+    #[test]
+    fn producer_stores_level_not_hash_literal() {
+        // 两行**不同 y**（同 y 会被 group_into_lines 并成一行）：标题在上、正文在下。
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(
+            1,
+            vec![
+                tif("一、总则", 50.0, 700.0, 80.0, 12.0, 1),
+                tif("这是正文第一句。", 50.0, 400.0, 140.0, 12.0, 1),
+            ],
+        );
+        let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
+        let doc = build_text_docir(
+            &by_page,
+            &lines_by_page,
+            &page_w,
+            &page_h,
+            &BTreeMap::new(),
+            1,
+            None,
+        );
+        let regions = &doc.pages[0].regions;
+        assert_eq!(regions.len(), 2, "两行须各自成区，got {regions:?}");
+        let heading = regions
+            .iter()
+            .find(|r| r.text.contains("总则"))
+            .expect("标题行应在 IR 里");
+        assert_eq!(heading.heading_level, Some(2), "级别进 IR");
+        assert!(!heading.text.contains('#'), "字面量不得进 IR: {:?}", heading.text);
+        // 正文行不赋级别。
+        assert!(
+            regions
+                .iter()
+                .find(|r| r.text.contains("正文第一句"))
+                .unwrap()
+                .heading_level
+                .is_none()
+        );
+        // 渲染后才有 `##`（幂等：再渲染一次仍是同一份文本，不会叠成 `####`）。
+        let once = doc.render();
+        assert!(once.contains("## 一、总则"), "got: {once}");
+        assert_eq!(once, doc.render(), "渲染无状态，不得叠加前缀");
     }
 }

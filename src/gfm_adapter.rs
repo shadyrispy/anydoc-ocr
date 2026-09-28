@@ -169,11 +169,16 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
 
 /// 多页 StructureResult → DocIR（OCR 源 producer，P1.5）。
 ///
-/// 每页产出 source=`Ocr` 的 [`PageIR`]：正文行（阅读顺序 + 标题前缀已应用）为
+/// 每页产出 source=`Ocr` 的 [`PageIR`]：正文行（阅读顺序 + 标题级别已赋）为
 /// `Body` 区块、识别表 HTML 为 `TableHtml` 区块、Image 补救重建网格为 `Grid`
 /// 区块。跨页 Grid 合并与 GFM 渲染由调用方经 `DocIR::render()` 统一承担
 /// （与文字层表格的段式装配一致，保证阅读顺序）。
-pub fn to_docir(pages: &[StructureResult]) -> DocIR {
+///
+/// `dims`（#6 第 1 步）：页尺寸，**单位是像素**——OCR 的版面框活在送推理的位图
+/// 空间里（见 [`crate::docir::PageDims`] 的单位口径）。按页下标对齐 `pages`；
+/// 长度不足或该槽为 `None` 时，该页记 [`PageDims::default`]（`Unknown`），
+/// 绝不拿"内容外扩"冒充页面框。
+pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR {
     let debug = std::env::var("ANYDOC_DEBUG_GFM").is_ok();
     let mut doc = DocIR::default();
 
@@ -284,24 +289,26 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
                 );
             }
         }
-        // 本页正文行（标题前缀已应用，# 前缀由 docir 渲染层识别空行语义）+
-        // layout 表格 HTML。ADR-0009：块驱动阅读序 + 段落合并，postprocess 做
-        // 连字符/全角归一，最后依据版面 title 块注入 markdown 标题前缀。
+        // 本页正文行（标题级别已赋，`#` 前缀由 docir 渲染层写出并据此施加空行
+        // 语义；#6 第 2 步）+ layout 表格 HTML。ADR-0009：块驱动阅读序 + 段落
+        // 合并，postprocess 做连字符/全角归一，最后依据版面 title 块赋 markdown
+        // 标题级别。
         // T6：列表项配对重组（OCR 通路）——det 常把 `b)` 拆成孤立前缀行 + 内容
         // 游离行，此处把孤立 marker 与下一内容行合并为一项（与 a) 形态一致）。
         // T6-②：配对前剔除孤立 ≤1 字符噪声碎片（`馆`），防 marker 误配对。
-        let mut out: Vec<Region> = merge_isolated_markers(
-            apply_title_prefixes(
-                postprocess_lines(order_structure(page, &regions)),
-                page,
-            )
+        let mut out: Vec<Region> = {
+            let lines = postprocess_lines(order_structure(page, &regions));
+            // hints 对**未加前缀**的行匹配（与旧通路同口径），赋级别不写字面量。
+            let layout_on = std::env::var("ANYDOC_HEADINGS_LAYOUT").is_ok();
+            let titles = title_hints(page, layout_on);
+            let levels = crate::text_health::title_levels(&lines, &titles, false);
+            crate::text_health::body_regions(lines, levels)
+        };
+        let kept: Vec<Region> = out
             .into_iter()
-            .filter(|l| !is_noise_fragment(l))
-            .collect(),
-        )
-        .into_iter()
-        .map(|l| Region::new(0.0, 0.0, 0.0, 0.0, l))
-        .collect();
+            .filter(|r| !is_noise_fragment(r))
+            .collect();
+        out = merge_isolated_markers(kept);
         for table in &tables {
             if let Some(html) = &table.html_structure {
                 out.push(
@@ -339,7 +346,13 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
                 ));
             }
         }
-        doc.push_page(pi as u32, PageSource::Ocr, out);
+        let dims = dims
+            .get(pi)
+            .copied()
+            .flatten()
+            .map(|(w, h)| crate::docir::PageDims::page_box_px(w, h))
+            .unwrap_or_default();
+        doc.push_page(pi as u32, PageSource::Ocr, out, dims);
     }
     doc
 }
@@ -349,8 +362,12 @@ pub fn to_docir(pages: &[StructureResult]) -> DocIR {
 /// `to_docir` 产 IR → 跨页表合并 pass → 统一渲染。批量 OCR 主路径
 /// （`convert_pdf_ocr` / 质量探针 / OFD 整页 OCR）经此获得与旧 emitter
 /// 通路字节一致的输出（golden 守护，AC-8）。
-pub fn to_markdown(pages: &[StructureResult]) -> String {
-    let mut doc = to_docir(pages);
+///
+/// `dims` 语义同 [`to_docir`]（#6 第 1 步；渲染层不消费，故传空数组与传真实
+/// 尺寸的输出**逐字节相同**——这条由本模块单测 `dims_do_not_affect_rendered_markdown`
+/// 钉住；`docir`/`gfm_adapter` 是 `pub(crate)`，集成测试看不到 IR，故钉在库内）。
+pub fn to_markdown(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> String {
+    let mut doc = to_docir(pages, dims);
     crate::docir::passes::cross_page_table::run(&mut doc);
     doc.render()
 }
@@ -368,15 +385,23 @@ pub fn to_markdown(pages: &[StructureResult]) -> String {
 ///
 /// 不配对情形：下一行是 marker / `#` 标题（避免跨项/跨标题配对）。
 /// 仅 OCR 通路消费（`to_docir`）；文字层通路不经此函数（T6 防回归约束）。
-fn merge_isolated_markers(lines: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+///
+/// #6 第 2 步起本函数收发 [`Region`]，三处标题判定一律走
+/// [`rendered_line`](Region::rendered_line)（渲染视图）——与旧"producer 先写
+/// `#` 字面量、这里 `starts_with('#')`"逐条等价。另注意进入配对分支的 `cur`
+/// 必满足 `heading_level == None`：`is_isolated_marker` 对渲染视图判定，而
+/// `Some(lv)` 的渲染视图必然以 `#` 开头、会被它排除，故 `cur.text` 就是
+/// 渲染文本，拼接时无需再处理前缀。
+fn merge_isolated_markers(lines: Vec<Region>) -> Vec<Region> {
+    let mut out: Vec<Region> = Vec::with_capacity(lines.len());
     let mut iter = lines.into_iter().peekable();
     while let Some(mut cur) = iter.next() {
-        if is_isolated_marker(&cur) {
-            let mut skipped: Vec<String> = Vec::new();
-            let mut paired: Option<String> = None;
+        if is_isolated_marker(&cur.rendered_line()) {
+            let mut skipped: Vec<Region> = Vec::new();
+            let mut paired: Option<Region> = None;
             while let Some(next) = iter.peek() {
-                let nxt = next.trim_start();
+                let nxt = next.rendered_line();
+                let nxt = nxt.trim_start();
                 if nxt.starts_with('#') || is_isolated_marker(nxt) {
                     break; // 标题/下一个 marker：不跨过配对
                 }
@@ -389,8 +414,8 @@ fn merge_isolated_markers(lines: Vec<String>) -> Vec<String> {
             }
             out.extend(skipped);
             if let Some(content) = paired {
-                let content = content.trim_start();
-                cur = format!("{cur} {content}");
+                let content = content.rendered_line();
+                cur.text = format!("{} {}", cur.text, content.trim_start());
             }
         }
         out.push(cur);
@@ -408,9 +433,16 @@ fn is_page_number(s: &str) -> bool {
 /// 如页眉残片「馆」。layout 漏检的碎字符在[列表配对]前剔除，避免被 marker
 /// 误配对（`c) 馆`）。单字符正文行罕见（"注"/"图"等多带标点或上下文），
 /// 且 bullet 单字符（`-`/`•`）是 marker 不受影响，误删风险可控。
-fn is_noise_fragment(line: &str) -> bool {
-    let t = line.trim();
-    if t.is_empty() || t.starts_with('#') {
+///
+/// #6 第 2 步起收 [`Region`]：标题判定用 [`is_heading_trimmed`](Region::is_heading_trimmed)
+/// （渲染视图 + `trim`），与旧"producer 已写 `#` 字面量、这里 `line.trim().starts_with('#')`"
+/// 等价——被赋级别的行渲染后必然以 `#` 开头，两版都不会被当成碎片删掉。
+fn is_noise_fragment(region: &Region) -> bool {
+    if region.is_heading_trimmed() {
+        return false;
+    }
+    let t = region.text.trim();
+    if t.is_empty() {
         return false;
     }
     if t.chars().count() > 1 {
@@ -419,26 +451,8 @@ fn is_noise_fragment(line: &str) -> bool {
     !is_isolated_marker(t)
 }
 
-/// 依据版面模型（PP-DocLayout）的 title 块为输出行添加 markdown 标题前缀。
-///
-/// MinerU 式标题检测：仅对 `LayoutElementType::is_title()`（DocTitle/ParagraphTitle）
-/// 的块加前缀；级别默认来自编号启发式 `title_level`，无编号的短标题（<=40 字符、
-/// 不以 。，；： 结尾）回落为 `##`。匹配规则：输出行 trim 后与标题文本相等
-/// 或一方包含另一方；已带 `#` 前缀的行跳过，防双重标记。
-///
-/// `ANYDOC_HEADINGS_LAYOUT`（存在即开启、默认关闭）：为**无编号**的标题候选补上
-/// 两条布局信号（行高、缩进），与编号语义做三信号加权投票（见
-/// [`crate::heading_levels`]），把默认被抹平为同级的标题按字号/缩进拉开层级。
-/// 编号命中的标题维持原级别（语义权重 2 恒 ≥ 任一单布局信号），故开关只影响
-/// 原本回落 `##` 的那批；默认（关闭）时 `titles` 向量逐字节等价旧行为。
-fn apply_title_prefixes(lines: Vec<String>, page: &StructureResult) -> Vec<String> {
-    let layout_on = std::env::var("ANYDOC_HEADINGS_LAYOUT").is_ok();
-    let titles = title_hints(page, layout_on);
-    // 布局驱动：hints 来自版面标题块，numbering=false 不抹平文字层差异。
-    crate::text_health::apply_title_prefixes(&lines, &titles, false)
-}
-
-/// 从版面 title 块计算 `(标题文本, markdown 级别)` 提示，供 [`apply_title_prefixes`] 注入。
+/// 从版面 title 块计算 `(标题文本, markdown 级别)` 提示，供
+/// [`crate::text_health::title_levels`] 赋级别（#6 第 2 步起只给级别，不写 `#`）。
 ///
 /// `layout_on` 为纯参数而非直接读环境，便于无 `unsafe set_var` 的单测覆盖两条分支：
 /// - `false`（默认）：级别 = 编号语义 或 无编号短标题回落 2，逐字节等价旧行为；
@@ -545,59 +559,78 @@ mod tests {
     use oar_ocr::processors::BoundingBox;
 
     // ── T6：列表项配对重组 ──
+    //
+    // #6 第 2 步后这两个函数收发 [`Region`]，故测试用 [`ln`]（正文行）/ [`hd`]
+    // （带级别行）构造，断言一律走 `rendered_line`（渲染视图）——与改造前对
+    // `Vec<String>` 的断言等价。
+    fn ln(text: &str) -> Region {
+        Region::new(0.0, 0.0, 0.0, 0.0, text.to_string())
+    }
+    fn hd(text: &str, level: u8) -> Region {
+        ln(text).with_heading_level(Some(level))
+    }
+    fn rendered(lines: &[Region]) -> Vec<String> {
+        lines.iter().map(|r| r.rendered_line().into_owned()).collect()
+    }
 
     #[test]
     fn merge_isolated_marker_with_next_content() {
         // b) 孤立前缀 + 内容行 → 合并为一项（与 a) 形态一致）
         let lines = vec![
-            "a) 本部分更加强调性能要求".into(),
-            "b)".into(),
-            "本部分强调规范的内容只包括".into(),
-            "c)".into(),
-            "本部分将原《规范的编写》移入附录".into(),
+            ln("a) 本部分更加强调性能要求"),
+            ln("b)"),
+            ln("本部分强调规范的内容只包括"),
+            ln("c)"),
+            ln("本部分将原《规范的编写》移入附录"),
         ];
         let out = merge_isolated_markers(lines);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], "a) 本部分更加强调性能要求");
-        assert_eq!(out[1], "b) 本部分强调规范的内容只包括");
-        assert_eq!(out[2], "c) 本部分将原《规范的编写》移入附录");
+        assert_eq!(
+            rendered(&out),
+            vec![
+                "a) 本部分更加强调性能要求",
+                "b) 本部分强调规范的内容只包括",
+                "c) 本部分将原《规范的编写》移入附录",
+            ]
+        );
     }
 
     #[test]
     fn merge_keeps_heading_untouched() {
-        // 孤立 marker 后是标题行（# 前缀）→ 不配对，标题不被吞
-        let lines = vec!["b)".into(), "# 4. 总则".into(), "正文".into()];
-        let out = merge_isolated_markers(lines);
-        assert_eq!(out, vec!["b)", "# 4. 总则", "正文"]);
+        // 孤立 marker 后是标题行 → 不配对，标题不被吞。
+        // 两种形态都要覆盖：IR 赋级别（`#` 由渲染层写出）与来源文本自带 `#` 字面量。
+        let by_level = merge_isolated_markers(vec![ln("b)"), hd("4. 总则", 1), ln("正文")]);
+        assert_eq!(rendered(&by_level), vec!["b)", "# 4. 总则", "正文"]);
+        let by_literal = merge_isolated_markers(vec![ln("b)"), ln("# 4. 总则"), ln("正文")]);
+        assert_eq!(rendered(&by_literal), vec!["b)", "# 4. 总则", "正文"]);
     }
 
     #[test]
     fn merge_no_marker_unchanged() {
-        let lines = vec!["普通正文一行".into(), "普通正文二行".into()];
-        assert_eq!(merge_isolated_markers(lines.clone()), lines);
+        let lines = vec![ln("普通正文一行"), ln("普通正文二行")];
+        assert_eq!(rendered(&merge_isolated_markers(lines.clone())), rendered(&lines));
     }
 
     #[test]
     fn merge_consecutive_markers_not_paired() {
         // 连续 marker：b) 不把 c) 当内容；但 c) 仍与后续内容行配对
-        let lines = vec!["b)".into(), "c)".into(), "内容".into()];
+        let lines = vec![ln("b)"), ln("c)"), ln("内容")];
         let out = merge_isolated_markers(lines);
-        assert_eq!(out, vec!["b)", "c) 内容"]);
+        assert_eq!(rendered(&out), vec!["b)", "c) 内容"]);
     }
 
     #[test]
     fn merge_skips_page_number_before_content() {
         // c) 后是页码 52，再后才是内容 → 跳过页码，配对真正内容；页码保留在配对项前
         let lines = vec![
-            "b)".into(),
-            "本部分强调规范的内容".into(),
-            "c)".into(),
-            "52".into(),
-            "本部分将原《规范的编写》移入附录".into(),
+            ln("b)"),
+            ln("本部分强调规范的内容"),
+            ln("c)"),
+            ln("52"),
+            ln("本部分将原《规范的编写》移入附录"),
         ];
         let out = merge_isolated_markers(lines);
         assert_eq!(
-            out,
+            rendered(&out),
             vec![
                 "b) 本部分强调规范的内容",
                 "52",
@@ -619,30 +652,45 @@ mod tests {
 
     #[test]
     fn noise_fragment_detector() {
-        assert!(is_noise_fragment("馆"), "单字符噪声残片");
-        assert!(is_noise_fragment(" 馆 "), "允许首尾空白");
-        assert!(!is_noise_fragment(""), "空行保留");
-        assert!(!is_noise_fragment("a)"), "marker 保留");
-        assert!(!is_noise_fragment("-"), "bullet marker 保留");
-        assert!(!is_noise_fragment("# 标题"), "标题保留");
-        assert!(!is_noise_fragment("本部分强调"), "内容保留");
-        assert!(!is_noise_fragment("52"), "数字由 is_page_number 处理");
+        assert!(is_noise_fragment(&ln("馆")), "单字符噪声残片");
+        assert!(is_noise_fragment(&ln(" 馆 ")), "允许首尾空白");
+        assert!(!is_noise_fragment(&ln("")), "空行保留");
+        assert!(!is_noise_fragment(&ln("a)")), "marker 保留");
+        assert!(!is_noise_fragment(&ln("-")), "bullet marker 保留");
+        // 标题保留：IR 赋级别（渲染视图带 `#`）与来源字面量两条都要钉
+        assert!(!is_noise_fragment(&hd("标题", 2)), "带级别的标题保留");
+        assert!(!is_noise_fragment(&ln("# 标题")), "字面量标题保留");
+        assert!(!is_noise_fragment(&ln("本部分强调")), "内容保留");
+        assert!(!is_noise_fragment(&ln("52")), "数字由 is_page_number 处理");
     }
 
     #[test]
     fn merge_skips_noise_fragment_then_pairs_content() {
         // 馆（噪声残片）在 c) 与内容之间：merge 前已被过滤 → c) 直接配到内容
-        let lines: Vec<String> = vec![
-            "c)".into(),
-            "馆".into(),
-            "本部分将原《规范的编写》移入附录".into(),
-        ];
-        let filtered: Vec<String> = lines
+        let lines = vec![ln("c)"), ln("馆"), ln("本部分将原《规范的编写》移入附录")];
+        let filtered: Vec<Region> = lines
             .into_iter()
-            .filter(|l| !is_noise_fragment(l))
+            .filter(|r| !is_noise_fragment(r))
             .collect();
         let out = merge_isolated_markers(filtered);
-        assert_eq!(out, vec!["c) 本部分将原《规范的编写》移入附录"]);
+        assert_eq!(rendered(&out), vec!["c) 本部分将原《规范的编写》移入附录"]);
+    }
+
+    /// #6 第 2 步：级别在 marker 配对与噪声过滤后必须**留在** Region 上
+    /// （旧通路靠字面量携带，新通路靠字段；这两处是唯一的"文本被改写"点，
+    /// 级别若在那里丢了，markdown 就再也拼不回 `##`）。
+    #[test]
+    fn heading_level_survives_marker_merge_and_filter() {
+        let lines = vec![hd("1. 总则", 2), ln("b)"), ln("内容行"), ln("馆")];
+        let kept: Vec<Region> = lines
+            .into_iter()
+            .filter(|r| !is_noise_fragment(r))
+            .collect();
+        let out = merge_isolated_markers(kept);
+        assert_eq!(rendered(&out), vec!["## 1. 总则", "b) 内容行"]);
+        assert_eq!(out[0].heading_level, Some(2), "级别仍在 IR 上");
+        assert_eq!(out[0].text, "1. 总则", "text 不含字面量");
+        assert_eq!(out[1].heading_level, None);
     }
 
     fn cell(row: usize, col: usize, text: &str) -> TableCell {
@@ -920,7 +968,7 @@ mod tests {
         let p1 = page_with_image_grid(&[("1", "甲"), ("2", "乙")], (0.0, 0.0, 50.0, 50.0));
         // 页2：page_with_image_grid 自动生成重复表头 + 续行
         let p2 = page_with_image_grid(&[("3", "丙")], (0.0, 0.0, 50.0, 40.0));
-        let out = to_markdown(&[p1, p2]);
+        let out = to_markdown(&[p1, p2], &[]);
         assert_eq!(out.matches("<table>").count(), 1, "跨页合并为 1 表");
         assert!(out.contains("丙"), "续行在");
         assert_eq!(out.matches("编号").count(), 1, "表头去重（仅 1 次表头）");
@@ -1000,5 +1048,86 @@ mod tests {
             TableType::Unknown,
         );
         assert!(is_false_positive_table(&t));
+    }
+
+    // ── #6 第 1 步：页尺寸进 IR（写而不消费）──
+
+    /// 单页 OCR 结果（无 layout 块 → 走 `order_structure` 的降级路径）。
+    fn ocr_page_1() -> StructureResult {
+        StructureResult {
+            layout_elements: vec![],
+            text_regions: Some(vec![tr(10.0, 10.0, 400.0, 25.0, "正文行")]),
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        }
+    }
+
+    /// **第 1 步零回归的机制性保证**：渲染层不消费 `dims`，故传空数组与传真实
+    /// 位图尺寸的 markdown 必须逐字节相同（否则第 1 步就不是"纯 IR 增量"）。
+    /// `docir`/`gfm_adapter` 是 `pub(crate)`、集成测试看不到 IR，所以这条钉在库内。
+    #[test]
+    fn dims_do_not_affect_rendered_markdown() {
+        let with = to_markdown(&[ocr_page_1()], &[Some((1240, 1754))]);
+        let without = to_markdown(&[ocr_page_1()], &[]);
+        assert_eq!(with, without, "dims 不得改变输出的任何一个字节");
+    }
+
+    /// OCR producer 把位图尺寸如实写进 IR：`PageBox` + 像素单位（版面框本就活在
+    /// 送推理的位图空间里）。
+    #[test]
+    fn ocr_producer_records_page_box_in_px() {
+        let d = to_docir(&[ocr_page_1()], &[Some((1240, 1754))]);
+        let dims = &d.pages[0].dims;
+        assert_eq!(dims.kind, crate::docir::PageDimsKind::PageBox);
+        assert_eq!(dims.unit, crate::docir::PageUnit::Px);
+        assert!((dims.w - 1240.0).abs() < 1e-6 && (dims.h - 1754.0).abs() < 1e-6);
+        assert!(dims.normalizable(), "OCR 页的位图宽高就是合法归一化分母");
+    }
+
+    /// **下标契约**（唯一可能悄悄错配的地方）：`dims` 按 `pages` 的迭代下标对齐，
+    /// 两页各给不同尺寸 → 反序/串位会立刻暴露。markdown 看不到 dims，golden
+    /// 永远抓不到这类错配，只能靠这条钉住。
+    #[test]
+    fn dims_align_with_page_index_not_order_of_arrival() {
+        // 每次现造（StructureResult 不可复用：to_docir 拿走所有权）
+        fn ocr_page_2() -> StructureResult {
+            StructureResult {
+                layout_elements: vec![],
+                text_regions: Some(vec![tr(10.0, 10.0, 400.0, 25.0, "第二页")]),
+                tables: Vec::new(),
+                ..StructureResult::new("t", 1)
+            }
+        }
+        let d = to_docir(&[ocr_page_1(), ocr_page_2()], &[Some((100, 200)), Some((300, 400))]);
+        assert_eq!(d.pages.len(), 2);
+        assert!((d.pages[0].dims.w - 100.0).abs() < 1e-6, "页 0 应配 100×200");
+        assert!((d.pages[0].dims.h - 200.0).abs() < 1e-6);
+        assert!((d.pages[1].dims.w - 300.0).abs() < 1e-6, "页 1 应配 300×400");
+        assert!((d.pages[1].dims.h - 400.0).abs() < 1e-6);
+        // 只给一页的尺寸：另一页 Unknown，而不是"借用"邻居的。
+        let partial = to_docir(&[ocr_page_1(), ocr_page_2()], &[Some((100, 200))]);
+        assert_eq!(
+            partial.pages[1].dims.kind,
+            crate::docir::PageDimsKind::Unknown,
+            "缺槽不得顺延邻居的尺寸"
+        );
+    }
+
+    /// dims 槽位缺失（空数组）与该槽为 `None` 都只能记 `Unknown`——
+    /// 绝不允许拿"内容外扩"或别的页的尺寸冒充页面框。
+    #[test]
+    fn missing_dims_record_unknown_not_a_guess() {
+        for case in [&[] as &[Option<(u32, u32)>], &[None], &[None, Some((1, 1))]] {
+            let d = to_docir(&[ocr_page_1()], case);
+            let dims = &d.pages[0].dims;
+            assert_eq!(
+                dims.kind,
+                crate::docir::PageDimsKind::Unknown,
+                "dims={case:?} 时应记 Unknown"
+            );
+            assert_eq!(dims.unit, crate::docir::PageUnit::Unknown);
+            assert!(!dims.normalizable());
+            assert_eq!((dims.w, dims.h), (0.0, 0.0));
+        }
     }
 }
