@@ -118,14 +118,18 @@ fn order_structure_block_driven(page: &StructureResult, regions: &[Region]) -> V
 
     let scale = page_scale(page);
     let mut consumed: Vec<bool> = vec![false; regions.len()];
-    let mut out = assemble_blocks(&blocks, regions, scale, &mut consumed);
+    let mut out = assemble_blocks(page, &blocks, regions, scale, &mut consumed);
     append_leftover(page, regions, scale, &consumed, &mut out);
     out
 }
 
 /// 块级装配（消除 block_driven_order / fallback_order / leftover 的循环重复）：
 /// 对每个块收集中心点落在 bbox 内的未消费 regions → 块内列检测 + 段落合并。
+///
+/// #9 修法 1：块若已带 upstream stitch 好的文本（`LayoutElement.text`），
+/// **优先用它**，det/rec 行只在无文本时兜底。原因见 [`stitched_block_text`]。
 fn assemble_blocks<'a>(
+    page: &StructureResult,
     blocks: &[&'a LayoutElement],
     regions: &'a [Region],
     scale: (f32, f32, f32, f32),
@@ -141,6 +145,40 @@ fn assemble_blocks<'a>(
             })
             .map(|(i, _)| i)
             .collect();
+        // 修法 1/2/3：stitch 文本优先。命中时块内 regions **一律标记已消费**
+        // ——它们的文本已由 stitch 拼进元素，再留给 leftover 就是重复输出。
+        if let Some(sb) = stitched_block_text(page, blk) {
+            for &i in &inner_idx {
+                consumed[i] = true;
+            }
+            // stitch 用 `is_overlapping`（IoA，宽松）匹配 regions，块内收集用
+            // `norm_membership`（中心点归一化，严格）——两个口径不一致，实测
+            // 整句/公式行常因此**没被 inner_idx 命中**却已被 stitch 拼走。
+            // 此时若只消费 inner_idx，leftover 会把同一批文本再输出一遍
+            // （formula_mixed 实测：整句与 `V=IR(1)` 各出两次）。故再按
+            // "文本已被拼走"消费一次：region 文本是 stitch 文本或其吸收原文
+            // 的子串即视为已消费（与 stitch 的宽松匹配同方向）。
+            let haystack: Vec<&str> = sb
+                .lines
+                .iter()
+                .map(|s| s.as_str())
+                .chain(sb.absorbed.iter().map(|s| s.as_str()))
+                .collect();
+            for (i, r) in regions.iter().enumerate() {
+                if consumed[i] {
+                    continue;
+                }
+                let t = r.text.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                if haystack.iter().any(|h| h.contains(t)) {
+                    consumed[i] = true;
+                }
+            }
+            out.extend(sb.lines);
+            continue;
+        }
         if inner_idx.is_empty() {
             continue;
         }
@@ -151,6 +189,119 @@ fn assemble_blocks<'a>(
         out.extend(merge_into_paragraphs(&order_within_block(&inner)));
     }
     out
+}
+
+/// #9 修法 1/2/3：上游 stitch 已拼好的块文本 → 该块的正文行。
+///
+/// `None` = 该块无 stitch 文本（走 det/rec 行兜底）；`Some(lines)` = 已定稿的
+/// 行（`Some(vec![])` 是"这块不产出正文"，如行内公式与编号——内容已并进别处）。
+///
+/// **为什么优先用 stitch 文本**（#9 第 0 步取证，真 CLI vs 真 MinerU basic
+/// 同件对拍）：行内公式、公式编号这些"行内/行尾对象"被 upstream 拼回了原句
+/// （`stitching.rs` 的 `sort_and_join_texts` + `inject_inline_formulas`），而
+/// 我们此前**只从 `text_regions` 重建正文**，把拼好的整句扔了 → 行内公式以
+/// 孤立行落进正文、被段落合并焊成 `The relationE=m c^{2}` 并与下一段粘连。
+/// 这不是模型差距，是我们少用了一路已算好的信息。
+///
+/// 形态决策落在本函数而不在渲染层的原因：[`order_structure`] 的输出是**字符串
+/// 行**（历史接口），`$$` 定界与编号并入只能在"块 → 行"这一步决定；#6 未来把
+/// 阅读序 Region 化之后，这两条可以下移到渲染层按 kind 分流。
+fn stitched_block_text(page: &StructureResult, blk: &LayoutElement) -> Option<StitchedBlock> {
+    use oar_ocr::domain::structure::LayoutElementType as T;
+
+    let label = blk.label.as_deref().unwrap_or("");
+    // 行内公式元素：内容已由上游并进 Text 元素（inject 逻辑），且实测其
+    // `text` 会被 OCR 匹配污染成整句 → 不输出，防重复。
+    if blk.element_type == T::Formula && label.contains("inline") {
+        return Some(StitchedBlock::empty());
+    }
+    // 公式编号：修法 3——就近并入同行 display 公式，不独立成行。
+    if blk.element_type == T::FormulaNumber {
+        // 编号元素自己的文本也算"已吸收"（被并进公式块），供调用方消费
+        // 对应 region、防 leftover 再输出一遍 `(1)`。
+        let raw = blk.text.as_deref().unwrap_or("").trim().to_string();
+        return Some(StitchedBlock {
+            lines: Vec::new(),
+            absorbed: if raw.is_empty() { Vec::new() } else { vec![raw] },
+        });
+    }
+    let text = blk.text.as_ref()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if blk.element_type == T::Formula {
+        // 修法 2：行间公式带 `$$ … $$` 定界符（此前裸 LaTeX/rec 文本，无定界）。
+        // 修法 3：同行右侧的公式编号并进公式块（`\tag{…}`，对齐 MinerU
+        // `optimize_hybrid_formula_number_blocks` 的形态），不再独立成行。
+        let num = nearest_formula_number(page, blk);
+        let tag = num
+            .as_ref()
+            .map(|(n, _)| format!(" \\tag{{{n}}}"))
+            .unwrap_or_default();
+        let absorbed = num.map(|(_, raw)| raw).into_iter().collect();
+        return Some(StitchedBlock {
+            lines: vec![format!("$$ {text}{tag} $$")],
+            absorbed,
+        });
+    }
+    // Text（及其它有 text 的元素）：按 stitch 的换行切行（段落边界由上游
+    // 几何判定给出，比层内段落合并更准，且 `order_index` 从此真正生效）。
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some(StitchedBlock { lines, absorbed: Vec::new() })
+}
+
+/// stitch 产出的块文本：`lines` 是要输出的正文行，`absorbed` 是**已被并进
+/// `lines` 的原文**（公式编号等）——不输出，只用于消费对应 region。
+struct StitchedBlock {
+    lines: Vec<String>,
+    absorbed: Vec<String>,
+}
+
+impl StitchedBlock {
+    fn empty() -> Self {
+        Self { lines: Vec::new(), absorbed: Vec::new() }
+    }
+}
+
+/// 修法 3：取与公式块**同一 y 带、且在其右侧**的公式编号文本（`(1)` → `1`）。
+///
+/// 判据对齐 MinerU 的几何口径：中心 y 落在公式块垂直范围内（带 25% 容差），
+/// 且编号左缘在公式块水平中线右侧。多个候选取最近的。
+///
+/// 返回 `(编号正文, 原文)`：正文用于 `\tag{…}`，原文用于消费对应 region。
+fn nearest_formula_number(
+    page: &StructureResult,
+    formula: &LayoutElement,
+) -> Option<(String, String)> {
+    let fy0 = formula.bbox.y_min();
+    let fy1 = formula.bbox.y_max();
+    let tol = (fy1 - fy0) * 0.25;
+    let mid_x = (formula.bbox.x_min() + formula.bbox.x_max()) / 2.0;
+    let mut best: Option<(f32, String, String)> = None;
+    for el in &page.layout_elements {
+        if el.element_type != oar_ocr::domain::structure::LayoutElementType::FormulaNumber {
+            continue;
+        }
+        let Some(raw) = el.text.as_ref() else { continue };
+        let cy = (el.bbox.y_min() + el.bbox.y_max()) / 2.0;
+        if cy < fy0 - tol || cy > fy1 + tol || el.bbox.x_min() < mid_x {
+            continue;
+        }
+        let n = raw.trim().trim_matches('$').trim().trim_matches('(').trim_end_matches(')');
+        let n = n.trim();
+        if n.is_empty() {
+            continue;
+        }
+        let d = (cy - (fy0 + fy1) / 2.0).abs();
+        if best.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
+            best = Some((d, n.to_string(), raw.trim().to_string()));
+        }
+    }
+    best.map(|(_, n, raw)| (n, raw))
 }
 
 /// 未被任何块消费的 regions（bbox 不匹配，模型漏检）：追加到末尾，按 y 排序。
@@ -217,7 +368,7 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
                         .partial_cmp(&b.bbox.y_min())
                         .unwrap_or(std::cmp::Ordering::Equal),
                 });
-                out.extend(assemble_blocks(&els, regions, scale, &mut consumed));
+                out.extend(assemble_blocks(page, &els, regions, scale, &mut consumed));
             }
             if !out.is_empty() {
                 return out;
@@ -291,6 +442,127 @@ mod tests {
         let mut el = LayoutElement::new(BoundingBox::from_coords(x0, y0, x1, y1), ty, 0.9);
         el.order_index = order;
         el
+    }
+
+    /// 带 stitch 文本与 label 的块元素（#9 修法 1/2/3 用）。
+    fn el_text(
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        ty: LayoutElementType,
+        order: Option<u32>,
+        label: &str,
+        text: &str,
+    ) -> LayoutElement {
+        let mut el = block_el(x0, y0, x1, y1, ty, order);
+        el.label = Some(label.into());
+        el.text = Some(text.into());
+        el
+    }
+
+    /// #9 修法 1：Text 元素带 stitch 文本 → 直接用它（段落边界由上游几何判定），
+    /// 不再从 regions 重建（此前会把行内公式句与邻居焊在一起）。
+    #[test]
+    fn stitched_text_preferred_over_region_merge() {
+        let page = StructureResult {
+            layout_elements: vec![el_text(
+                0.0,
+                0.0,
+                1000.0,
+                100.0,
+                LayoutElementType::Text,
+                Some(0),
+                "text",
+                "整句带行内公式\n第二段",
+            )],
+            text_regions: Some(vec![
+                tr(10.0, 10.0, 900.0, 30.0, "整句带行内公式"),
+                tr(10.0, 50.0, 900.0, 70.0, "第二段"),
+            ]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        let out = order_structure(&page, &regions);
+        assert_eq!(out, vec!["整句带行内公式", "第二段"]);
+    }
+
+    /// #9 修法 2/3：display 公式带 `$$ … $$` 且同行右侧编号并入 `\tag{…}`；
+    /// inline 公式元素（内容已在 Text 里）不输出，防重复。
+    #[test]
+    fn display_formula_delimited_and_number_absorbed() {
+        let page = StructureResult {
+            layout_elements: vec![
+                el_text(
+                    100.0,
+                    100.0,
+                    600.0,
+                    160.0,
+                    LayoutElementType::Formula,
+                    Some(0),
+                    "display_formula",
+                    "V=IR",
+                ),
+                el_text(
+                    640.0,
+                    110.0,
+                    700.0,
+                    150.0,
+                    LayoutElementType::FormulaNumber,
+                    None,
+                    "formula_number",
+                    "(1)",
+                ),
+                el_text(
+                    100.0,
+                    200.0,
+                    600.0,
+                    260.0,
+                    LayoutElementType::Formula,
+                    Some(1),
+                    "inline_formula",
+                    "E=mc2",
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(100.0, 110.0, 600.0, 150.0, "V=IR"),
+                tr(640.0, 120.0, 700.0, 140.0, "(1)"),
+            ]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        let out = order_structure(&page, &regions);
+        // 公式带定界符 + 编号并入；编号不独立成行；inline 公式不出
+        assert_eq!(out, vec!["$$ V=IR \\tag{1} $$"], "got: {out:?}");
+    }
+
+    /// 元素无 stitch 文本 → 兜底走 region 装配（修法 1 前的行为，不得回归）。
+    #[test]
+    fn no_stitched_text_falls_back_to_regions() {
+        let page = StructureResult {
+            layout_elements: vec![block_el(
+                0.0,
+                0.0,
+                1000.0,
+                200.0,
+                LayoutElementType::Text,
+                Some(0),
+            )],
+            // 前三行紧密、末行远离：段落合并的阈值是**行距中位数 ×1.5**，
+            // 故必须给足样本数才能让末行独立成段（两行时中位数即唯一间距，恒合并）。
+            text_regions: Some(vec![
+                tr(10.0, 10.0, 900.0, 25.0, "上"),
+                tr(10.0, 30.0, 900.0, 45.0, "中"),
+                tr(10.0, 50.0, 900.0, 65.0, "下"),
+                tr(10.0, 400.0, 900.0, 415.0, "末"),
+            ]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        assert_eq!(order_structure(&page, &regions), vec!["上中下", "末"]);
     }
 
     /// Region 从 TextRegion 转换（测试辅助）。

@@ -952,7 +952,9 @@ PDF 线投票口径（046b08a ②），但**没有视觉兜底** → 纯图片�
 
 ## #9 表内对象吸收 + 行内公式 / 公式编号
 
-状态：**第 0 步已完成（2026-09-27，两侧同件对拍），结论是"检测侧已具备、装配侧丢信息"**。
+状态：**第 0 步已完成（2026-09-27，两侧同件对拍），结论是"检测侧已具备、装配侧丢信息"**；
+**修法 1-4 已落地（2026-09-28，基线变更批，golden UPDATE 已用，仅 2/30 条漂移且均为改善）**，
+修法 5（表内图）仍不做（第 0 步没量到）。
 本条目原写的"表内公式/图丢"方向对，但**根因不在公式识别**——MFD/MFR 全在跑且结果与
 MinerU basic 逐字一致；丢在**我们把上游已经拼好的 `LayoutElement.text` 扔了**。
 
@@ -1038,6 +1040,67 @@ latex `\sim`，MinerU 直接吐 `$\smile$`。第二版换成灰度渐变块后�
    det/rec 读出残字 → 量到的"掉行"混了排版伪影。现在用 renderer **实测宽度**顺排。
 2. `fig.add_axes` 是**归一化 + 左下角原点**，直接拿数据坐标算 y 会把格内图画到表格外
    （第一版画到尾行文字上，两家各吞半行）。现在用 `cell_band()` 显式换算。
+
+### 修法 1-4 已落地（2026-09-28——基线变更批，`ANYDOC_GOLDEN_UPDATE` 已用）
+
+**改了什么**：
+
+- `src/reading_order/blocks.rs`：`assemble_blocks` 加 stitch 文本优先路径
+  （新函数 `stitched_block_text`）——块若已带上游 stitch 好的
+  `LayoutElement.text`，**直接按它的换行切行输出**，det/rec 行只在无文本
+  时兜底。修法 1（正文取 stitch 句）+ 2（`$$ … $$` 定界）+ 3（同行右侧
+  `FormulaNumber` 并入 `\tag{…}`）三合一落在这一处；`inline_formula` 元素
+  返回空行（内容已并进 Text，且实测其 `text` 被 OCR 匹配污染成整句）。
+- `src/gfm_adapter.rs`：`simplify_table_html` 尾部接 `dedup_cell_formula_text`
+  （修法 4）——`</td>` 内恰好被 `<br/>` 分两段、其中一段 `$…$` 包裹且另一段
+  剥 `$` 后相同 → 只留带定界符那份；不匹配原样返回（防误伤正常多行格）。
+
+**落地时撞到的真坑**（不是理论风险，是实测重复输出）：stitch 用
+`is_overlapping`（IoA，宽松）匹配 regions 拼文本，块内收集用
+`norm_membership`（中心点归一化，严格）——两个口径不一致，实测整句与
+`V=IR(1)` 的行**没被块内命中却已被 stitch 拼走**，只消费 `inner_idx` 会让
+`append_leftover` 把同一批文本再输出一遍（首跑即见"整句出两次")。修法是
+额外按"文本已被拼走"消费一次：region 文本是 stitch 文本或其 `absorbed`
+原文的子串即标记消费（与 stitch 的宽松匹配同方向）。
+
+**实测对照**（`formula_mixed.pdf`，本机真 CLI）：
+
+| 观测点 | 改前 | 改后 | 判定 |
+|---|---|---|---|
+| 行内公式 | `The relation E = mc² links mass and energy here.V=IR(1)`（整句与公式、编号焊成一行） | `The relation E = mc² links mass and energy here.` | ✅ 在行内、不粘连 |
+| 行间公式（有编号） | `V=IR`（裸） | `$$ V=IR \tag{1} $$` | ✅ 定界 + 编号并入 |
+| 行间公式（无编号） | `8+2√元dx =e2C` | `$$ 8+2e dx =√元C 2 $$` | ✅ 定界 |
+| 公式编号 | `(1)` 独立成行 | 并入 `\tag{1}` | ✅ |
+
+**顺带修好的两处同类粘连**（都不在 #9 的目标件上，是 `stitch` 优先的副产物，
+逐条人工审计过内容，均为改善）：
+- `seal_scan.pdf`：三行重复句从"焊成一超长行"变"各自独立"；
+- `image_table.ofd`：`交通费 200380合计580`（单元格文本粘连）变三行。
+
+**基线变更审计**（决策 (a) 要求的流程）：`ANYDOC_GOLDEN_UPDATE=1` 前后各
+记录 30 条快照（`/tmp/snap_pre_C.txt` → `/tmp/snap_post_C.txt`）再 `diff`：
+**只有 `tests_samples_image_table.ofd` 与 `tests_samples_seal_scan.pdf` 两条
+变化**，其余 28 条（含 4 条 `batch_*`）零漂移。UPDATE 后再跑一次不带
+UPDATE 的 golden：11 checked / 1 passed（新基线自洽）。
+`cargo test --release` 全套 **329 passed / 0 failed / 1 ignored**（+7：
+blocks 3 + gfm_adapter 4；lib 264 → **271**）。
+
+**盲区照实说**：
+
+- **公式资产当前缺位**：`~/.oar` 12 件里没有 `formula_m.onnx` /
+  `ppformulanet_tokenizer.json`（第 0 步对拍时 MFR 在跑，现已不在缓存），
+  故本批实测到的公式是 **rec 文本形态**而非 LaTeX（CLI 起跑会打
+  `formula_off_once` 降级告警）。修法 2/3 在两种形态下都成立，但
+  **LaTeX 形态的端到端验证要等资产就位补跑**（尤其 `\tag{}` 与 rec 文本
+  混排的观感）。
+- **修法 4 只有单测**：MFR 缺位时单元格不会出双份，端到端样本没法触发；
+  单测钉住"两份取 LaTeX"、"内容不同的 `<br/>` 不动"、"三段不动"三条。
+- **表内图吸收仍没测到**（第 0 步原样，修法 5 不做）：需要一个版面模型
+  明确判 `Image` 且落在表格 bbox 内的样本。
+- 上游 `fill_formula_elements` 会**跳过已有 text 的 Formula 元素**
+  （`stitching.rs`），而 OCR 匹配常整句塞进去 → MFR LaTeX 反而填不进，
+  Formula 元素 `text` 被污染成整句。这是上游行为，本仓的绕过方式是"inline
+  元素不输出"，未改上游。
 
 ---
 

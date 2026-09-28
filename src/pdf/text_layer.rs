@@ -1703,7 +1703,6 @@ mod tests {
     // ---- #6 第 4 步：spans（producer→IR 全链） ----
 
     use super::{build_spans, push_line_region};
-    use crate::region::SpanStyles;
 
     /// 全零样式行：合并为单 span，run 文本原样拼接（无插空：相邻无几何间隙）。
     #[test]

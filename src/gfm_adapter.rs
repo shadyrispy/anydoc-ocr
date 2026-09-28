@@ -575,7 +575,7 @@ fn title_hints(page: &StructureResult, layout_on: bool) -> Vec<(String, usize)> 
 /// 截取到闭合标签末尾并补齐缺失的 `>`；表格后的正文由 lines 路径输出，此处丢弃。
 fn simplify_table_html(html: &str) -> String {
     let h = html.trim();
-    if let Some(s) = h.find("<table")
+    let out = if let Some(s) = h.find("<table")
         && let Some(rel) = h[s..].rfind("</table")
     {
         let mut end = s + rel + "</table".len();
@@ -586,9 +586,72 @@ fn simplify_table_html(html: &str) -> String {
         if !out.ends_with('>') {
             out.push('>');
         }
-        return out;
+        out
+    } else {
+        h.to_string()
+    };
+    dedup_cell_formula_text(&out)
+}
+
+/// #9 修法 4：表内单元格的"同一内容两份"去重。
+///
+/// 成因（第 0 步对拍取证）：表格 OCR 装配把**单元格文本**与**公式识别的
+/// LaTeX** 都塞进同一格，产出 `X<br/>$X$`（如
+/// `\overline{{f(x)}}=x^{2}+1<br/>$\overline{{f(x)}}=x^{2}+1$`）——
+/// 同一格内容出现两份，MinerU basic 输出一份。去重取**LaTeX/`$…$` 形态**
+/// （信息更全：含公式结构，纯文本那份是 rec 的近似）。
+///
+/// 判定刻意保守：只在 `</td>` 内的文本**恰好被 `<br/>` 分成两段**、且其中
+/// 一段是 `$…$` 包裹、另一段去掉 `$` 与空白后**内容相同**时才合并——
+/// 不匹配则原样返回（避免误伤正常的 `<br/>` 多行单元格）。
+fn dedup_cell_formula_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        let Some(open) = rest.find("<td") else {
+            out.push_str(rest);
+            return out;
+        };
+        let Some(gt) = rest[open..].find('>') else {
+            out.push_str(rest);
+            return out;
+        };
+        // `<td …>` 头
+        let head_end = open + gt + 1;
+        let Some(close) = rest[head_end..].find("</td>") else {
+            out.push_str(rest);
+            return out;
+        };
+        let cell_end = head_end + close;
+        let cell = &rest[head_end..cell_end];
+        out.push_str(&rest[..head_end]);
+        out.push_str(&dedup_one_cell(cell));
+        rest = &rest[cell_end..];
     }
-    h.to_string()
+}
+
+/// 单个 `<td>` **内容**的去重（不含标签头尾）。
+fn dedup_one_cell(cell: &str) -> String {
+    let parts: Vec<&str> = cell.split("<br/>").collect();
+    if parts.len() != 2 {
+        return cell.to_string();
+    }
+    let (a, b) = (parts[0].trim(), parts[1].trim());
+    // 一段带 `$…$`、另一段剥掉 `$` 后两者相同 → 取带定界符的那份
+    if (is_dollar_wrapped(a) || is_dollar_wrapped(b)) && strip_dollars(a) == strip_dollars(b) {
+        return if is_dollar_wrapped(a) { a } else { b }.to_string();
+    }
+    cell.to_string()
+}
+
+/// 是否 `$…$` 包裹（长度 > 1，排除单个 `$`）。
+fn is_dollar_wrapped(s: &str) -> bool {
+    s.len() > 1 && s.starts_with('$') && s.ends_with('$')
+}
+
+/// 剥掉首尾空白与 `$` 定界符。
+fn strip_dollars(s: &str) -> &str {
+    s.trim().trim_matches('$').trim()
 }
 
 #[cfg(test)]
@@ -1233,5 +1296,39 @@ mod tests {
         // bbox 原样保留（投影层要落 PAGE_HEADER 的 bbox）
         assert!((hdr.x_min - 10.0).abs() < 1e-4 && (hdr.x_max - 90.0).abs() < 1e-4);
         assert!((hdr.y_min - 2.0).abs() < 1e-4 && (hdr.y_max - 8.0).abs() < 1e-4);
+    }
+
+    // ── #9 修法 4：表内单元格"同一内容两份"去重 ──
+
+    /// 表内公式：纯文本 + LaTeX 两份 → 取 LaTeX 那份（第 0 步对拍的 `X<br/>$X$`）。
+    #[test]
+    fn cell_formula_double_entry_deduped() {
+        let html = "<table><tr><td>a</td><td>\\overline{{f(x)}}=x^{2}+1<br/>$\\overline{{f(x)}}=x^{2}+1$</td></tr></table>";
+        let out = simplify_table_html(html);
+        assert!(
+            out.contains("<td>$\\overline{{f(x)}}=x^{2}+1$</td>"),
+            "应只留 LaTeX 一份，got: {out}"
+        );
+        assert!(!out.contains("<br/>"));
+    }
+
+    /// 保守性：正常的 `<br/>` 多行单元格（两段内容不同）**不**被合并。
+    #[test]
+    fn cell_multiline_untouched_when_parts_differ() {
+        let html = "<table><tr><td>甲<br/>乙</td><td>x<br/>y</td></tr></table>";
+        assert_eq!(simplify_table_html(html), html);
+    }
+
+    /// 保守性：三段（`<br/>` 两次）不处理；单段无 `<br/>` 不处理。
+    #[test]
+    fn cell_dedup_only_for_exactly_two_parts() {
+        assert_eq!(simplify_table_html("<table><tr><td>a<br/>$a$<br/>b</td></tr></table>"), "<table><tr><td>a<br/>$a$<br/>b</td></tr></table>");
+        assert_eq!(simplify_table_html("<table><tr><td>单价</td></tr></table>"), "<table><tr><td>单价</td></tr></table>");
+    }
+
+    /// 非 table 输入（兜底分支）同样过去重，且不破坏原文。
+    #[test]
+    fn simplify_keeps_plain_text_input() {
+        assert_eq!(simplify_table_html("裸文本"), "裸文本");
     }
 }
