@@ -90,7 +90,7 @@
 
 | # | 问题（谁会被卡住） | 第一个动作（第 0 步，不许跳过） | 完成判定 | 依赖 · 规模 |
 |---|---|---|---|---|
-| #6 | 只有 markdown 一种输出；想加任何结构化输出都得改主链路 | 用 `ANYDOC_DUMP_DIR` 对照 MinerU item 字段，**列** IR 缺失字段清单（块边界/标题级别/span/页尺寸），不改代码 | 块级类型+级别+bbox+span 可单测断言，且 markdown 对 6 样本 hash 全等（**未**用 UPDATE） | **第 0/1/2 步已完成**（第 2 步：标题级别进 IR、`#` 前缀下移到渲染层，**输出逐字节不变，本步也未用 UPDATE**）、**决策 (c) 已落地**（`ANYDOC_RICH_TEXT` 废弃：行为移除 + stderr 告警 + `--help`/README 标废弃）；第 3 步起 · 大 |
+| #6 | 只有 markdown 一种输出；想加任何结构化输出都得改主链路 | 用 `ANYDOC_DUMP_DIR` 对照 MinerU item 字段，**列** IR 缺失字段清单（块边界/标题级别/span/页尺寸），不改代码 | 块级类型+级别+bbox+span 可单测断言，且 markdown 对 6 样本 hash 全等（**未**用 UPDATE） | **第 0/1/2/3/4 步已完成，第 5 步枚举先行已落地**（`RegionKind` 扩 Image/Code/Formula/Index/Aside/Footnote/Noise，前五类占位、`Footnote`/`Noise` 有 producer，**输出逐字节不变、未用 UPDATE**）、**#10 例外项已落地**（页眉页脚"标注 + 可选输出"，`ANYDOC_EMIT_FURNITURE`）、**决策 (c) 已落地**（`ANYDOC_RICH_TEXT` 废弃：行为移除 + stderr 告警 + `--help`/README 标废弃）；第 6 步起 · 大 |
 | #7 | 无线表/合并单元格表的结构识别**怀疑**不如 MinerU basic | 拿同一张无线表跑「现状」vs「`rt-detr-l_wireless_table_cell_det.onnx` cells→HTML（已在注册表）」，比结构正确率；并确认 UNet 能否进 `with_wireless_table_structure` | 无线表与 MinerU basic 的表格 HTML 结构不一致数**下降**；有线表逐字节不变 | **第 0 步已完成、两条路都不进默认**（(ii) 判死，(i) 已实现为默认关闭的 `ANYDOC_WIRELESS_CELLS`）· 剩余部分待现网语料 |
 | #10b | 含章公文页默认不出印章文字，而 MinerU basic 默认出 | 决定"默认开"能否接受为行为变更（普通安装多 4.8MB 下载 + 新增 `【印章】` 行） | seal_scan 默认档出直排行文字 + golden 重基线 + README 记一笔 | **已完成** · 小 |
 | #12 | `anydoc scan.png` 进不了 OCR 管线（MinerU 直接吃 8 种图片） | `detect` 加 `DocKind::Image`，复用整页 OCR；像素闸要在**加载**处补算一次 | png 出 markdown；>3500px 显式 `resourceLimit`；gif/tiff 只取首帧且 `--help` 注明 | **已完成** · 小（本节最便宜） |
@@ -240,8 +240,11 @@ coordinates"）。content_list v2 再乘 1000 成整数框
 4. 新增 `Span` + `Region.spans`（先只装 text + styles） → **不触碰**（默认渲染
    忽略 spans 即输出不变）。样式那一半**没有旧通路可改**：`ANYDOC_RICH_TEXT` 已随
    决策 (c) 废弃并删除，本步是从 pdf-inspector 的样式证据直接产 spans 的**第一版**。
+   **已落地**（三个 producer 全接线，输出逐字节不变，见下"第 4 步已落地"）。
 5. `RegionKind` 扩 Image/Code/Formula/Index/Aside/Footnote + 图片裁切落盘通路 →
    **不触碰**既有块，新类别出现才改输出（依赖 #10 的样本）。
+   **枚举先行已落地**（含 `Noise(NoiseKind)`，`Footnote`/`Noise` 已有 producer，
+   前五类占位等样本；图片裁切落盘留 #10 主体，见下"第 5 步已落地"）。
 6. `TableGrid`/表格 HTML 侧补 `cell_merge` 与真实 row/col → **不触碰**（但若从
    HTML 反解 span 是错路，必须回到 oar-ocr 的 cell 信息，成本高）。
 
@@ -553,6 +556,116 @@ docstring 已改写用途，避免下一个人以为它服务于一个还存在�
 本步不新增 CLI 输出，投影层（#10 content_list / #11 middle_json）才是它的使用方。
 真实跨页表（`tests/real_samples/crosspage_table.pdf`）在沙箱里仍然缺件，现网语料的
 合并行为要等有样本的环境补跑。
+
+### 第 4 步已落地（2026-09-28）：`Span`/`spans` 进 IR，pdf-inspector 样式证据直产
+
+**改了什么**：
+
+- `src/region.rs`：`SpanStyles`（bold/italic/underline/strikethrough/superscript/
+  subscript 六位布尔 + `is_plain()`）与 `Span { text, styles }`（`new`/`plain`
+  两个构造，`plain` 是全零样式的退化形态）；`Region` 加 `spans: Vec<Span>`
+  （**空 vec = 无样式信息来源**）+ `with_spans()` builder。字段语义写在
+  `Region::spans` 文档：**渲染层不消费**，消费方是未来的投影层（#10/#11）。
+- `src/pdf/text_layer.rs`：`build_spans()`——按 pdf-inspector `TextItem` 的
+  样式证据切段（相邻同键合并），接线 `push_line_region`。样式键取自
+  `is_bold/is_italic/is_underline/is_strikeout` 与 `baseline_shift`
+  （`> 0` → superscript、`< 0` → subscript）。
+- `src/ofd/text_layer.rs`：`to_regions()` 每行产单 `Span::plain`——ofd-core
+  拿不到样式证据，单 span 全零样式 = "有信息但无装饰"，与空 vec 的
+  "根本没有 span 来源"是两种可区分的状态。
+- `src/gfm_adapter.rs`：OCR 通路 Region 构造点加单 plain span（OCR 行同样无
+  样式证据）。
+
+**两条设计决策**（第 5 步/投影层务必读）：
+
+1. **双层真相分工**：`Region.text` 是**渲染/文本真相**（来自 `text_plain`，
+   含 `<sup>/<sub>` 标签与完整插空规则）；`spans` 是**样式/run 边界真相**
+   （旁路信息）。本步渲染层零消费 spans → 输出逐字节不变是**结构性承诺**
+   （渲染代码一字未动），不是"碰巧跑出来一样"。
+2. **刻意不复刻 `text_plain` 的完整插空规则**（避免双源漂移——两套插空逻辑
+   各自演化迟早分叉）：跨段空格只做一条几何判定——样式切换处 gap ≥ 0.2em 且
+   两侧非空白 → 空格归前段尾。单测
+   `spans_join_matches_text_ignoring_tags_and_spaces` 钉住弱一致性契约：
+   spans 拼接（去标签、去插空空格）== text。强等值（含标签与空格的逐字符
+   对应）需要 text/spans 同源重写，不在本步。
+
+**零回归证据**：
+
+- `cargo test --release` 全套 **R=0，316 passed / 0 failed / 1 ignored**
+  （上一轮 303 → 本步 **+13**：region 4 + pdf 8 + ofd 1；lib 245 → **258**）。
+- golden：`ANYDOC_GOLDEN_OCR=1 cargo test --test golden` **未用 UPDATE**：
+  **11 checked**（第 3 步新增 `cross_page_table.pdf` 后 10 → 11）+ 13 skipped
+  （real_samples 缺件），1 passed，既有快照零漂移。
+- CLI 对拍（**重建基线法**——此前"21 md + 23 err"语料目录已不在 /tmp，改用
+  git stash 前后双二进制对同一语料重跑）：`git stash` → 改前二进制 →
+  `tests/samples` 全量 26 件（22 成功：19 个 md，其中 image/text/image_table
+  三对 ofd/pdf 同名覆盖；4 失败：corrupt×2、encrypted×2，失败件只打 stderr
+  不落 err 文件）→ `git stash pop` → 改后二进制重跑 → **19/19 md 逐字节
+  全等 + 4/4 失败 stderr 逐字节全等**。
+- **盲区照实说**：本步 spans 的证据面只有单测（`push_line_region_attaches_spans`
+  全链接线 + 切段规则 8 件），CLI/输出面零变化是"渲染不消费"的结构保证而非
+  现网样本验证；13 个 gitignored real_samples 仍缺，真实粗体/斜体/上下标语料的
+  样式还原质量要等有样本的环境补跑（#10 投影层落地时一并审）。
+
+### 第 5 步已落地（2026-09-28，枚举先行）+ #10 例外项：`Noise`/`Footnote` 有 producer，页面家具从"无痕丢弃"改"标注 + 可选输出"
+
+**改了什么**：
+
+- `src/region.rs`：`RegionKind` 扩 7 个变体——
+  - **占位五类** `Image`/`Code`/`Formula`/`Index`/`Aside`：producer 未产
+    （`#[allow(dead_code)]` 注明消费方是 #10 渲染分支），枚举先行让 #10 的
+    投影层与单测有可断言的落点；渲染层对它们零消费（手工构造也不输出，
+    单测 `placeholder_variants_never_render` 钉住）。
+  - **本步有 producer 的两类**：`Footnote`（脚注独立成 kind，不与页脚混——
+    oar 的 `is_footer()` 把 `Footnote` 并进页脚口径，但 MinerU 13 项里
+    `PAGE_FOOTNOTE` 是独立类型）与 `Noise(NoiseKind)`（细分
+    Header/Footer/PageNumber/Seal）。
+- `src/gfm_adapter.rs`：OCR 通路收集层的家具处理从 **`continue` 丢弃改为
+  分流**——`furniture_kind_of()` 按版面元素类型给 kind（Header/HeaderImage →
+  Header、Footer/FooterImage → Footer、Number → PageNumber、Seal → Seal、
+  Footnote → `RegionKind::Footnote`），命中文本收进 `furniture` 数组带 bbox
+  与 confidence 进 IR（追加在正文/表格之后，顺序无阅读序保证）。
+  **`order_structure` 一字未动**——正文 regions 输入不变，三重过滤的阅读序
+  语义原样（`blocks.rs` 的 NOISE_TYPES 6 类 + leftover 排除照旧）。
+- `src/docir/render.rs`：`render()` 委托 `render_with_furniture(doc, false)`；
+  `emit = true` 时每页段末追加注释行——`<!-- header: … -->` / `<!-- footer: … -->`
+  / `<!-- page-number: … -->` / `<!-- seal: … -->` / `<!-- footnote: … -->`，
+  按 `y_min` 升序（页眉在前页脚在后，det 顺序不作保证），文本中的 `-->`
+  替换为 `->`（防提前终止 HTML 注释；显示用标注，不做原文保真）。
+- 开关：env `ANYDOC_EMIT_FURNITURE`（存在即开，与 `ANYDOC_HEADINGS_LAYOUT`
+  同族语义），接线点在 `gfm_adapter::to_markdown`。**不用 CLI flag /
+  RenderConfig 字段**的理由：注释形态是过渡（正式出口是 #10/#11 的
+  content_list v2 投影，`PAGE_HEADER`/`PAGE_FOOTER`/`PAGE_NUMBER` 独立
+  item），不值得为它穿透 6 层签名；文字层通路无家具 producer，env 天然
+  只作用于 OCR 通路。
+- `README.md`：环境变量表新增一行。
+
+**为什么"注释形态"而不是别的**：GFM 合法、不污染可见 markdown 文本、
+可 grep；MinerU 的 content_list v2 把家具落成独立 item 的语义在投影层
+（#10/#11）才是正式对齐点，markdown 注释只是过渡期的可观察出口。
+
+**零回归证据**：
+
+- `cargo test --release` 全套 **R=0，322 passed / 0 failed / 1 ignored**
+  （上一轮 316 → 本步 **+6**：gfm_adapter 2 + render 4；lib 258 → **264**）。
+- golden：`ANYDOC_GOLDEN_OCR=1` **未用 UPDATE**，**11 checked** + 13 skipped，
+  1 passed——默认路径渲染层零消费 Noise/Footnote，输出逐字节不变（结构性
+  承诺：`render()` 只是把 `false` 传进 `render_with_furniture`）。
+- CLI 对拍（沿用批次 A 的重建基线法）：`/tmp/par-before`（批次 A 改前二进制
+  × 26 件入库样本）对批次 B 改后二进制重跑 → **19/19 md + 4/4 失败 stderr
+  逐字节全等**（跨两个批次的双重验证：批次 A 基线 → 批次 B 不漂移）。
+- 开关冒烟（seal_scan.pdf，含一枚章）：关 = 与批次 A 基线逐字节一致；
+  `ANYDOC_EMIT_FURNITURE=1` 后**多出一行 `<!-- seal: 专用章 -->`**——章 bbox
+  内 det 读出的文本此前被三重过滤无痕丢弃，现在开关下可见。它与
+  `seal_pass` 的 `【印章】专用章` 行并存（两条独立通路：版面 `Seal` bbox
+  内的散落 OCR 文本 vs 印章专用检测+识别），各自语义见 README 两行。
+
+**盲区照实说**：注释行的真实语料覆盖只有 seal 一样本（页眉/页脚/页码/
+脚注的注释行只在合成单测里见过）——13 个 real_samples（公文类天然带
+页眉页脚页码）补进来后要实跑一遍开关，核对 y 排序与注释内容符合阅读
+习惯。`Footnote` 的 bbox 内文本在 `order_structure` 里**不算**噪声
+（`NOISE_TYPES` 不含 Footnote）——本步靠收集层分流，若未来把收集层
+分流撤掉，脚注会漏进正文，这条耦合写在 `furniture_kind_of` 文档里。
 
 
 ### 风险（务必先读）
@@ -960,7 +1073,11 @@ PIPELINE_DET_TYPE, True`）。→ 下表按 **13 项**算缺口，23 项是"将�
 **依赖**：本条目除"页眉页脚保留"外，多数子项依赖 #6（没有块级 IR 就无处安放）。
 建议 #6 落地后按 chart → code → list 结构 → index/aside/footnote 顺序拆小票。
 **例外**：页眉页脚"不丢弃而是标注 + 可选输出"可先做，因为它就是当前默认路径上的
-一处信息损失，改动面小（一个 kind + 渲染器多一条分支）。
+一处信息损失，改动面小（一个 kind + 渲染器多一条分支）。**已落地（2026-09-28，
+随 #6 第 5 步枚举先行一并交付）**：`RegionKind::Noise(NoiseKind)`/`Footnote`
+producer 接线 + `ANYDOC_EMIT_FURNITURE` 可选输出，详见 #6 "第 5 步已落地"小节；
+本条目其余子项（chart → code → list 结构 → index/aside/footnote 的类型识别与
+渲染分支）仍待样本。
 
 **验收判据**：每类各有 1 个合成/真实样本，输出结构可断言（列表是真列表、代码有
 fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变。
@@ -1015,7 +1132,11 @@ fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变
 **依赖**：本条目除"页眉页脚保留"外，多数子项依赖 #6（没有块级 IR 就无处安放）。
 建议 #6 落地后按 chart → code → list 结构 → index/aside/footnote 顺序拆小票。
 **例外**：页眉页脚"不丢弃而是标注 + 可选输出"可先做，因为它就是当前默认路径上的
-一处信息损失，改动面小（一个 kind + 渲染器多一条分支）。
+一处信息损失，改动面小（一个 kind + 渲染器多一条分支）。**已落地（2026-09-28，
+随 #6 第 5 步枚举先行一并交付）**：`RegionKind::Noise(NoiseKind)`/`Footnote`
+producer 接线 + `ANYDOC_EMIT_FURNITURE` 可选输出，详见 #6 "第 5 步已落地"小节；
+本条目其余子项（chart → code → list 结构 → index/aside/footnote 的类型识别与
+渲染分支）仍待样本。
 
 **验收判据**：每类各有 1 个合成/真实样本，输出结构可断言（列表是真列表、代码有
 fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变。

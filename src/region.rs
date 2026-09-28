@@ -13,6 +13,12 @@
 //! **数据**——producer 只赋级别，`#` 前缀由 `docir/render.rs` 写出，投影层
 //! （content_list / middle_json，#10/#11）直接读级别而不用反解 markdown 字面量。
 //!
+//! #6 第 4 步：再加 [`Span`] + [`Region::spans`]。行内样式从此也是**数据**——
+//! PDF 文字层从 pdf-inspector 的样式证据（`is_bold`/`is_italic`/几何装饰/
+//! `baseline_shift`）直接产 spans；OFD 文字层与 OCR 通路无样式证据，产"单
+//! span、全零样式"的退化形态（行边界仍然结构化）。`spans` 是**旁路信息**：
+//! markdown 渲染层不消费它（输出逐字节不变），投影层（#11）直读。
+//!
 //! 整宽判定阈值集中于此，消除 `reading_order` 内 0.92/0.08 的重复魔法数。
 
 use crate::table_grid::TableGrid;
@@ -28,6 +34,17 @@ pub const HEADING_LEVEL_MAX: usize = 6;
 
 /// 区块版面语义（P1.5）：标注 Region 在 DocIR 装配/后处理中的角色。
 /// 渲染层按 kind 分流（正文行/表格 HTML/网格表/成品块），不依赖来源类型。
+///
+/// #6 第 5 步扩容：`Image`/`Code`/`Formula`/`Index`/`Aside` 五类**枚举先行、
+/// producer 未产**——它们的出现依赖 #10 的块类型样本（chart → code → list →
+/// index/aside/footnote 拆小票），届时才有对应渲染分支（fence/`$$`/裁图落盘）。
+/// 在那之前渲染层对它们零消费（与 `Body` 之外的既有类别一样不输出），
+/// 枚举先行的意义是让 #10 的投影层与单测有**可断言的落点**。
+///
+/// `Footnote` 与 `Noise` 本步就有 producer（#10 例外项）：OCR 通路的
+/// `Footnote` 版面元素与页面家具（页眉/页脚/页码/印章区）不再静默丢弃，
+/// 而是以独立 kind 进 IR；渲染层**默认跳过**（输出逐字节不变），开关
+/// `ANYDOC_EMIT_FURNITURE` 打开时以 HTML 注释行输出（见 `docir/render.rs`）。
 #[derive(Clone, Debug, PartialEq)]
 pub enum RegionKind {
     /// 正文文本行：producer 已完成阅读顺序还原与**标题级别赋值**（`text` 是
@@ -40,6 +57,121 @@ pub enum RegionKind {
     /// 已渲染块：`text` = producer 产出的成品 markdown 片段（**含精确分隔符**，
     /// 渲染层原样追加，不二次加工——保证与旧 emitter 通路字节一致）。
     PreRendered,
+    /// 图片块（#6 第 5 步占位）：`text` 暂存 OCR 读出的块内文字（若有）。
+    /// 未来行为（依赖 #10）：从渲染位图裁切落盘 + `![](images/…)` 引用，
+    /// 块内文字不进正文流（对齐 MinerU basic 的 image 块处理）。
+    #[allow(dead_code)] // 占位变体：producer 未产（依赖 #10 样本），消费方是 #10 渲染分支
+    Image,
+    /// 代码块（#6 第 5 步占位）：producer 未产。未来渲染为 fenced code block。
+    #[allow(dead_code)] // 同上
+    Code,
+    /// 独立公式块（#6 第 5 步占位）：producer 未产。未来渲染为 `$$…$$`。
+    /// （行内公式 `SpanKind::Equation` 的落点在 span 层，见 BACKLOG #9/#6 第 0 步。）
+    #[allow(dead_code)] // 同上
+    Formula,
+    /// 目录块（#6 第 5 步占位）：producer 未产。MinerU 13 项之 `INDEX`。
+    #[allow(dead_code)] // 同上
+    Index,
+    /// 旁注/边注（#6 第 5 步占位）：producer 未产。MinerU 13 项之 `ASIDE_TEXT`。
+    #[allow(dead_code)] // 同上
+    Aside,
+    /// 脚注（#10 例外项，本步有 producer）：OCR 通路 `Footnote` 版面元素内的
+    /// 文本行。**注意**这不是"被页脚吸收"——`is_footer()` 把 `Footnote` 与
+    /// Footer 并列是 oar-ocr 的类型划分口径；MinerU 13 项里 `PAGE_FOOTNOTE`
+    /// 是独立类型（content_list v2 有独立 item），故此处独立成 kind 而非
+    /// 并入 [`RegionKind::Noise`]。渲染默认跳过，开关打开时输出。
+    Footnote,
+    /// 页面家具（#10 例外项，本步有 producer）：页眉/页脚/页码/印章区文本。
+    /// 此前 OCR 通路对它们三重丢弃（收集层 `continue` + 阅读序跳过 + leftover
+    /// 排除），现改"收集进 IR、渲染默认跳过"——信息不再无痕丢失，投影层
+    /// （#10 content_list v2）可落 `PAGE_HEADER`/`PAGE_FOOTER`/`PAGE_NUMBER`
+    /// 独立 item（MinerU 同语义：`NOT_EXTRACT_TYPES` 不进提取、但 v2 有类型）。
+    Noise(NoiseKind),
+}
+
+/// 页面家具细分（#10 例外项）。与 OCR 版面元素的对应：
+/// `Header`/`HeaderImage` → [`NoiseKind::Header`]；`Footer`/`FooterImage` →
+/// [`NoiseKind::Footer`]；`Number` → [`NoiseKind::PageNumber`]；
+/// `Seal` → [`NoiseKind::Seal`]。`Footnote` 不在此列（独立
+/// [`RegionKind::Footnote`]，见其文档）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoiseKind {
+    Header,
+    Footer,
+    PageNumber,
+    /// 印章区散文本（det 读出的章内文字）。与 `seal_pass` 的 `【印章】` 行
+    /// 是两条通路：后者来自印章检测+识别的专门 pass（#10b），前者是版面
+    /// `Seal` 元素 bbox 内的散落 OCR 文本。默认都不进正文。
+    Seal,
+}
+
+/// 行内样式位（#6 第 4 步）。字段名与 MinerU 严格 schema 的
+/// `TextSpan.styles` 集合对齐（`docvortex schema.py:320-338`：
+/// bold/italic/underline/emphasis/strikethrough/superscript/subscript），
+/// 差异两处，都是**信息只多不少**的方向：
+/// - `emphasis` 本仓无证据来源（pdf-inspector 无对应判定），第一版不设位；
+/// - MinerU 校验 superscript/subscript 互斥（`schema.py:341-356`），本仓两个
+///   位独立存放（同一 run 不可能同时非零 `baseline_shift`，实际上也互斥），
+///   互斥决策留给投影层，不在 IR 层丢信息。
+///
+/// 另注意 pdf-inspector 的装饰判定口径：`<u>`/`<s>` 是**几何检测**（画出来的
+/// 线），且它自己的 markdown 渲染里装饰与字体样式互斥（strike > underline >
+/// bold/italic）。span 层保留独立位（证据原样），互斥折叠是投影层的事。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpanStyles {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub superscript: bool,
+    pub subscript: bool,
+}
+
+impl SpanStyles {
+    /// 全零样式（绝大多数正文 run）。
+    pub fn is_plain(&self) -> bool {
+        !(self.bold
+            || self.italic
+            || self.underline
+            || self.strikethrough
+            || self.superscript
+            || self.subscript)
+    }
+}
+
+/// 行内 span（#6 第 4 步）：一段样式连续的 run 文本。
+///
+/// **与 [`Region::text`] 的分工**（两层真相，各有管辖）：
+/// - `text` 是渲染/判定的真相——由 `TextLine::text()`（text_plain）产出，
+///   **含** `<sup>…</sup>`/`<sub>…</sub>` 字面标签与跨 item 插入空格；
+/// - `spans[].text` 是结构化的 run 文本——item 原文原样拼接，**不含**标签
+///   （上下标在 [`SpanStyles`] 位上），跨 span 的插入空格只做简化几何判定
+///   （见 `pdf/text_layer.rs::build_spans`，边缘形态不与 text_plain 复刻对齐）。
+///
+/// 因此**不存在**"spans 拼接 == text"的逐字节不变式；两层的强一致校验是
+/// "剥掉标签与空白后内容相等"，由 producer 侧单测钉住。markdown 渲染层
+/// 不消费 spans（输出逐字节不变），投影层（#11）直读。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Span {
+    pub text: String,
+    pub styles: SpanStyles,
+}
+
+impl Span {
+    pub fn new(text: impl Into<String>, styles: SpanStyles) -> Self {
+        Span {
+            text: text.into(),
+            styles,
+        }
+    }
+
+    /// 全零样式的 span（OFD / OCR 等无样式证据来源的退化形态）。
+    pub fn plain(text: impl Into<String>) -> Self {
+        Span {
+            text: text.into(),
+            styles: SpanStyles::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +185,9 @@ pub struct Region {
     pub kind: RegionKind,
     /// 识别置信度（P1.5）：OCR 源为 `Some(score)`；文字层源无此概念（`None`）。
     pub confidence: Option<f32>,
+    /// 行内 span（#6 第 4 步）：样式证据的结构化载体。空 vec = 该来源无样式
+    /// 信息（OFD 文字层 / OCR 通路退化为单 span 或干脆空），渲染层不消费。
+    pub spans: Vec<Span>,
     /// 标题级别（#6 第 2 步）：`Some(1..=6)` 表示该行为标题行。`#` 前缀**不在
     /// `text` 里**，由 [`Region::rendered_line`] 在渲染时写出——级别从此是 IR
     /// 数据，投影层（#10/#11）直接读它，不必反解 markdown 字面量。
@@ -91,6 +226,7 @@ impl Region {
             text: text.into(),
             kind: RegionKind::Body,
             confidence: None,
+            spans: Vec::new(),
             heading_level: None,
             continues_prev: None,
         }
@@ -106,6 +242,7 @@ impl Region {
             text: text.into(),
             kind: RegionKind::Body,
             confidence: None,
+            spans: Vec::new(),
             heading_level: None,
             continues_prev: None,
         }
@@ -126,6 +263,12 @@ impl Region {
     /// 附加标题级别（builder，#6 第 2 步）。
     pub fn with_heading_level(mut self, level: Option<u8>) -> Self {
         self.heading_level = level;
+        self
+    }
+
+    /// 附加行内 span（builder，#6 第 4 步）。
+    pub fn with_spans(mut self, spans: Vec<Span>) -> Self {
+        self.spans = spans;
         self
     }
 
@@ -237,5 +380,50 @@ mod tests {
             Region::new(0.0, 300.0, 0.0, 10.0, "c"),
         ];
         assert_eq!(Region::page_w(&rs), 800.0);
+    }
+
+    // ---- #6 第 4 步：span 断言 ----
+
+    #[test]
+    fn region_defaults_to_no_spans() {
+        let r = Region::new(0.0, 10.0, 0.0, 10.0, "x");
+        assert!(r.spans.is_empty());
+        let r = Region::from_top_left(0.0, 0.0, 10.0, 10.0, "x");
+        assert!(r.spans.is_empty());
+    }
+
+    #[test]
+    fn span_styles_plain_and_bits() {
+        let plain = SpanStyles::default();
+        assert!(plain.is_plain());
+        let bold = SpanStyles {
+            bold: true,
+            ..SpanStyles::default()
+        };
+        assert!(!bold.is_plain());
+    }
+
+    #[test]
+    fn with_spans_attaches_and_keeps_text_independent() {
+        // spans 是旁路信息：text 不由 spans 派生，二者独立存在。
+        let r = Region::new(0.0, 10.0, 0.0, 10.0, "plain truth")
+            .with_spans(vec![Span::new(
+                "plain truth",
+                SpanStyles {
+                    bold: true,
+                    ..SpanStyles::default()
+                },
+            )]);
+        assert_eq!(r.text, "plain truth");
+        assert_eq!(r.spans.len(), 1);
+        assert!(r.spans[0].styles.bold);
+        assert_eq!(r.spans[0].text, "plain truth");
+    }
+
+    #[test]
+    fn span_plain_helper_is_zero_styles() {
+        let s = Span::plain("行文本");
+        assert!(s.styles.is_plain());
+        assert_eq!(s.text, "行文本");
     }
 }

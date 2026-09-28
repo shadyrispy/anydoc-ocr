@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::docir::{DocIR, PageDims, PageSource};
 use crate::fallback::{self, FallbackSignal};
-use crate::region::{Region, RegionKind};
+use crate::region::{Region, RegionKind, Span};
 use crate::table_grid::{self};
 use crate::{ConvertRequest, Result, gfm_adapter, reading_order};
 
@@ -990,6 +990,7 @@ fn push_line_region(
     if text.is_empty() {
         return;
     }
+    let spans = build_spans(seg);
     let mut x_min = f32::INFINITY;
     let mut x_max = f32::NEG_INFINITY;
     let mut y_max_pdf = f32::NEG_INFINITY;
@@ -1000,13 +1001,122 @@ fn push_line_region(
     }
     // PDF 坐标原点左下（y 大=靠上）。reading_order 约定 y 越小越靠上，翻转：-y。
     let y_flip = -line.y;
-    regions.push(Region::new(
-        x_min,
-        x_max,
-        y_flip,
-        y_flip + (y_max_pdf - line.y).max(1.0),
-        text,
-    ));
+    regions.push(
+        Region::new(
+            x_min,
+            x_max,
+            y_flip,
+            y_flip + (y_max_pdf - line.y).max(1.0),
+            text,
+        )
+        .with_spans(spans),
+    );
+}
+
+/// #6 第 4 步：把一行的 TextItem 序列切成**样式连续**的 span 段。
+///
+/// 分组键 = `(is_bold, is_italic, is_underline, is_strikeout, baseline_shift 符号)`；
+/// 相邻同键 item 合并为一个 span，span 文本 = item 原文原样拼接（保留 item 内部
+/// 与边缘空白）。跨段空格：前段尾与后段首均非空白、且几何间隙 ≥ 0.2 em 时，把
+/// 空格归到**前段尾**（词空格经验阈值，对齐 pdf-inspector `SCRIPT_WORD_GAP` 注释
+/// 里 "a word space is ≥ 0.2 em" 的口径）。
+///
+/// **刻意不复刻** `TextLine::text_plain` 的完整插空规则（script 边缘、连字符、
+/// 堆叠分数、单字符阈值……）：那些判定是 pdf-inspector 的私有实现，复刻即双源
+/// 漂移。词间空格的**真相仍是 `Region.text`**（含 text_plain 的 `<sup>/<sub>`
+/// 标签与全部插空）；spans 承载的是样式与 run 边界，投影层（#11）读样式时以
+/// text 为文本真相、以 spans 为样式真相。两层的内容一致性（剥标签 + 剥空白后
+/// 相等）由单测 `spans_join_matches_text_ignoring_tags_and_spaces` 钉住。
+fn build_spans(seg: &[pdf_inspector::TextItem]) -> Vec<Span> {
+    use crate::region::SpanStyles;
+
+    #[derive(PartialEq)]
+    struct Key {
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        strikeout: bool,
+        superscript: bool,
+        subscript: bool,
+    }
+
+    impl Key {
+        fn of(it: &pdf_inspector::TextItem) -> Self {
+            Key {
+                bold: it.is_bold,
+                italic: it.is_italic,
+                underline: it.is_underline,
+                strikeout: it.is_strikeout,
+                superscript: it.baseline_shift > 0.0,
+                subscript: it.baseline_shift < 0.0,
+            }
+        }
+
+        fn styles(&self) -> SpanStyles {
+            SpanStyles {
+                bold: self.bold,
+                italic: self.italic,
+                underline: self.underline,
+                strikethrough: self.strikeout,
+                superscript: self.superscript,
+                subscript: self.subscript,
+            }
+        }
+    }
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut cur_key: Option<Key> = None;
+    let mut cur_text = String::new();
+    // 组内最后一个非全空白 item（跨组空格判定的"前段尾"）。
+    let mut last_item: Option<&pdf_inspector::TextItem> = None;
+
+    let flush = |key: &Key, text: &mut String, spans: &mut Vec<Span>| {
+        if !text.is_empty() {
+            spans.push(Span::new(std::mem::take(text), key.styles()));
+        }
+    };
+
+    for item in seg.iter() {
+        let key = Key::of(item);
+        match &cur_key {
+            Some(k) if *k == key => {}
+            Some(k) => {
+                // 样式切换：跨段空格判定（前段尾非空白 && 后段首非空白 &&
+                // 几何间隙 ≥ 0.2 em → 空格归前段尾）。
+                let gap = match (last_item, item) {
+                    (Some(p), c) if c.x >= p.x + p.width => c.x - (p.x + p.width),
+                    _ => 0.0,
+                };
+                let em = match (last_item, item) {
+                    (Some(p), c) => p.font_size.max(c.font_size),
+                    _ => 0.0,
+                };
+                let tail_blank = cur_text.ends_with(char::is_whitespace);
+                let head_blank = item.text.starts_with(char::is_whitespace);
+                if !tail_blank
+                    && !head_blank
+                    && !cur_text.is_empty()
+                    && !item.text.is_empty()
+                    && gap >= 0.2 * em
+                {
+                    cur_text.push(' ');
+                }
+                flush(k, &mut cur_text, &mut spans);
+                cur_key = Some(key);
+            }
+            None => {
+                cur_key = Some(key);
+            }
+        }
+        cur_text.push_str(&item.text);
+        if !item.text.trim().is_empty() {
+            last_item = Some(item);
+        }
+    }
+    if let Some(k) = &cur_key {
+        flush(k, &mut cur_text, &mut spans);
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -1082,6 +1192,16 @@ mod tests {
             stroke_color: None,
             render_mode: None,
             baseline_shift: 0.0,
+        }
+    }
+
+    /// 带样式证据的 TextItem 构造（#6 第 4 步 spans 测试用；其余字段同 ti）。
+    fn tis(text: &str, x: f32, width: f32, bold: bool, italic: bool, shift: f32) -> TextItem {
+        TextItem {
+            is_bold: bold,
+            is_italic: italic,
+            baseline_shift: shift,
+            ..ti(text, x, width)
         }
     }
 
@@ -1578,5 +1698,122 @@ mod tests {
         let once = doc.render();
         assert!(once.contains("## 一、总则"), "got: {once}");
         assert_eq!(once, doc.render(), "渲染无状态，不得叠加前缀");
+    }
+
+    // ---- #6 第 4 步：spans（producer→IR 全链） ----
+
+    use super::{build_spans, push_line_region};
+    use crate::region::SpanStyles;
+
+    /// 全零样式行：合并为单 span，run 文本原样拼接（无插空：相邻无几何间隙）。
+    #[test]
+    fn spans_plain_line_is_single_span() {
+        let seg = vec![ti("AB", 0.0, 10.0), ti("CD", 10.0, 10.0), ti("EF", 20.0, 10.0)];
+        let spans = build_spans(&seg);
+        assert_eq!(spans.len(), 1);
+        assert!(spans[0].styles.is_plain());
+        assert_eq!(spans[0].text, "ABCDEF");
+    }
+
+    /// 样式切换切段：normal → bold → 两个 span，各自携带样式位。
+    #[test]
+    fn style_change_splits_spans() {
+        let seg = vec![tis("AB", 0.0, 10.0, false, false, 0.0), tis("CD", 10.0, 10.0, true, false, 0.0)];
+        let spans = build_spans(&seg);
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].styles.is_plain() && spans[0].text == "AB");
+        assert!(spans[1].styles.bold && !spans[1].styles.italic && spans[1].text == "CD");
+    }
+
+    /// 上/下标走样式位（baseline_shift 符号），span 文本不含 `<sup>` 标签。
+    #[test]
+    fn script_runs_become_style_bits_not_tags() {
+        let seg = vec![
+            tis("word", 0.0, 20.0, false, false, 0.0),
+            tis("1", 20.0, 3.0, false, false, 3.0),
+            tis("x", 23.0, 4.0, false, false, -2.0),
+        ];
+        let spans = build_spans(&seg);
+        assert_eq!(spans.len(), 3);
+        assert!(spans[1].styles.superscript && spans[1].text == "1");
+        assert!(spans[2].styles.subscript && spans[2].text == "x");
+        assert!(!spans[0].text.contains('<'), "span 文本不带标签");
+    }
+
+    /// 跨段几何间隙 ≥ 0.2em → 空格归**前段尾**（英文 bold 词 + 普通词形态）。
+    #[test]
+    fn inter_span_gap_appends_trailing_space() {
+        // 10pt 字号，0.2em = 2pt；间隙 10pt（x: 0..10 → 20..40）。
+        let seg = vec![tis("AB", 0.0, 10.0, true, false, 0.0), tis("CD", 20.0, 20.0, false, false, 0.0)];
+        let spans = build_spans(&seg);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].text, "AB ");
+        assert_eq!(spans[1].text, "CD");
+    }
+
+    /// 无间隙的样式切换不插空格（"word" 紧跟斜体段）。
+    #[test]
+    fn no_gap_no_space_between_spans() {
+        let seg = vec![tis("AB", 0.0, 10.0, false, false, 0.0), tis("cd", 10.0, 10.0, false, true, 0.0)];
+        let spans = build_spans(&seg);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].text, "AB");
+        assert!(spans[1].styles.italic);
+    }
+
+    /// 强一致性校验（producer 契约）：spans 拼接**剥标签+剥空白**后与
+    /// `line.text()` 剥标签+剥空白相等。text 侧的 `<sup>/<sub>` 标签是
+    /// text_plain 写的；span 侧是样式位——两层内容必须同源。
+    #[test]
+    fn spans_join_matches_text_ignoring_tags_and_spaces() {
+        let seg = vec![
+            tis("总", 0.0, 10.0, true, false, 0.0),
+            tis("则", 10.0, 10.0, true, false, 0.0),
+            tis("第", 20.0, 10.0, false, false, 0.0),
+            tis("1", 30.0, 3.0, false, false, 3.0),
+            tis("条", 33.0, 10.0, false, false, 0.0),
+        ];
+        let line = tl(seg.clone());
+        let spans = build_spans(&seg);
+        let strip = |s: &str| {
+            s.replace("<sup>", "")
+                .replace("</sup>", "")
+                .replace("<sub>", "")
+                .replace("</sub>", "")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(strip(&joined), strip(&line.text()));
+    }
+
+    /// 装饰位独立并存：underline 与 strikeout 各归各位（信息不折叠，
+    /// pdf-inspector 的 markdown 互斥口径是投影层的事）。
+    #[test]
+    fn decoration_bits_stay_independent() {
+        let mut a = tis("u", 0.0, 5.0, false, false, 0.0);
+        a.is_underline = true;
+        let mut b = tis("s", 5.0, 5.0, false, false, 0.0);
+        b.is_strikeout = true;
+        let spans = build_spans(&[a, b]);
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].styles.underline && !spans[0].styles.strikethrough);
+        assert!(spans[1].styles.strikethrough && !spans[1].styles.underline);
+    }
+
+    /// producer→IR 全链：push_line_region 把 spans 挂到 Region 上，
+    /// 且 text 与 spans[0].text 同源（单 item 行）。
+    #[test]
+    fn push_line_region_attaches_spans() {
+        let mut regions = Vec::new();
+        let template = tl(vec![]);
+        let seg = vec![tis("AB", 0.0, 20.0, true, false, 0.0)];
+        push_line_region(&seg, &template, 1, &mut regions);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].spans.len(), 1);
+        assert!(regions[0].spans[0].styles.bold);
+        assert_eq!(regions[0].spans[0].text, "AB");
+        assert_eq!(regions[0].text, "AB");
     }
 }

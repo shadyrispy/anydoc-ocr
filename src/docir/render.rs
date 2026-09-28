@@ -17,12 +17,30 @@
 use std::collections::BTreeMap;
 
 use crate::docir::{DocIR, PageSource};
-use crate::region::{Region, RegionKind};
+use crate::region::{NoiseKind, Region, RegionKind};
 use crate::table_grid::table_grid_to_html;
 
 /// 渲染 DocIR 为 GFM 文本：按页分段（页号升序），段间空行，段两端 trim
 /// （与旧 `DocumentEmitter::finish` 一致，对齐 GFM 块语义）。
 pub(crate) fn render(doc: &DocIR) -> String {
+    render_with_furniture(doc, false)
+}
+
+/// 家具/脚注（`Noise`/`Footnote`）的**可选输出**渲染（#10 例外项）。
+///
+/// `emit = false`（默认）：与 [`render`] 逐字节相同——`Noise`/`Footnote` 区块
+/// 零消费（下面四个阶段都不匹配它们），"收集进 IR 但不输出"。
+///
+/// `emit = true`（CLI/env 开关 `ANYDOC_EMIT_FURNITURE`）：每页段末追加 HTML
+/// 注释行——`<!-- header: … -->` / `<!-- footer: … -->` /
+/// `<!-- page-number: … -->` / `<!-- seal: … -->` / `<!-- footnote: … -->`。
+/// 用注释形态的原因：不污染可见 markdown 文本、可 grep、GFM 合法；正式的
+/// 结构化出口是 #10/#11 的 content_list v2 投影（`PAGE_HEADER`/`PAGE_FOOTER`/
+/// `PAGE_NUMBER` 独立 item），本分支是过渡形态。
+///
+/// 家具项按 `y_min` 升序输出（页眉在前、页脚在后，det 顺序不作保证）；
+/// 文本中的 `-->` 会提前终止 HTML 注释，替换为 `->`（显示用标注，不做原文保真）。
+pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
     let mut segments: BTreeMap<u32, String> = BTreeMap::new();
     for page in &doc.pages {
         let mut seg = String::new();
@@ -90,6 +108,33 @@ pub(crate) fn render(doc: &DocIR) -> String {
                     seg.push_str(&html);
                     seg.push('\n');
                 }
+            }
+        }
+        // 5) 家具/脚注（#10 例外项）：默认不输出（上面四阶段不匹配 Noise/Footnote，
+        //    已天然跳过）；开关打开时段末追加注释行。占位变体 Image/Code/Formula/
+        //    Index/Aside 同样零消费——producer 未产，新类别出现才加渲染分支。
+        if emit {
+            let mut furniture: Vec<&Region> = regions_of(page, |k| {
+                matches!(k, RegionKind::Noise(_) | RegionKind::Footnote)
+            })
+            .collect();
+            furniture.sort_by(|a, b| {
+                a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for r in furniture {
+                let label = match &r.kind {
+                    RegionKind::Noise(NoiseKind::Header) => "header",
+                    RegionKind::Noise(NoiseKind::Footer) => "footer",
+                    RegionKind::Noise(NoiseKind::PageNumber) => "page-number",
+                    RegionKind::Noise(NoiseKind::Seal) => "seal",
+                    RegionKind::Footnote => "footnote",
+                    _ => continue,
+                };
+                let t = r.text.replace("-->", "->");
+                if !seg.is_empty() && !seg.ends_with('\n') {
+                    seg.push('\n');
+                }
+                seg.push_str(&format!("<!-- {label}: {t} -->\n"));
             }
         }
         segments.entry(page.page_no).or_default().push_str(&seg);
@@ -329,5 +374,89 @@ mod tests {
             ],
         };
         assert_eq!(render(&doc), "内容");
+    }
+
+    // ── #10 例外项：家具/脚注的可选输出 ──
+
+    fn noise_region(text: &str, y: f32, kind: RegionKind) -> Region {
+        Region::new(0.0, 100.0, y, y + 5.0, text).with_kind(kind)
+    }
+
+    fn furniture_doc() -> DocIR {
+        DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 40.0, 50.0, "正文"),
+                    noise_region("页眉文本", 0.0, RegionKind::Noise(NoiseKind::Header)),
+                    noise_region("页脚文本", 90.0, RegionKind::Noise(NoiseKind::Footer)),
+                    noise_region("第 1 页", 80.0, RegionKind::Noise(NoiseKind::PageNumber)),
+                    noise_region("章内散字", 60.0, RegionKind::Noise(NoiseKind::Seal)),
+                    noise_region("脚注一行", 70.0, RegionKind::Footnote),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        }
+    }
+
+    /// 默认渲染：家具/脚注零输出（与开关引入前逐字节相同）。
+    #[test]
+    fn furniture_hidden_by_default() {
+        assert_eq!(render(&furniture_doc()), "正文");
+        // DocIR::render() 同样默认关。
+        assert_eq!(furniture_doc().render(), "正文");
+    }
+
+    /// 开关打开：段末注释行，按 y 升序（header → seal → footnote →
+    /// page-number → footer），`Footnote` 用独立标签。
+    #[test]
+    fn furniture_emitted_as_comments_in_y_order() {
+        let on = render_with_furniture(&furniture_doc(), true);
+        assert_eq!(
+            on,
+            "正文\n\
+             <!-- header: 页眉文本 -->\n\
+             <!-- seal: 章内散字 -->\n\
+             <!-- footnote: 脚注一行 -->\n\
+             <!-- page-number: 第 1 页 -->\n\
+             <!-- footer: 页脚文本 -->"
+        );
+    }
+
+    /// 文本中的 `-->` 会提前终止 HTML 注释，输出前替换为 `->`。
+    #[test]
+    fn furniture_text_with_comment_terminator_is_sanitized() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![noise_region("a --> b", 0.0, RegionKind::Noise(NoiseKind::Header))],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert!(render_with_furniture(&doc, true).contains("<!-- header: a -> b -->"));
+    }
+
+    /// 占位变体（Image/Code/Formula/Index/Aside）：零消费——producer 未产，
+    /// 即便有人手工构造也不应出现在任何输出里。
+    #[test]
+    fn placeholder_variants_never_render() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 1.0, 0.0, 1.0, "图").with_kind(RegionKind::Image),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "码").with_kind(RegionKind::Code),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "式").with_kind(RegionKind::Formula),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "录").with_kind(RegionKind::Index),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "注").with_kind(RegionKind::Aside),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(render(&doc), "");
+        assert_eq!(render_with_furniture(&doc, true), "");
     }
 }

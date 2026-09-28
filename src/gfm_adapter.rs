@@ -23,7 +23,7 @@ use crate::reading_order::{
     is_isolated_marker, norm_membership, order_structure, page_scale, postprocess_lines,
     title_level,
 };
-use crate::region::{Region, RegionKind};
+use crate::region::{NoiseKind, Region, RegionKind, Span};
 use crate::table_grid::{self, TableGrid};
 use oar_ocr::domain::structure::{LayoutElementType, StructureResult, TableResult};
 
@@ -219,12 +219,17 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
         // 跨页表覆盖首表页段，不再作为正文重复）。
         // T6：页眉/页脚块（layout 已检出）在 region 收集层剔除——与
         // `order_structure` 的 noise 剔除同一语义，前移做双保险，防路径变化。
-        let noise_bboxes: Vec<&oar_ocr::processors::BoundingBox> = page
+        // #10 例外项：**剔除改为分流**——命中文本不再丢弃，收进 `furniture`
+        // （kind 按 layout 类型细分，`Footnote` 独立成 kind 不与页脚混），
+        // 装配时追加进 IR；渲染默认跳过（输出逐字节不变），开关
+        // `ANYDOC_EMIT_FURNITURE` 打开时以注释行输出。正文 regions 仍然
+        // 不含家具文本（`order_structure` 的输入与三重过滤语义都不变）。
+        let furniture_els: Vec<(&oar_ocr::processors::BoundingBox, RegionKind)> = page
             .layout_elements
             .iter()
-            .filter(|el| el.element_type.is_header() || el.element_type.is_footer())
-            .map(|el| &el.bbox)
+            .filter_map(|el| furniture_kind_of(el.element_type).map(|k| (&el.bbox, k)))
             .collect();
+        let mut furniture: Vec<Region> = Vec::new();
         let mut regions: Vec<Region> = Vec::new();
         if let Some(regs) = &page.text_regions {
             for r in regs {
@@ -249,16 +254,25 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
                 if in_img {
                     continue;
                 }
-                // 页眉/页脚（layout 已检出）：剔除
-                if noise_bboxes
+                // 页眉/页脚/页码/印章/脚注（layout 已检出）：分流进 furniture
+                if let Some((_, k)) = furniture_els
                     .iter()
-                    .any(|nb| norm_membership(cx, cy, scale, nb))
+                    .find(|(nb, _)| norm_membership(cx, cy, scale, nb))
                 {
+                    furniture.push(
+                        Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string())
+                            .with_confidence(r.confidence)
+                            .with_kind(k.clone()),
+                    );
                     continue;
                 }
+                // #6 第 4 步：OCR 通路无样式证据（StructureResult 只有整行文本
+                // 与置信度），行产**单 span、全零样式**的退化形态——run 边界
+                // （行级）结构化，投影层（#11）至少有"整行一个 span"可落。
                 regions.push(
                     Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string())
-                        .with_confidence(r.confidence),
+                        .with_confidence(r.confidence)
+                        .with_spans(vec![Span::plain(t.to_string())]),
                 );
             }
         }
@@ -352,9 +366,32 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .flatten()
             .map(|(w, h)| crate::docir::PageDims::page_box_px(w, h))
             .unwrap_or_default();
+        // 家具/脚注追加在正文与表格之后（收集顺序无阅读序保证——渲染层按
+        // y_min 排序输出，投影层按 bbox 自行排序）。
+        out.append(&mut furniture);
         doc.push_page(pi as u32, PageSource::Ocr, out, dims);
     }
     doc
+}
+
+/// OCR 版面元素类型 → 家具/脚注 kind（#10 例外项）。
+///
+/// `None` = 该类型不属家具（正常参与正文装配）。对应关系见
+/// [`NoiseKind`] 与 [`RegionKind::Footnote`] 文档；`Footnote` 独立成 kind
+/// （MinerU 13 项之 `PAGE_FOOTNOTE`，不与页脚混）。
+fn furniture_kind_of(ty: LayoutElementType) -> Option<RegionKind> {
+    match ty {
+        LayoutElementType::Header | LayoutElementType::HeaderImage => {
+            Some(RegionKind::Noise(NoiseKind::Header))
+        }
+        LayoutElementType::Footer | LayoutElementType::FooterImage => {
+            Some(RegionKind::Noise(NoiseKind::Footer))
+        }
+        LayoutElementType::Number => Some(RegionKind::Noise(NoiseKind::PageNumber)),
+        LayoutElementType::Seal => Some(RegionKind::Noise(NoiseKind::Seal)),
+        LayoutElementType::Footnote => Some(RegionKind::Footnote),
+        _ => None,
+    }
 }
 
 /// 多页 StructureResult → GFM 文本（OCR 源便捷入口，P1.5）。
@@ -369,7 +406,10 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
 pub fn to_markdown(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> String {
     let mut doc = to_docir(pages, dims);
     crate::docir::passes::cross_page_table::run(&mut doc);
-    doc.render()
+    // #10 例外项：家具/脚注的可选输出（存在即开，与 ANYDOC_HEADINGS_LAYOUT
+    // 同族 env 语义）。默认关 → 与 `doc.render()` 逐字节相同。
+    let emit = std::env::var("ANYDOC_EMIT_FURNITURE").is_ok();
+    crate::docir::render::render_with_furniture(&doc, emit)
 }
 
 /// T6：OCR 通路列表项配对重组——孤立列表前缀行 + 下一内容行 → 合并为一项。
@@ -1129,5 +1169,69 @@ mod tests {
             assert!(!dims.normalizable());
             assert_eq!((dims.w, dims.h), (0.0, 0.0));
         }
+    }
+
+    // ── #10 例外项：家具/脚注分流（收集进 IR，渲染默认跳过）──
+
+    /// 版面家具页：Header / Footer / Number / Footnote / Seal 各一块，
+    /// 每块 bbox 内一条 OCR 文本 + 页中一条正文。
+    fn furniture_page() -> StructureResult {
+        StructureResult {
+            layout_elements: vec![
+                LayoutElement::new(BoundingBox::from_coords(0.0, 0.0, 100.0, 10.0), LayoutElementType::Header, 0.9),
+                LayoutElement::new(BoundingBox::from_coords(0.0, 90.0, 100.0, 100.0), LayoutElementType::Footer, 0.9),
+                LayoutElement::new(BoundingBox::from_coords(0.0, 80.0, 100.0, 90.0), LayoutElementType::Number, 0.9),
+                LayoutElement::new(BoundingBox::from_coords(0.0, 70.0, 100.0, 80.0), LayoutElementType::Footnote, 0.9),
+                LayoutElement::new(BoundingBox::from_coords(0.0, 60.0, 100.0, 70.0), LayoutElementType::Seal, 0.9),
+            ],
+            text_regions: Some(vec![
+                tr(10.0, 2.0, 90.0, 8.0, "页眉文本"),
+                tr(10.0, 40.0, 90.0, 50.0, "正文一行"),
+                tr(10.0, 62.0, 90.0, 68.0, "章内散字"),
+                tr(10.0, 72.0, 90.0, 78.0, "脚注一行"),
+                tr(10.0, 82.0, 90.0, 88.0, "第 1 页"),
+                tr(10.0, 92.0, 90.0, 98.0, "页脚文本"),
+            ]),
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        }
+    }
+
+    #[test]
+    fn furniture_is_collected_into_ir_with_kinds() {
+        let d = to_docir(&[furniture_page()], &[Some((100, 100))]);
+        let regs = &d.pages[0].regions;
+        // 正文只有页中的一行；五类家具文本不再丢失而是带着 kind 进 IR
+        let body: Vec<&str> = regs
+            .iter()
+            .filter(|r| r.kind == RegionKind::Body)
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(body, vec!["正文一行"]);
+        let kind_of = |t: &str| {
+            regs.iter()
+                .find(|r| r.text == t)
+                .map(|r| r.kind.clone())
+                .unwrap_or_else(|| panic!("文本 {t} 应在 IR 中"))
+        };
+        assert_eq!(kind_of("页眉文本"), RegionKind::Noise(NoiseKind::Header));
+        assert_eq!(kind_of("第 1 页"), RegionKind::Noise(NoiseKind::PageNumber));
+        assert_eq!(kind_of("页脚文本"), RegionKind::Noise(NoiseKind::Footer));
+        assert_eq!(kind_of("章内散字"), RegionKind::Noise(NoiseKind::Seal));
+        // 脚注独立成 kind（MinerU 13 项之 PAGE_FOOTNOTE），不与页脚混
+        assert_eq!(kind_of("脚注一行"), RegionKind::Footnote);
+    }
+
+    #[test]
+    fn furniture_regions_keep_bbox_and_confidence() {
+        let d = to_docir(&[furniture_page()], &[Some((100, 100))]);
+        let hdr = d.pages[0]
+            .regions
+            .iter()
+            .find(|r| r.text == "页眉文本")
+            .expect("页眉在 IR");
+        // bbox 原样保留（投影层要落 PAGE_HEADER 的 bbox）
+        assert!((hdr.x_min - 10.0).abs() < 1e-4 && (hdr.x_max - 90.0).abs() < 1e-4);
+        assert!((hdr.y_min - 2.0).abs() < 1e-4 && (hdr.y_max - 8.0).abs() < 1e-4);
     }
 }

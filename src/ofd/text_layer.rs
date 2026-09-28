@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use ofd_core::model::graphics::PageBlock;
 use ofd_core::model::page::PageObject;
 
-use crate::region::Region;
+use crate::region::{Region, Span};
 
 /// OFD 文字层提取的文本行：x0, x1, y0, y1（左、右、上、下，文档坐标），text。
 #[derive(Debug, Clone)]
@@ -22,10 +22,16 @@ pub(crate) struct OfdTextLine {
 }
 
 /// `OfdTextLine` 文本行 → `Region`（`f32` 区域，reading_order / table_grid 共用）。
+///
+/// #6 第 4 步：OFD 文字层无样式证据（ofd-core 的 TextObject 不携带
+/// bold/italic/装饰），每行产**单 span、全零样式**的退化形态——run 边界
+/// （行级）仍然结构化，投影层（#11）的 `content: [InlineSpan]` 至少有
+/// "整行一个 span"可落。markdown 渲染层不消费 spans，输出逐字节不变。
 pub(crate) fn to_regions(texts: Vec<OfdTextLine>) -> Vec<Region> {
     texts
         .into_iter()
         .map(|line| {
+            let spans = vec![Span::plain(line.text.clone())];
             Region::new(
                 line.x0 as f32,
                 line.x1 as f32,
@@ -33,6 +39,7 @@ pub(crate) fn to_regions(texts: Vec<OfdTextLine>) -> Vec<Region> {
                 line.y1 as f32,
                 line.text,
             )
+            .with_spans(spans)
         })
         .collect()
 }
@@ -342,5 +349,24 @@ mod tests {
         let img = PageBlock::Image(ImageObject::default());
         assert_eq!(count_images(&nested_page(10, img.clone())), 1);
         assert_eq!(count_images(&nested_page(MAX_BLOCK_DEPTH + 50, img)), 0);
+    }
+
+    /// #6 第 4 步：OFD 文字层行产**单 span、全零样式**的退化形态
+    /// （ofd-core 无样式证据）；span 文本与 Region.text 同源。
+    #[test]
+    fn to_regions_attaches_single_plain_span() {
+        let lines = vec![OfdTextLine {
+            x0: 0.0,
+            x1: 10.0,
+            y0: 0.0,
+            y1: 1.0,
+            text: "正文行".to_string(),
+        }];
+        let regions = to_regions(lines);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].spans.len(), 1);
+        assert_eq!(regions[0].spans[0].text, "正文行");
+        assert!(regions[0].spans[0].styles.is_plain());
+        assert_eq!(regions[0].text, "正文行");
     }
 }
