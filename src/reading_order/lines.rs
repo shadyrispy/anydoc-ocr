@@ -4,7 +4,6 @@
 //!   `_merge_para_text`；
 //! - 行级后处理（`postprocess_lines_boxed`）：西文连字符合并 + 全角 ASCII 归一化。
 
-use super::list::starts_with_list_marker;
 use super::title::title_level;
 
 /// 阅读序管线的**行载体**（#11b）：文本 + 几何 + 排序键 `y`。
@@ -66,18 +65,7 @@ impl Line {
 /// 行高用块内中位 region 高度估计；空行/标题行不参与合并。
 ///
 /// #11b：合并时几何取**并集**（合并后的段落横跨参与各行的纵向范围）。
-///
-/// #11c：消费方从 OCR fallback 扩展到文字层链路（`pdf/text_layer.rs` 尾步、
-/// `ofd/mod.rs` PageData::Text）——文字层此前每视觉行即一段，长段落粒度
-/// 丢失（GJB 真实样本实测长段 1 vs 扫描版 101），故提为 `pub(crate)` 跨模块复用。
-///
-/// 拼接统一按 MinerU `merge_para_with_text` 行语境规则（曾经按通路分档
-/// `Concat`/`MineruLang`，OCR 侧独立 ticket 落地后三通路同档，枚举删除）：
-/// **下行字母** CJK 占比 >= 0.5（或下行无字母时继承段落语境）→ 不加空格；
-/// 西方语境补一个空格（英文换行词粘连 "anydoc-ocrText" 的修正）；
-/// 行尾连字符不补空格（真连字符 e-Mail 类连着拼，可并连字符已在
-/// postprocess 阶段合掉）。
-pub(crate) fn merge_into_paragraphs(lines: &[Line]) -> Vec<Line> {
+pub(super) fn merge_into_paragraphs(lines: &[Line]) -> Vec<Line> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -101,67 +89,19 @@ pub(crate) fn merge_into_paragraphs(lines: &[Line]) -> Vec<Line> {
         let is_heading = |s: &str| title_level(s).is_some() || s.trim_start().starts_with('#');
         let next_is_heading = is_heading(&w[1].text);
         let cur_is_heading = is_heading(&w[0].text);
-        // #10 切片 1：列表标记行开启**新段**（a)/（一）/- 等，数字式除外）；
-        // 其后的续行（无标记）照常并入所在列表项——段首是标记、续行跟随。
-        // 数字式维持不做：与标题编号冲突，title_level 已接住。
-        let next_is_list = starts_with_list_marker(&w[1].text);
-        // 标题行强制独段；新列表项开启新段；间距超阈值则分段
-        if cur_is_heading || next_is_heading || next_is_list || gap > merge_threshold {
+        // 标题行强制独段；间距超阈值则分段
+        if cur_is_heading || next_is_heading || gap > merge_threshold {
             out.push(std::mem::replace(&mut cur, w[1].clone()));
         } else {
-            // 同段：行间合并，拼接按下行语境补空格（MinerU 行语境规则）
+            // 同段：行间无空行合并（MinerU _merge_para_text 对齐）
+            // 不加空格——中文行末无空格，英文连字符已在 postprocess_lines 处理
             let next = w[1].clone();
             cur.bbox = Line::union_bbox(cur.bbox, next.bbox);
-            let next_text = next.text.trim_start();
-            if next_text.is_empty() {
-                continue;
-            }
-            // 下行无字母（纯数字/标点）→ 继承段落已积累语境；两者皆无
-            // 字母 → 视为中文语境不加空格（数字行多见于中文票据语境）。
-            let zh = cjk_dominant_letters(&next.text)
-                .or_else(|| cjk_dominant_letters(&cur.text))
-                .unwrap_or(true);
-            if zh || cur.text.ends_with('-') {
-                // 行尾连字符不补空格：postprocess 已先行合并可并连字符，
-                // 能留到这里的都是真连字符（e-Mail 类），连着拼。
-                cur.text.push_str(next_text);
-            } else {
-                if !cur.text.ends_with(' ') {
-                    cur.text.push(' ');
-                }
-                cur.text.push_str(next_text);
-            }
+            cur.text.push_str(&next.text);
         }
     }
     out.push(cur);
     out
-}
-
-/// MinerU `detect_lang` 的字母口径移植：只统计**字母**（`is_alphabetic`，数字/
-/// 标点不计——`第二段：发票号码 2024001，金额 1280.00 元。` 是中文语境而非西方）。
-/// 字母中 CJK（汉字/假名/谚文）占比 >= 0.5 → `Some(true)`（中文语境）；
-/// 否则 `Some(false)`（西方语境）；无字母 → `None`（由调用方继承段落语境）。
-fn cjk_dominant_letters(s: &str) -> Option<bool> {
-    let mut letters = 0usize;
-    let mut cjk = 0usize;
-    for c in s.chars() {
-        if c.is_alphabetic() {
-            letters += 1;
-            if matches!(c,
-                '\u{4E00}'..='\u{9FFF}'   // CJK 统一表意文字
-                | '\u{3400}'..='\u{4DBF}' // 扩展 A
-                | '\u{3040}'..='\u{30FF}' // 平假名/片假名
-                | '\u{AC00}'..='\u{D7AF}' // 谚文音节
-                | '\u{F900}'..='\u{FAFF}' // 兼容表意文字
-            ) {
-                cjk += 1;
-            }
-        }
-    }
-    if letters == 0 {
-        return None;
-    }
-    Some(cjk * 2 >= letters)
 }
 
 /// 行级后处理：西文连字符合并 + 全角 ASCII 归一化。
@@ -287,85 +227,6 @@ mod tests {
         let out = merge_into_paragraphs(&lines);
         let texts: Vec<&str> = out.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, vec!["# 标题", "正文"]);
-    }
-
-    /// #11c：拼接按 MinerU 行语境规则——下行**字母** CJK 语境不补空格（数字/
-    /// 标点不计，`第二段：发票号码 2024001，金额 1280.00 元。` 是中文语境）；
-    /// 西方语境补空格（text.pdf 实测词粘连 "anydoc-ocrText" 的修正）；
-    /// 行尾连字符不补空格（真连字符 e-Mail 类连着拼）。
-    /// 三通路同档（OCR 侧 `Concat` 分档在 #11c-v2 落地后删除）。
-    #[test]
-    fn merge_into_paragraphs_space_by_line_language() {
-        // 英文行合并 → 行间补空格
-        let en = vec![
-            Line { y: 100.0, text: "Hello anydoc-ocr".into(), bbox: None },
-            Line { y: 110.0, text: "Text PDF smoke test".into(), bbox: None },
-        ];
-        assert_eq!(
-            merge_into_paragraphs(&en)[0].text,
-            "Hello anydoc-ocr Text PDF smoke test"
-        );
-        // 中文行合并 → 不补空格
-        let zh = vec![
-            Line { y: 100.0, text: "质量管理".into(), bbox: None },
-            Line { y: 110.0, text: "体系要求".into(), bbox: None },
-        ];
-        assert_eq!(merge_into_paragraphs(&zh)[0].text, "质量管理体系要求");
-        // 中文行夹大量数字仍是中文语境（字母口径，数字不计）→ 不补
-        let zh_num = vec![
-            Line { y: 100.0, text: "上句结束。".into(), bbox: None },
-            Line { y: 110.0, text: "第二段：发票号码 2024001，金额 1280.00 元。".into(), bbox: None },
-        ];
-        assert_eq!(
-            merge_into_paragraphs(&zh_num)[0].text,
-            "上句结束。第二段：发票号码 2024001，金额 1280.00 元。"
-        );
-        // 西方语境 + 行尾连字符 → 不补空格（真连字符 e-Mail 类连着拼）
-        let hy = vec![
-            Line { y: 100.0, text: "well-".into(), bbox: None },
-            Line { y: 110.0, text: "Known".into(), bbox: None },
-        ];
-        assert_eq!(merge_into_paragraphs(&hy)[0].text, "well-Known");
-    }
-
-    /// #10 切片 1：列表标记行开启**新段**、续行（无标记）并入所在列表项；
-    /// 正文段互并行为不变。
-    #[test]
-    fn merge_into_paragraphs_list_items_start_own_paragraph() {
-        let lines = vec![
-            Line { y: 100.0, text: "编制产品标准化大纲；".into(), bbox: None },
-            Line { y: 110.0, text: "f)  确定产品通用化、系列化要求，".into(), bbox: None },
-            Line { y: 120.0, text: "覆盖接口与互换性。".into(), bbox: None },
-            Line { y: 130.0, text: "g)  按照 GJB 450 的要求确定工作项目".into(), bbox: None },
-        ];
-        let out = merge_into_paragraphs(&lines);
-        assert_eq!(out.len(), 3, "正文段 + f) 项（含续行）+ g) 项: {out:?}");
-        assert_eq!(
-            out[1].text,
-            "f)  确定产品通用化、系列化要求，覆盖接口与互换性。",
-            "f) 的续行并入其段"
-        );
-        // bullet 行开启新段、续行并入；（一）行由 title_level 判中文编号标题，
-        // is_heading 护栏先命中独段——list 护栏对它冗余不冲突
-        let zh = vec![
-            Line { y: 100.0, text: "- 要点一：组织应识别相关方。".into(), bbox: None },
-            Line { y: 110.0, text: "相关方包括顾客、供方与监管机构。".into(), bbox: None },
-            Line { y: 120.0, text: "- 要点二：组织应开展相关方分析。".into(), bbox: None },
-        ];
-        let out = merge_into_paragraphs(&zh);
-        assert_eq!(out.len(), 2, "两个 bullet 项各自成段: {out:?}");
-        assert_eq!(out[0].text, "- 要点一：组织应识别相关方。相关方包括顾客、供方与监管机构。");
-        let cn = vec![
-            Line { y: 100.0, text: "（一）理解组织及其环境。".into(), bbox: None },
-            Line { y: 110.0, text: "组织应识别相关方。".into(), bbox: None },
-        ];
-        assert_eq!(merge_into_paragraphs(&cn).len(), 2, "（一）是 title_level 标题，独段优先");
-        // 无标记正文行照旧合并
-        let plain = vec![
-            Line { y: 100.0, text: "第一段。".into(), bbox: None },
-            Line { y: 110.0, text: "第二行内容。".into(), bbox: None },
-        ];
-        assert_eq!(merge_into_paragraphs(&plain)[0].text, "第一段。第二行内容。");
     }
 
     /// #11b：连字符合并（两行拼回一行）→ 几何取并集，不是取第一行。

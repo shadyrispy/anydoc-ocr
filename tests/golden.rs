@@ -30,11 +30,6 @@ fn samples() -> Vec<(&'static str, bool)> {
         // 常缺的真实样本 → 合并分支在入库语料里**零覆盖**。生成器
         // `tests/gen_cross_page_table.py`（含该件为何是 3 页的实测记录）。
         ("tests/samples/cross_page_table.pdf", false),
-        // #11c：真实样本入库覆盖（真实样本首测批次入库的两件成对样本）。
-        // GJB 9001C 文字版（Word 转 PDF，38 页，文字层通路，~10s）默认跑；
-        // NUAA 扫描版（ScanSnap 纯图，37 页，OCR 通路）挂 OCR 档防默认档超时。
-        ("tests/samples/real_samples/gjb9001c_wenzi.pdf", false),
-        ("tests/samples/real_samples/nuaa_tupian.pdf", true),
         // OCR 类（需 env）
         ("tests/samples/image.pdf", true),
         ("tests/samples/image.ofd", true),

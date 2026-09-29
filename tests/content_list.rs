@@ -33,10 +33,9 @@ fn run(name: &str, format: &str) -> (bool, String, String) {
     )
 }
 
-/// 文字层 PDF → paragraph item，按页分组。
+/// 文字层 PDF → 两个 paragraph item，按页分组。
 /// #11b-v2：text.pdf 有 MediaBox → dims=PageBoxPdfPt → **bbox 落地**（0–1000
 /// 归一化、top-down 顺序）；无框页的"省略而非伪造"由 `bbox_of` 单测钉住。
-/// #11c：两行近距正文合并为**一段**（bbox 跨两行），西方语境行间补空格。
 #[test]
 fn text_layer_pdf_projects_to_page_grouped_items_with_bbox() {
     let (ok, stdout, _) = run("text.pdf", "content-list-v2");
@@ -45,7 +44,7 @@ fn text_layer_pdf_projects_to_page_grouped_items_with_bbox() {
     let pages = v.as_array().expect("顶层是数组（按页分组）");
     assert_eq!(pages.len(), 1, "text.pdf 单页 → 一个页槽位");
     let items = pages[0].as_array().expect("每页是 item 数组");
-    assert_eq!(items.len(), 1, "#11c 两行近距正文 → 合并为一个段落 item");
+    assert_eq!(items.len(), 2, "两行正文 → 两个 item");
     for it in items {
         assert_eq!(it["type"], "paragraph");
         // content 是对象（paragraph_content），不是裸字符串
@@ -56,12 +55,11 @@ fn text_layer_pdf_projects_to_page_grouped_items_with_bbox() {
         assert!(q.iter().all(|&c| (0..=1000).contains(&c)), "bbox 0-1000: {q:?}");
         assert!(q[1] <= q[3], "top-down：y0(上) <= y1(下): {q:?}");
     }
-    let text = items[0]["content"]["paragraph_content"][0]["content"].as_str().unwrap();
-    // 行间补空格（MinerU 西方语境），bbox 纵向覆盖两行
-    assert_eq!(text, "Hello anydoc-ocr Text PDF smoke test 123");
-    let bbox = items[0]["bbox"].as_array().unwrap();
-    let y0 = bbox[1].as_i64().unwrap();
-    assert!(y0 < 168, "bbox y0 应覆盖第一行顶部: {bbox:?}");
+    let texts: Vec<&str> = items
+        .iter()
+        .map(|it| it["content"]["paragraph_content"][0]["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, vec!["Hello anydoc-ocr", "Text PDF smoke test 123"]);
 }
 
 /// 默认 `md` 不受影响（与加 `--format` 前同一口径）。
