@@ -786,10 +786,22 @@ fn build_body_regions(
     // （TextLayerPdf 分支），故 `Region.text` 是未加前缀的行文本。
     // #11b：走 boxed 链路——`regions`（push_line_region 造的）本就带几何，
     // 此前经 String 薄封装全丢了 → content_list v2 无 bbox。
-    let boxed =
-        reading_order::postprocess_lines_boxed(reading_order::order_text_regions_boxed(&regions));
+    // #11c：末尾追加**段落合并**。顺序 order → postprocess → merge：连字符合并
+    // 必须先于段落合并（合并后行尾连字符埋进段落中部，行对不再相邻）。合并判据
+    // 复用 `merge_into_paragraphs` 的 median_gap×1.5（与 OCR 通路块内合并同真相）；
+    // 拼接统一 MinerU 行语境规则（西方语境补空格、下行字母 CJK 语境不加）——
+    // #11c-v2 起 OCR 通路同档，Concat 分档已删（三通路一个真相）。
+    // 标题行强制独段、阅读序的列边界/页眉页脚 gap 突变自然断段。GJB 真实样本
+    // 实测：长段落 1 → 多段粒度恢复（BACKLOG #11c）。
+    let boxed = reading_order::merge_into_paragraphs(&reading_order::postprocess_lines_boxed(
+        reading_order::order_text_regions_boxed(&regions),
+    ));
     let lines: Vec<String> = boxed.iter().map(|l| l.text.clone()).collect();
     let levels = crate::text_health::title_levels(&lines, &[], true);
+    // #11c-v3 附票：字号信号补位——无编号大字号行（护栏已独段）赋 title 级别
+    // （对齐 MinerU basic 的 doc_title `#` / paragraph_title `##`）。
+    let sizes: Vec<Option<f32>> = boxed.iter().map(|l| l.font_size).collect();
+    let levels = crate::text_health::merge_font_levels(levels, &sizes);
     crate::text_health::body_regions_boxed(boxed, levels)
 }
 
@@ -1046,6 +1058,10 @@ fn push_line_region(
     }
     // PDF 坐标原点左下（y 大=靠上）。reading_order 约定 y 越小越靠上，翻转：-y。
     let y_flip = -line.y;
+    // #11c-v3：行字号 = 行内 max em 高度（max 对上/下标天然免疫——它们字号
+    // 更小；旋转 run 的 font_size 语义由 pdf-inspector 保证为 em 高度）。
+    let font_size = line.items.iter().map(|i| i.font_size).fold(f32::NAN, f32::max);
+    let font_size = if font_size.is_finite() { Some(font_size) } else { None };
     regions.push(
         Region::new(
             x_min,
@@ -1054,7 +1070,8 @@ fn push_line_region(
             y_flip + (y_max_pdf - line.y).max(1.0),
             text,
         )
-        .with_spans(spans),
+        .with_spans(spans)
+        .with_font_size(font_size),
     );
 }
 
@@ -1167,8 +1184,9 @@ fn build_spans(seg: &[pdf_inspector::TextItem]) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerHit, PageBox, build_line_groups, build_text_docir, clustered_row_split,
-        drop_oversized_pages, hybrid_disabled_from, is_repeated_furniture, looks_garbled,
+        LayerHit, PageBox, build_body_regions, build_line_groups, build_text_docir,
+        clustered_row_split, drop_oversized_pages, hybrid_disabled_from, is_repeated_furniture,
+        looks_garbled,
     };
     use std::collections::{BTreeMap, HashMap};
     use crate::docir::{DocIR, PageSource};
@@ -1761,6 +1779,52 @@ mod tests {
         assert!(!dims.normalizable());
     }
 
+    // ── #11c：文字层段落合并（链路级）──
+
+    /// 直接构造 TextLine 绕过聚行（`ti()` 的 y 恒 0，测不了多行）。
+    fn tline(y: f32, text: &str) -> pdf_inspector::extractor::TextLine {
+        pdf_inspector::extractor::TextLine {
+            items: vec![ti(text, 50.0, 100.0)],
+            y,
+            page: 1,
+            adaptive_threshold: 0.10,
+        }
+    }
+
+    fn body_texts(regions: &[Region]) -> Vec<String> {
+        regions
+            .iter()
+            .filter(|r| r.kind == crate::region::RegionKind::Body)
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    /// 行距均匀（gap 15 < median_gap×1.5）→ 3 行并 1 段；大 gap（170）断段。
+    /// 此前文字层每视觉行即一段（GJB 真实样本实测长段 1 vs 扫描版 101）。
+    #[test]
+    fn text_layer_merges_close_lines_into_paragraphs() {
+        let lines = vec![
+            tline(400.0, "第一行甲"),
+            tline(385.0, "第一行乙"),
+            tline(370.0, "第一行丙"),
+            tline(200.0, "第二段首行"),
+        ];
+        let body = body_texts(&build_body_regions(&lines, 1, 595.0));
+        assert_eq!(body.len(), 2, "均匀行距 3 行并 1 段 + 大 gap 1 段: {body:?}");
+        assert!(body[0].contains("第一行甲") && body[0].contains("第一行丙"), "{body:?}");
+        assert_eq!(body[1], "第二段首行");
+    }
+
+    /// 标题行强制独段（即使与正文行距均匀）——merge_into_paragraphs 的
+    /// is_heading 护栏在文字层链路同样生效。
+    #[test]
+    fn text_layer_heading_stays_alone_after_merge() {
+        let lines = vec![tline(400.0, "1. 总则要求"), tline(385.0, "正文紧随标题")];
+        let body = body_texts(&build_body_regions(&lines, 1, 595.0));
+        assert_eq!(body.len(), 2, "标题行强制独段: {body:?}");
+        assert_eq!(body[0], "1. 总则要求");
+    }
+
     // ── #6 第 2 步：标题级别进 IR、`#` 字面量不进 IR ──
 
     /// 走**真实 producer 通路**（`build_text_docir`）断言：编号标题被赋
@@ -1927,4 +1991,5 @@ mod tests {
         assert_eq!(regions[0].spans[0].text, "AB");
         assert_eq!(regions[0].text, "AB");
     }
+
 }

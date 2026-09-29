@@ -37,4 +37,4 @@ pub use title::title_level;
 
 pub(crate) use blocks::{norm_membership, order_structure_boxed, page_scale};
 pub(crate) use columns::order_text_regions_boxed;
-pub(crate) use lines::{Line, postprocess_lines_boxed};
+pub(crate) use lines::{Line, merge_into_paragraphs, postprocess_lines_boxed};

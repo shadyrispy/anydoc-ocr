@@ -49,6 +49,11 @@ fn parse_numbering(t: &str) -> Option<(usize, &str)> {
         while i < n && cs[i].is_ascii_digit() {
             i += 1;
         }
+        // 首段数字 >= 4 位 → 年份/日期（GJB 封面「2017―05―18 发布」，MinerU
+        // 4.0.8 判普通段落），不是章条编号：章条编号极少到四位数。
+        if i >= 4 {
+            return None;
+        }
         let mut dots = 0usize;
         while i + 1 < n && cs[i] == '.' && cs[i + 1].is_ascii_digit() {
             dots += 1;
@@ -152,5 +157,15 @@ mod tests {
         assert_eq!(title_level("ABSTRACT"), Some(2));
         // 普通正文句子 → 无级别
         assert_eq!(title_level("这是正文句子。"), None);
+    }
+
+    #[test]
+    fn year_like_leading_number_is_not_numbering() {
+        // GJB 封面「2017―05―18 发布」：MinerU 4.0.8 真 CLI 判普通段落，此前
+        // ASCII 数字分支拿 `2017` 当编号 → 误造 `##`。四位数首段 = 日期/年份。
+        assert_eq!(title_level("2017―05―18 发布"), None);
+        assert_eq!(title_level("2024 年度报告"), None);
+        // 三位及以下仍照旧（章条编号不会更长，但也不排除个别文档）
+        assert_eq!(title_level("123 总则"), Some(2));
     }
 }

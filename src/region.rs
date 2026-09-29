@@ -214,6 +214,15 @@ pub struct Region {
     /// `Some(false)` = 显式"不是续接"，与 `None` 渲染行为相同，仅供投影层显式
     /// 落 `false` 时使用（MinerU 允许三态）。
     pub continues_prev: Option<bool>,
+    /// 行字号（#11c-v3）：该行/段内最大 em 高度（pt，PDF `TextItem.font_size`；
+    /// OFD `TextObject@Size` 毫米原值——**只在文档内做相对比值，量纲无关**）。
+    ///
+    /// `None` = 来源无字号证据（OCR det 框、表格/占位构造、旧调用方默认）。
+    /// MinerU 4.0.8 文字层 span 模型**不携带字号**（段落真值=版面框）；本仓
+    /// 无版面模型，字号是"模拟 block 边界"护栏（`merge_into_paragraphs`）的
+    /// 判据来源——真实语料区分度实证见 BACKLOG #11c-v3（GJB：正文 10pt vs
+    /// 无编号标题 16/26pt）。渲染层不消费，投影层（#10/#11）可直读。
+    pub font_size: Option<f32>,
 }
 
 impl Region {
@@ -229,6 +238,7 @@ impl Region {
             spans: Vec::new(),
             heading_level: None,
             continues_prev: None,
+            font_size: None,
         }
     }
 
@@ -245,6 +255,7 @@ impl Region {
             spans: Vec::new(),
             heading_level: None,
             continues_prev: None,
+            font_size: None,
         }
     }
 
@@ -269,6 +280,12 @@ impl Region {
     /// 附加行内 span（builder，#6 第 4 步）。
     pub fn with_spans(mut self, spans: Vec<Span>) -> Self {
         self.spans = spans;
+        self
+    }
+
+    /// 附加行字号（builder，#11c-v3；`None` = 无字号证据）。
+    pub fn with_font_size(mut self, font_size: Option<f32>) -> Self {
+        self.font_size = font_size;
         self
     }
 

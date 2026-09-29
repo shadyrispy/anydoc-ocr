@@ -70,6 +70,59 @@ pub fn has_garbled_chars(
 /// 第 4 步把样式做成结构化 `Span` 之后，"标题判定要看渲染前的文本"这个需求
 /// 会以更合适的形状重新出现（那时读的是 spans 而不是正则剥字符串），实现可
 /// `git log -p -- src/text_health.rs` 取回。
+/// 字号信号赋级阈值（#11c-v3 附票）：行字号 / 本页中位字号 >= 它 → 文档标题
+/// （level 1，对齐 MinerU `doc_title` 的 `#`）。
+///
+/// GJB 第 1 页真值：行字号 {10.02, 13.02, 13.02, 13.98, 16.02, 25.98} → 中位
+/// 13.98（封面正文行少，中位被大字抬高，故不是"26/10=2.6"那种理想比），封面
+/// 主标题「质量管理体系要求」25.98/13.98 = **1.858**，MinerU 4.0.8 真 CLI 给
+/// `#`（doc_title）。取 1.8 命中它，并与下界 1.6（见 [`TITLE_FONT_RATIO`]）
+/// 之间留 0.26 间隔。
+pub const DOC_TITLE_FONT_RATIO: f32 = 1.8;
+/// 字号信号赋级阈值：>= 它 → 无编号小节标题（level 2，对齐 MinerU
+/// `paragraph_title` 的 `##`）。
+///
+/// **不等于**护栏的 [`crate::reading_order::lines::FONT_SIZE_GUARD_RATIO`]
+/// （1.15）：护栏误伤只是多切一段，赋级误伤是凭空造出一个 `#`/`##` 标题
+/// （markdown 结构级错误），故赋级取更保守的阈值。GJB 夹逼：
+/// 「中央军委装备发展部 颁 布」16.02/13.98 = **1.146**（MinerU 判普通段落）
+/// 不触发，「目    次」16.02/10.02 = **1.6**（MinerU 判 `##`）触发。
+pub const TITLE_FONT_RATIO: f32 = 1.35;
+
+/// 字号信号补位赋级（#11c-v3 附票）：**只**在 [`title_levels`] 未判出级别
+/// （`None`）的行上补——编号/`#` 字面量/hints 判定全部不动，零回归面。
+///
+/// 动机：MinerU 4.0.8 basic 靠版面模型给 `doc_title`/`paragraph_title` 类型，
+/// 本仓文字层无版面模型 → 无编号标题此前只能落在 paragraph（v3 护栏已让它
+/// 独段，但无级别）。GJB 前 8 页真 CLI 对照：`# 质量管理体系要求` /
+/// `## 目 次` / `## 前 言`——本函数复现同样的级别分配（块边界 6/6 一致）。
+///
+/// 字号缺失（OCR 通路 / 表格占位 → `None`）不补位；有效字号样本 < 3 时
+/// 中位不可信，同样不补。
+pub fn merge_font_levels(levels: Vec<Option<u8>>, sizes: &[Option<f32>]) -> Vec<Option<u8>> {
+    let mut vals: Vec<f32> = sizes.iter().filter_map(|s| *s).filter(|v| *v > 0.0).collect();
+    if vals.len() < 3 {
+        return levels;
+    }
+    vals.sort_by(|a, b| a.total_cmp(b));
+    let med = vals[vals.len() / 2];
+    levels
+        .into_iter()
+        .zip(sizes)
+        .map(|(lv, &sz)| {
+            lv.or_else(|| match sz {
+                Some(s) if s >= med * DOC_TITLE_FONT_RATIO => Some(1),
+                Some(s) if s >= med * TITLE_FONT_RATIO => Some(2),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+pub fn font_levels(sizes: &[Option<f32>]) -> Vec<Option<u8>> {
+    merge_font_levels(vec![None; sizes.len()], sizes)
+}
+
 pub fn title_levels(
     lines: &[String],
     title_hints: &[(String, usize)],
@@ -263,5 +316,56 @@ mod tests {
         // 真编号标题仍照常命中（证明不是"整个启发式被删坏了"）。
         let real = vec!["一、总则".to_string()];
         assert_eq!(title_levels(&real, &[], true), vec![Some(2)]);
+    }
+
+    // ── 字号信号补位赋级（#11c-v3 附票）──
+
+    #[test]
+    fn font_levels_follow_gjb_page1_distribution() {
+        // GJB 第 1 页实测：封面主标题 26pt / 「目 次」16pt / 正文 10pt，
+        // 中位取 10 → 26/10=2.6 >= 2.0 判文档标题、16/10=1.6 >= 1.15 判小节。
+        let sizes = [Some(26.0f32), Some(16.0), Some(10.0), Some(10.0), Some(10.0)];
+        assert_eq!(
+            font_levels(&sizes),
+            vec![Some(1), Some(2), None, None, None]
+        );
+    }
+
+    #[test]
+    fn font_levels_keeps_existing_levels_untouched() {
+        // 补位只在 None 处发生：编号/字面量/hints 已判的级别一律不动。
+        let sizes = [Some(10.0f32), Some(26.0), Some(10.0)];
+        let levels = vec![Some(3), None, Some(2)];
+        assert_eq!(
+            merge_font_levels(levels, &sizes),
+            vec![Some(3), Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn font_levels_ignores_missing_and_thin_samples() {
+        // OCR 通路恒 None → 整页不补位（红线）。
+        let none_page = [None, None, None, None];
+        assert_eq!(font_levels(&none_page), vec![None; 4]);
+        // 有效样本 < 3 → 中位不可信，不补位（哪怕比值很大）。
+        let thin = [Some(10.0f32), Some(30.0), None];
+        assert_eq!(font_levels(&thin), vec![None; 3]);
+    }
+
+    #[test]
+    fn font_levels_threshold_boundary() {
+        // GJB 真值夹逼的两侧：1.146（中央军委装备发展部，MinerU 判普通段落）
+        // 不触发、1.6（目 次，MinerU 判 ##）触发小节级、1.858（封面主标题，
+        // MinerU 判 #）触发文档级。
+        let base = [Some(13.98f32); 5];
+        let mut below = base;
+        below[0] = Some(16.02);
+        assert_eq!(font_levels(&below)[0], None, "1.146x 不算标题");
+        let mut mid = base;
+        mid[0] = Some(22.37);
+        assert_eq!(font_levels(&mid)[0], Some(2), "1.6x 算小节标题");
+        let mut top = base;
+        top[0] = Some(25.98);
+        assert_eq!(font_levels(&top)[0], Some(1), "1.858x 算文档标题");
     }
 }

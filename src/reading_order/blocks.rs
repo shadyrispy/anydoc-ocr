@@ -191,7 +191,7 @@ fn assemble_blocks<'a>(
                 let bx = (b.x_min(), b.x_max(), b.y_min(), b.y_max());
                 (bx.1 > bx.0 && bx.3 > bx.2).then_some(bx)
             };
-            out.extend(sb.lines.into_iter().map(|l| Line { y: 0.0, text: l, bbox: blk_box }));
+            out.extend(sb.lines.into_iter().map(|l| Line { y: 0.0, text: l, bbox: blk_box, font_size: None }));
             continue;
         }
         if inner_idx.is_empty() {

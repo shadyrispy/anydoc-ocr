@@ -90,7 +90,7 @@ pub fn order_vertical(regions: &[Region]) -> (Vec<Line>, Vec<bool>) {
             mask[i] = true;
         }
         if !text.is_empty() {
-            paras.push(Line { y: bbox.map_or(0.0, |b| b.2), text, bbox });
+            paras.push(Line { y: bbox.map_or(0.0, |b| b.2), text, bbox, font_size: None });
         }
     }
     (paras, mask)

@@ -605,11 +605,19 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> 
                 //    由渲染层按 `Region.heading_level` 写出，producer 不再拼字面量。
                 //    #11b：走 boxed 链路——`lines` 本就带几何（`to_regions` 造的
                 //    真实框），此前经 String 薄封装全丢了 → content_list v2 无 bbox。
-                let boxed = reading_order::postprocess_lines_boxed(
-                    reading_order::order_text_regions_boxed(&regions),
+                //    #11c：追加段落合并（顺序 order → postprocess → merge，理由
+                //    与 PDF 文字层同——见 `pdf/text_layer.rs` 尾步注释）。拼接用
+                //    拼接与 PDF 文字层同（MinerU 行语境规则，三通路同档）。
+                let boxed = reading_order::merge_into_paragraphs(
+                    &reading_order::postprocess_lines_boxed(
+                        reading_order::order_text_regions_boxed(&regions),
+                    ),
                 );
                 let md: Vec<String> = boxed.iter().map(|l| l.text.clone()).collect();
                 let levels = crate::text_health::title_levels(&md, &[], true);
+                // #11c-v3 附票：字号补位赋级（同 PDF 文字层，见 pdf/text_layer.rs）
+                let sizes: Vec<Option<f32>> = boxed.iter().map(|l| l.font_size).collect();
+                let levels = crate::text_health::merge_font_levels(levels, &sizes);
                 let out = crate::text_health::body_regions_boxed(boxed, levels);
                 doc.push_page(page, PageSource::TextLayerOfd, out, *pdims);
             }

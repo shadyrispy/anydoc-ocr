@@ -12,6 +12,10 @@ use ofd_core::model::page::PageObject;
 use crate::region::{Region, Span};
 
 /// OFD 文字层提取的文本行：x0, x1, y0, y1（左、右、上、下，文档坐标），text。
+///
+/// #11c-v3：`font_size` 来自 `TextObject@Size`（**毫米**；PDF 侧是 pt——字段
+/// 只用于**文档内相对比值**护栏，量纲无关）。`None` = 缺省 0（规范允许缺失）
+/// 或非正值，不作字号证据。
 #[derive(Debug, Clone)]
 pub(crate) struct OfdTextLine {
     pub x0: f64,
@@ -19,6 +23,7 @@ pub(crate) struct OfdTextLine {
     pub y0: f64,
     pub y1: f64,
     pub text: String,
+    pub font_size: Option<f32>,
 }
 
 /// `OfdTextLine` 文本行 → `Region`（`f32` 区域，reading_order / table_grid 共用）。
@@ -40,6 +45,7 @@ pub(crate) fn to_regions(texts: Vec<OfdTextLine>) -> Vec<Region> {
                 line.text,
             )
             .with_spans(spans)
+            .with_font_size(line.font_size)
         })
         .collect()
 }
@@ -111,6 +117,12 @@ fn ctm_is_watermark_angle(ctm: &[f64]) -> bool {
 /// （规范无显式上限，实测公文 ≤5），超限即停止下探该子树。
 pub(crate) const MAX_BLOCK_DEPTH: usize = 64;
 
+/// `TextObject@Size` → 字号证据（#11c-v3）：规范允许缺省 `0`（渲染时跳过），
+/// 非**正**值一律不作证据 → `None`。
+fn ofd_font_size(size: f64) -> Option<f32> {
+    if size > 0.0 { Some(size as f32) } else { None }
+}
+
 fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>, depth: usize) {
     if depth > MAX_BLOCK_DEPTH {
         return;
@@ -159,6 +171,7 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>, depth: 
                         y0,
                         y1,
                         text: line,
+                        font_size: ofd_font_size(t.size),
                     });
                 } else {
                     // boundary 退化：退回旧单点行为（首字符坐标），不 panic。
@@ -168,6 +181,7 @@ fn collect_text_blocks(blocks: &[PageBlock], out: &mut Vec<OfdTextLine>, depth: 
                         y0: y,
                         y1: y + 1.0,
                         text: line,
+                        font_size: ofd_font_size(t.size),
                     });
                 }
             }
@@ -244,6 +258,7 @@ mod tests {
                 y0: 0.0,
                 y1: 1.0,
                 text: "太原市人民政府公报".to_string(),
+                font_size: None,
             },
             OfdTextLine {
                 x0: 0.0,
@@ -251,6 +266,7 @@ mod tests {
                 y0: 1.0,
                 y1: 2.0,
                 text: "二〇二五年第一期".to_string(),
+                font_size: None,
             },
         ];
         assert!(!is_garbled_text(&ok));
@@ -262,6 +278,7 @@ mod tests {
                 y0: i as f64,
                 y1: i as f64 + 1.0,
                 text: "\u{FFFD}".to_string(),
+                font_size: None,
             })
             .collect();
         assert!(is_garbled_text(&bad));
@@ -275,6 +292,7 @@ mod tests {
                 y0: i as f64,
                 y1: i as f64 + 1.0,
                 text: "正常正文".to_string(),
+                font_size: None,
             })
             .collect();
         for m in mixed.iter_mut().take(10) {
@@ -365,6 +383,7 @@ mod tests {
             y0: 0.0,
             y1: 1.0,
             text: "正文行".to_string(),
+            font_size: None,
         }];
         let regions = to_regions(lines);
         assert_eq!(regions.len(), 1);
