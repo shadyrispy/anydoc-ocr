@@ -2,6 +2,7 @@
 //!
 //! 把所有区域按 x 中心排序，取最大间隙切分出列；每列内按 y 排序、列间从左到右。
 
+use super::lines::Line;
 use crate::region::Region;
 
 /// OCR 文本区域的阅读顺序还原。
@@ -9,80 +10,60 @@ use crate::region::Region;
 /// `y` 语义：**越小越靠上**（图像坐标系，原点左上）。PDF 坐标（原点左下）
 /// 需在调用方翻转后传入，否则上下颠倒。
 pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
+    order_text_regions_boxed(regions).into_iter().map(|l| l.text).collect()
+}
+
+/// 同上，**带几何**版（#11b 真相函数）：OFD/PDF 文字层通路消费
+/// （`ofd/mod.rs` 的 `PageData::Text`、`pdf/text_layer.rs` 的 `build_body_regions`），
+/// 几何一路带到 Region 上 → content_list v2 的 bbox 投影。
+pub(crate) fn order_text_regions_boxed(regions: &[Region]) -> Vec<Line> {
     if regions.is_empty() {
         return Vec::new();
     }
     let page_w = Region::page_w(regions);
     if page_w <= 0.0 {
-        return sort_by_y(regions);
+        return sort_by_y_boxed(regions);
     }
     let Some(split) = detect_column_split(regions) else {
-        return sort_by_y(regions);
+        return sort_by_y_boxed(regions);
     };
 
     // 列分类：左/右/整宽三组（复用 split_columns，消除与 order_within_block 的重复）
     let (left_refs, right_refs, full_refs) = split_columns(regions, split);
-    let mut left: Vec<(f32, String)> = left_refs
-        .iter()
-        .map(|r| (r.y_min, r.text.clone()))
-        .collect();
-    let mut right: Vec<(f32, String)> = right_refs
-        .iter()
-        .map(|r| (r.y_min, r.text.clone()))
-        .collect();
+    let mut left: Vec<Line> = left_refs.into_iter().map(Line::from_region).collect();
+    let mut right: Vec<Line> = right_refs.into_iter().map(Line::from_region).collect();
     left.sort_by(ord_y);
     right.sort_by(ord_y);
 
     // 整宽元素按 y 归页眉(y<正文起点)/页脚(y>正文终点)/正文区间(罕见置后)
-    let full: Vec<(f32, String)> = full_refs
-        .iter()
-        .map(|r| (r.y_min, r.text.clone()))
-        .collect();
+    let full: Vec<Line> = full_refs.into_iter().map(Line::from_region).collect();
     let body_min = left
         .iter()
         .chain(right.iter())
-        .map(|(y, _)| *y)
+        .map(|l| l.y)
         .fold(f32::INFINITY, f32::min);
     let body_max = left
         .iter()
         .chain(right.iter())
-        .map(|(y, _)| *y)
+        .map(|l| l.y)
         .fold(f32::NEG_INFINITY, f32::max);
-    let mut head: Vec<_> = full
-        .iter()
-        .filter(|(y, _)| *y < body_min)
-        .cloned()
-        .collect();
-    let mut foot: Vec<_> = full
-        .iter()
-        .filter(|(y, _)| *y > body_max)
-        .cloned()
-        .collect();
+    let mut head: Vec<_> = full.iter().filter(|l| l.y < body_min).cloned().collect();
+    let mut foot: Vec<_> = full.iter().filter(|l| l.y > body_max).cloned().collect();
     let mut mid: Vec<_> = full
         .iter()
-        .filter(|(y, _)| *y >= body_min && *y <= body_max)
+        .filter(|l| l.y >= body_min && l.y <= body_max)
         .cloned()
         .collect();
     head.sort_by(ord_y);
     mid.sort_by(ord_y);
     foot.sort_by(ord_y);
 
-    let mut out: Vec<String> = Vec::new();
-    for (_, t) in head {
-        out.push(t);
-    }
-    for (_, t) in left {
-        out.push(t);
-    }
-    for (_, t) in right {
-        out.push(t);
-    }
-    for (_, t) in mid {
-        out.push(t);
-    }
-    for (_, t) in foot {
-        out.push(t);
-    }
+    let mut out: Vec<Line> = Vec::new();
+    out.extend(head);
+    out.extend(left);
+    out.extend(right);
+    out.extend(mid);
+    out.extend(foot);
     out
 }
 
@@ -136,15 +117,15 @@ pub fn detect_column_split(regions: &[Region]) -> Option<f32> {
     Some(split)
 }
 
-fn ord_y(a: &(f32, String), b: &(f32, String)) -> std::cmp::Ordering {
-    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+fn ord_y(a: &Line, b: &Line) -> std::cmp::Ordering {
+    a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal)
 }
 
 /// 单栏/无可切分列时的退化为纯 y 排序（保持旧行为兼容）
-fn sort_by_y(regions: &[Region]) -> Vec<String> {
-    let mut v: Vec<(f32, String)> = regions.iter().map(|r| (r.y_min, r.text.clone())).collect();
+fn sort_by_y_boxed(regions: &[Region]) -> Vec<Line> {
+    let mut v: Vec<Line> = regions.iter().map(Line::from_region).collect();
     v.sort_by(ord_y);
-    v.into_iter().map(|(_, t)| t).collect()
+    v
 }
 
 /// 将 region 按列切分线 `split` 分为左/右/整宽三组（消除 `order_text_regions` 与

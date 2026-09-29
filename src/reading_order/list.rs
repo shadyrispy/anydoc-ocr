@@ -49,6 +49,46 @@ fn is_cn_numeral(c: char) -> bool {
     matches!(c, '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '〇' | '零')
 }
 
+/// 行首列表标记识别（#10 切片 1）：该行**以列表 marker 开头**（可带内容）。
+///
+/// 与 [`is_isolated_marker`] 同风格、同保守度：字母括号式 `a)` `b）` `A、`、
+/// 中文括号式 `（一）（12）`、bullet `-` `•` `·` `*`；**不做裸数字式**
+/// （`1.` `1)` 与标题编号冲突，标题由 `title_level` 处理——既有立场不变）。
+///
+/// 消费方：`merge_into_paragraphs` 的强制独段护栏——列表项不并入相邻段落
+/// （GJB 9001C 真实样本实测 `f)/g)/h)` 被并成 705 字大段）。误伤面评估：
+/// 字母点式 `A. ` 行首（英文缩写人名类）罕见，且独段只是不合并、不丢内容。
+pub fn starts_with_list_marker(line: &str) -> bool {
+    let t = line.trim_start();
+    let mut it = t.chars();
+    let Some(c0) = it.next() else {
+        return false;
+    };
+    if c0 == '#' {
+        return false;
+    }
+    // bullet：- • · *（后随空白或整行就一个字符）
+    if matches!(c0, '-' | '•' | '·' | '*') {
+        return it.next().is_none_or(|c| c.is_whitespace());
+    }
+    // 字母括号式：a) a） a. a、 A，——不要求后随空格（OCR 常丢空格）
+    if c0.is_ascii_alphabetic() {
+        return matches!(it.next(), Some(')') | Some('）') | Some('.') | Some('、') | Some('，') | Some(','));
+    }
+    // 中文括号式：（一）（12）——全角开括号起头，内芯纯数字/中文数字
+    if c0 == '（' {
+        return match t.find('）') {
+            Some(close) => {
+                let inner: String = t['（'.len_utf8()..close].chars().collect();
+                !inner.is_empty()
+                    && inner.chars().all(|ch| ch.is_numeric() || is_cn_numeral(ch))
+            }
+            None => false,
+        };
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +137,28 @@ mod tests {
     #[test]
     fn long_lines_not_markers() {
         assert!(!is_isolated_marker("abcdefg"), ">6 字符视为有内容");
+    }
+
+    /// #10 切片 1：行首标记（可带内容）——消费方是 merge 独段护栏。
+    #[test]
+    fn starts_with_list_marker_cases() {
+        assert!(starts_with_list_marker("f)  确定产品通用化要求"));
+        assert!(starts_with_list_marker("a）提供资源"));
+        assert!(starts_with_list_marker("A、总则"));
+        assert!(starts_with_list_marker("c.附录"));
+        assert!(starts_with_list_marker("- 引导启动项"));
+        assert!(starts_with_list_marker("• 要点"));
+        assert!(starts_with_list_marker("-"), "孤立 bullet 同样命中");
+        assert!(starts_with_list_marker("（一）理解组织及其环境"));
+        assert!(starts_with_list_marker("（12）试验方法"));
+        // 数字式不做（标题编号域，title_level 负责）
+        assert!(!starts_with_list_marker("1. 数字式不做"));
+        assert!(!starts_with_list_marker("1) 同上"));
+        assert!(!starts_with_list_marker("4.2 组织环境"));
+        // 非标记
+        assert!(!starts_with_list_marker("普通正文行"));
+        assert!(!starts_with_list_marker("# 标题"));
+        assert!(!starts_with_list_marker(""));
+        assert!(!starts_with_list_marker("（参见第 4 章）"), "括号内非纯数字");
     }
 }

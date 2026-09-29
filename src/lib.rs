@@ -29,7 +29,10 @@ pub(crate) mod table_grid;
 pub(crate) mod text_health;
 pub(crate) mod timing;
 
-pub use convert::{ConvertRequest, ForceFlags, OcrConfig, ParallelConfig, RenderConfig, convert_to_markdown};
+pub use convert::{
+    ConvertRequest, ForceFlags, OcrConfig, ParallelConfig, RenderConfig, convert_to_markdown,
+};
+pub use docir::OutputFormat;
 pub use detect::DocKind;
 pub use error::{ConvertError, ErrorKind, Result, Stage};
 pub use models::{OcrLayout, OcrTier};

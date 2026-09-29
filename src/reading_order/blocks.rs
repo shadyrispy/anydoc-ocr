@@ -6,7 +6,7 @@
 //! 3. [`super::columns::order_text_regions`]（区域驱动兜底，行为等价现状）
 
 use super::columns::{detect_column_split, order_text_regions, split_columns};
-use super::lines::merge_into_paragraphs;
+use super::lines::{Line, merge_into_paragraphs};
 use crate::region::Region;
 use oar_ocr::domain::structure::{LayoutElement, LayoutElementType, RegionBlock, StructureResult};
 
@@ -75,7 +75,14 @@ pub(crate) fn norm_membership(
 /// T3：入口先抽竖排正文（`vertical::order_vertical` 检测窄高条簇，按右→左/自上而下
 /// 排序），竖排段落优先输出；其余 regions 走原块驱动排序（`order_structure_block_driven`）。
 /// 无竖排时 mask 全 false，行为与原实现等价。
-pub fn order_structure(page: &StructureResult, regions: &[Region]) -> Vec<String> {
+/// 块驱动阅读序（ADR-0011 三级降级链 + T3 竖排前置），**带几何**。
+///
+/// #11b：此前叫 `order_structure` 且返回 `Vec<String>`——几何在这一步就被拍平
+/// 丢了，导致 #11 的 content_list v2 拿不到 bbox（实测 18 个样本覆盖率 1/86）。
+/// 现在载体换成 [`Line`]（文本 + 几何），并**不再保留 String 版**：唯一的生产
+/// 调用方是 OCR 通路（`gfm_adapter::to_docir`），文字层通路走的是同级的
+/// `order_text_regions`，留两版只会让"哪份是真相"产生分叉。
+pub(crate) fn order_structure_boxed(page: &StructureResult, regions: &[Region]) -> Vec<Line> {
     if regions.is_empty() {
         return Vec::new();
     }
@@ -90,8 +97,8 @@ pub fn order_structure(page: &StructureResult, regions: &[Region]) -> Vec<String
     out
 }
 
-/// 原块驱动排序主体（T3 重构：被 [`order_structure`] 包装竖排处理）。
-fn order_structure_block_driven(page: &StructureResult, regions: &[Region]) -> Vec<String> {
+/// 原块驱动排序主体（T3 重构：被 [`order_structure_boxed`] 包装竖排处理）。
+fn order_structure_block_driven(page: &StructureResult, regions: &[Region]) -> Vec<Line> {
     if regions.is_empty() {
         return Vec::new();
     }
@@ -134,8 +141,8 @@ fn assemble_blocks<'a>(
     regions: &'a [Region],
     scale: (f32, f32, f32, f32),
     consumed: &mut [bool],
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+) -> Vec<Line> {
+    let mut out: Vec<Line> = Vec::new();
     for blk in blocks {
         let inner_idx: Vec<usize> = regions
             .iter()
@@ -176,7 +183,15 @@ fn assemble_blocks<'a>(
                     consumed[i] = true;
                 }
             }
-            out.extend(sb.lines);
+            // #11b：stitch 文本由**整个块**拼出 → 几何取块 bbox（不是行级框）。
+            // 段落在块内按 y 均分不可靠（stitch 给的换行边界没有 y 信息），故整块
+            // 一个框；块若给了退化框（0 面积）就记 None，不伪造。
+            let blk_box = {
+                let b = &blk.bbox;
+                let bx = (b.x_min(), b.x_max(), b.y_min(), b.y_max());
+                (bx.1 > bx.0 && bx.3 > bx.2).then_some(bx)
+            };
+            out.extend(sb.lines.into_iter().map(|l| Line { y: 0.0, text: l, bbox: blk_box }));
             continue;
         }
         if inner_idx.is_empty() {
@@ -311,7 +326,7 @@ fn append_leftover(
     regions: &[Region],
     scale: (f32, f32, f32, f32),
     consumed: &[bool],
-    out: &mut Vec<String>,
+    out: &mut Vec<Line>,
 ) {
     let noise_bboxes: Vec<&oar_ocr::processors::BoundingBox> = page
         .layout_elements
@@ -336,14 +351,13 @@ fn append_leftover(
                 .partial_cmp(&b.y_min)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let lines: Vec<(f32, String)> =
-            leftover.iter().map(|r| (r.y_min, r.text.clone())).collect();
+        let lines: Vec<Line> = leftover.iter().map(|r| Line::from_region(r)).collect();
         out.extend(merge_into_paragraphs(&lines));
     }
 }
 
 /// ADR-0009 D2：三级降级链——order_index 全 None 时调用。
-fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
+fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<Line> {
     if let Some(rbs) = &page.region_blocks {
         // P0-2：filter_map 携带 order_index 值，排序不再 unwrap
         let mut sorted_rbs: Vec<(&RegionBlock, _)> =
@@ -351,7 +365,7 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
         sorted_rbs.sort_by_key(|&(_, oi)| oi);
         if !sorted_rbs.is_empty() {
             let scale = page_scale(page);
-            let mut out: Vec<String> = Vec::new();
+            let mut out: Vec<Line> = Vec::new();
             let mut consumed: Vec<bool> = vec![false; regions.len()];
             for &(rb, _) in &sorted_rbs {
                 let mut els: Vec<&LayoutElement> = rb
@@ -375,51 +389,51 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<String> {
             }
         }
     }
-    // 末选：现有区域驱动
-    order_text_regions(regions)
+    // 末选：现有区域驱动（`order_text_regions` 仍是 String 版——文字层通路共用，
+    // 不动它；这里封成无几何行，行为不变）。
+    Line::from_texts(order_text_regions(regions))
 }
 
 /// ADR-0009 D3+Q6：块内排序——列检测收窄到块内 + y 排序。
 ///
 /// 复用 `detect_column_split` 的最大间隙逻辑，但作用域从全页收窄到单块。
 /// 单块裹双列（模型把双列正文判成 1 个 Text 块）时分离为左列全→右列全；否则 y 排序。
-/// 返回 `(y, text)` 元组，供 `merge_into_paragraphs` 按行距合并。
-fn order_within_block(regions: &[Region]) -> Vec<(f32, String)> {
+/// 返回 [`Line`]（`y` + 文本 + **几何**），供 `merge_into_paragraphs` 按行距合并。
+fn order_within_block(regions: &[Region]) -> Vec<Line> {
     if regions.is_empty() {
         return Vec::new();
     }
+    let sort_by_y = |v: &mut [Line]| {
+        v.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+    };
     if let Some(split) = detect_column_split(regions) {
         let (left_refs, right_refs, full_refs) = split_columns(regions, split);
-        let mut left: Vec<(f32, String)> = left_refs
-            .iter()
-            .map(|r| (r.y_min, r.text.clone()))
-            .collect();
-        let mut right: Vec<(f32, String)> = right_refs
-            .iter()
-            .map(|r| (r.y_min, r.text.clone()))
-            .collect();
-        let mut mid: Vec<(f32, String)> = full_refs
-            .iter()
-            .map(|r| (r.y_min, r.text.clone()))
-            .collect();
-        left.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        right.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        mid.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut left: Vec<Line> = left_refs.iter().map(|r| Line::from_region(r)).collect();
+        let mut right: Vec<Line> = right_refs.iter().map(|r| Line::from_region(r)).collect();
+        let mut mid: Vec<Line> = full_refs.iter().map(|r| Line::from_region(r)).collect();
+        sort_by_y(&mut left);
+        sort_by_y(&mut right);
+        sort_by_y(&mut mid);
         return mid.into_iter().chain(left).chain(right).collect();
     }
     // 单列：纯 y 排序
-    let mut v: Vec<(f32, String)> = regions.iter().map(|r| (r.y_min, r.text.clone())).collect();
-    v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut v: Vec<Line> = regions.iter().map(Line::from_region).collect();
+    sort_by_y(&mut v);
     v
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{order_structure, order_within_block};
+    use super::{Line, order_structure_boxed, order_within_block};
     use crate::region::Region;
     use oar_ocr::domain::TextRegion;
     use oar_ocr::domain::structure::{LayoutElement, LayoutElementType, StructureResult};
     use oar_ocr::processors::BoundingBox;
+
+    /// #11b：断言仍按**文本**写（排序语义没变），几何另有用例单独钉。
+    fn texts(lines: Vec<Line>) -> Vec<String> {
+        lines.into_iter().map(|l| l.text).collect()
+    }
 
     /// 构造 TextRegion：(x_min, y_min, x_max, y_max, 文本)
     fn tr(x0: f32, y0: f32, x1: f32, y1: f32, text: &str) -> TextRegion {
@@ -484,7 +498,7 @@ mod tests {
             ..StructureResult::new("t", 0)
         };
         let regions = regions_of(page.text_regions.as_ref().unwrap());
-        let out = order_structure(&page, &regions);
+        let out = texts(order_structure_boxed(&page, &regions));
         assert_eq!(out, vec!["整句带行内公式", "第二段"]);
     }
 
@@ -533,7 +547,7 @@ mod tests {
             ..StructureResult::new("t", 0)
         };
         let regions = regions_of(page.text_regions.as_ref().unwrap());
-        let out = order_structure(&page, &regions);
+        let out = texts(order_structure_boxed(&page, &regions));
         // 公式带定界符 + 编号并入；编号不独立成行；inline 公式不出
         assert_eq!(out, vec!["$$ V=IR \\tag{1} $$"], "got: {out:?}");
     }
@@ -562,7 +576,7 @@ mod tests {
             ..StructureResult::new("t", 0)
         };
         let regions = regions_of(page.text_regions.as_ref().unwrap());
-        assert_eq!(order_structure(&page, &regions), vec!["上中下", "末"]);
+        assert_eq!(texts(order_structure_boxed(&page, &regions)), vec!["上中下", "末"]);
     }
 
     /// Region 从 TextRegion 转换（测试辅助）。
@@ -601,7 +615,7 @@ mod tests {
             ..StructureResult::new("t", 0)
         };
         let regions = regions_of(page.text_regions.as_ref().unwrap());
-        let out = order_structure(&page, &regions);
+        let out = texts(order_structure_boxed(&page, &regions));
         // 正文B（order=1）先于 正文A（order=2）；页眉噪声被过滤
         assert_eq!(out, vec!["正文B", "正文A"]);
     }
@@ -623,7 +637,7 @@ mod tests {
             ..StructureResult::new("t", 0)
         };
         let regions = regions_of(page.text_regions.as_ref().unwrap());
-        let out = order_structure(&page, &regions);
+        let out = texts(order_structure_boxed(&page, &regions));
         // y 排序：上 先于 下
         assert!(out[0].contains("上"));
         assert!(out[1].contains("下"));
@@ -642,7 +656,10 @@ mod tests {
             Region::new(550.0, 950.0, 300.0, 310.0, "R3"),
         ];
         let out = order_within_block(&regions);
-        let texts: Vec<&str> = out.iter().map(|(_, t)| t.as_str()).collect();
+        let texts: Vec<&str> = out.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, vec!["L1", "L2", "L3", "R1", "R2", "R3"]);
+        // #11b：几何随行带出（列序分离后每行仍是自己那一行的框）
+        assert_eq!(out[0].bbox, Some((50.0, 450.0, 100.0, 110.0)));
+        assert_eq!(out[3].bbox, Some((550.0, 950.0, 100.0, 110.0)));
     }
 }

@@ -105,15 +105,21 @@ pub fn title_levels(
 ///
 /// 长度不等是调用方的编程错误（levels 来自 `title_levels(lines,…)`），这里
 /// 按较短者对齐并 `debug_assert`，不在 release 路径 panic 掉整篇转换。
-pub(crate) fn body_regions(
-    lines: Vec<String>,
+///
+/// #11b 真相函数：几何透传给 content_list v2 的 bbox 投影。#11b-v2 后文字层
+/// 通路也走 boxed 链，`Vec<String>` 薄封装已删（真相只有一份）。
+pub(crate) fn body_regions_boxed(
+    lines: Vec<crate::reading_order::Line>,
     levels: Vec<Option<u8>>,
 ) -> Vec<crate::region::Region> {
     debug_assert_eq!(lines.len(), levels.len(), "levels 必须由同一 lines 算出");
     lines
         .into_iter()
         .zip(levels)
-        .map(|(text, level)| Region::new(0.0, 0.0, 0.0, 0.0, text).with_heading_level(level))
+        .map(|(l, level)| {
+            let (x0, x1, y0, y1) = l.bbox.unwrap_or((0.0, 0.0, 0.0, 0.0));
+            Region::new(x0, x1, y0, y1, l.text).with_heading_level(level)
+        })
         .collect()
 }
 
@@ -152,7 +158,7 @@ mod tests {
     /// 便捷视图：`title_levels` 的结果按旧方式落到行字面量上（= producer 赋
     /// 级别 + 渲染层写前缀的合成视图），供各单测沿用"看字符串"的断言写法。
     fn render_lines(lines: &[String], levels: &[Option<u8>]) -> Vec<String> {
-        body_regions(lines.to_vec(), levels.to_vec())
+        body_regions_boxed(crate::reading_order::Line::from_texts(lines.to_vec()), levels.to_vec())
             .into_iter()
             .map(|r| r.rendered_line().into_owned())
             .collect()
@@ -236,7 +242,10 @@ mod tests {
         // 前导空白 + `#`：判定视图（trim_start）认它是标题 → 不叠前缀；渲染视图
         // 不 trim → 与旧 render.rs 的 `t.starts_with('#')` 同判为非标题行（旧行为）。
         let lines = vec!["  # 缩进的标题".to_string()];
-        let regions = body_regions(lines.clone(), title_levels(&lines, &[], true));
+        let regions = body_regions_boxed(
+            crate::reading_order::Line::from_texts(lines.clone()),
+            title_levels(&lines, &[], true),
+        );
         assert_eq!(regions[0].rendered_line(), "  # 缩进的标题");
         assert!(!regions[0].is_heading(), "旧 render 口径：不 trim，故非标题");
         assert!(regions[0].is_heading_trimmed(), "判定口径：trim 后是标题");

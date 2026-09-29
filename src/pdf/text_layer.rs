@@ -3,9 +3,10 @@
 //! 表格候选启发式 + 末页探针 + 版面 OCR 确认、文字层网格表重建等。
 //! OCR 通路（`ocr_engine`）与渲染（`render`）留在 `mod.rs`。
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
+use super::page_box::{PageBox, page_visible_boxes};
 use crate::docir::{DocIR, PageDims, PageSource};
 use crate::fallback::{self, FallbackSignal};
 use crate::region::{Region, RegionKind, Span};
@@ -20,8 +21,10 @@ const GARBLED_MAX_ITEMS: usize = 4000;
 
 /// 文字层探针结论（anydoc 0.2.4 "Scanned pages are reported, not dropped"）。
 pub(crate) enum TextHit {
-    /// 文字层可用且**无缺页**：markdown 与旧快速路径字节一致（golden 守护）。
-    Complete(String),
+    /// 文字层可用且**无缺页**：`DocIR`（跨页表 pass **前**），由调用方按
+    /// [`crate::docir::OutputFormat`] 终渲染——markdown 与旧快速路径字节一致
+    /// （golden 守护）。#11 前这里直接带 finalized 的 markdown 字符串，无法投影。
+    Complete(DocIR),
     /// 混合文档：文字层只覆盖部分页。`text` = **跨页表 pass 前**的文字层 DocIR，
     /// `missing_pages` = 需要 OCR 的页（1 基，升序）。
     /// 调用方只渲/识别缺页，再按页号合并渲染（见 `pdf::merge_hybrid`）。
@@ -100,7 +103,7 @@ pub(crate) fn text_layer_probe(
     select: Option<&BTreeSet<u32>>,
     text_only: bool,
 ) -> Result<Option<TextHit>> {
-    let mut items = extract_text_items(path)?;
+    let (mut items, rotations) = extract_text_items(path)?;
     // --pages：抽取后先裁剪（后续浅检/家具/短路/装配全部只在所选页内工作）。
     if let Some(sel) = select {
         items.retain(|i| sel.contains(&i.page));
@@ -145,6 +148,11 @@ pub(crate) fn text_layer_probe(
     };
     let table_out = confirm_table_pages(path, opts, &by_page, &lines_by_page, &page_w, text_only);
     let last_table_md = probe_last_page_table(path, last_page, &page_w, &page_h);
+    // #11b-v2：文字层页框（MediaBox/CropBox 继承解析）。open_pdf_bytes 走 mmap
+    // 载体；读不出（空 map）→ 全页回落 ContentExtent，与 v2 之前一致。
+    let page_boxes = open_pdf_bytes(path)
+        .map(|b| page_visible_boxes(b.as_slice()))
+        .unwrap_or_default();
     // pass 前的文字层 DocIR（混合时与 OCR 页合并后再统一跑 pass，见 pdf::merge_hybrid）
     let text = build_text_docir(
         &by_page,
@@ -154,6 +162,8 @@ pub(crate) fn text_layer_probe(
         &table_out,
         last_page,
         last_table_md.as_deref(),
+        &page_boxes,
+        &rotations,
     );
     if render_of(&text).is_empty() {
         // P1.6：装配输出为空（空层信号，文档级）→ 集中决策表裁决。
@@ -161,7 +171,7 @@ pub(crate) fn text_layer_probe(
     } else {
         let missing = hit.missing_pages(&text);
         if missing.is_empty() || hybrid_disabled() {
-            Ok(Some(TextHit::Complete(finalize_text_docir(text))))
+            Ok(Some(TextHit::Complete(text)))
         } else {
             Ok(Some(TextHit::Hybrid { text, missing_pages: missing }))
         }
@@ -196,16 +206,13 @@ fn render_of(doc: &DocIR) -> String {
     crate::docir::render::render(doc)
 }
 
-/// pass 前 DocIR → 最终 markdown（跨页表合并 + 渲染，与旧通路字节一致）。
-pub(crate) fn finalize_text_docir(mut doc: DocIR) -> String {
-    crate::docir::passes::cross_page_table::run(&mut doc);
-    doc.render()
-}
-
 /// `no_text_layer` 出口 → [`TextHit`]：决策表判回退（`None`）时整文档 OCR；
 /// 判保留文字层时（当前 PDF 文档级决策恒回退，此为防御分支）产退化空文档。
 fn empty_route(o: Option<String>) -> Option<TextHit> {
-    o.map(TextHit::Complete)
+    // #11：`Complete` 改带 DocIR 后，这里的"退化空文档"就是一个**空 IR**
+    // （渲染为空串，与旧 `Complete("")` 逐字节一致）。旧签名带的是最终 markdown
+    // 字符串，无法投影。
+    o.map(|_| TextHit::Complete(DocIR::default()))
 }
 
 /// 深检副产物：inspector 全文档视角的总页数与"需 OCR"页集合（1 基）。
@@ -290,15 +297,34 @@ fn page_is_empty(page: &crate::docir::PageIR) -> bool {
 /// （InvalidStructure/Parse/NotAPdf）按 `PdfError` 分类返 `Err`，
 /// batch 预分流阶段据此直接标错、不送 OCR（避免绕一大圈丢失分类）。
 /// Io 错误（文件读不到等）同样返 Err，由调用方处理。
-fn extract_text_items(path: &Path) -> Result<Vec<pdf_inspector::TextItem>> {
-    let items = pdf_inspector::extract_text_with_positions(path).map_err(crate::error::from_pdf_error)?;
+///
+/// #11b-v2：改走 `..._and_rotations_mem`（同一提取管线、同一坐标帧
+/// `PositionFrame::Sheet`，逐 item 一致），副产物拿到每页坐标帧
+/// `PageRotation`（"pages absent from the map are upright"）——供 dims 决策
+/// 判定"该页坐标是否在可见框原点上"。mem 版无 `validate_pdf_file`，文件不可
+/// 读由 `open_pdf_bytes` 的 None 分支补上（同 `classify_pages` 的 Io 分类）。
+fn extract_text_items(
+    path: &Path,
+) -> Result<(Vec<pdf_inspector::TextItem>, HashMap<u32, pdf_inspector::PageRotation>)> {
+    let Some(bytes) = open_pdf_bytes(path) else {
+        return Err(crate::error::ConvertError::io(
+            crate::error::Stage::Extract,
+            std::io::Error::other(format!("打开 PDF 失败: {}", path.display())),
+        ));
+    };
+    let (items, rotations) =
+        pdf_inspector::extract_text_with_positions_and_rotations_mem(bytes.as_slice())
+            .map_err(crate::error::from_pdf_error)?;
     // pdf-inspector 1.14+ 对图片对象返回 `[Image: ...]` 占位 TextItem（FormXob 引用等），
     // 非真实文字。过滤后判空——纯图片型 PDF（image.pdf/image_table.pdf）过滤后为空，
     // 回退 OCR，避免误判"有文字层"输出占位符。
-    Ok(items
-        .into_iter()
-        .filter(|i| !i.text.trim_start().starts_with("[Image:"))
-        .collect())
+    Ok((
+        items
+            .into_iter()
+            .filter(|i| !i.text.trim_start().starts_with("[Image:"))
+            .collect(),
+        rotations,
+    ))
 }
 
 /// 坏字体（GID/编码损坏）两级防护（T12）：浅检在前、深检兜底。
@@ -514,6 +540,8 @@ fn build_text_docir(
     table_out: &BTreeMap<u32, String>,
     last_page: u32,
     last_table_md: Option<&str>,
+    page_boxes: &BTreeMap<u32, PageBox>,
+    rotations: &HashMap<u32, pdf_inspector::PageRotation>,
 ) -> DocIR {
     let mut doc = DocIR::default();
     for (page, page_items) in by_page.iter() {
@@ -521,11 +549,25 @@ fn build_text_docir(
         else {
             continue; // 不变量：两表均由 build_line_groups 从 by_page 构建，键恒一致
         };
-        // #6 第 1 步：文字层页唯一拿得到的"页尺寸"是**内容外扩**（max x+w / max y+h，
-        // 见 `build_line_groups`），不是页面框（pdf-inspector 的 `CropBox ∩ MediaBox`
-        // 是 `pub(crate)`）。故 kind=`ContentExtent`、单位 pt，`normalizable()` 为
-        // false——下游投影据此拒绝归一化，而不是算出一个系统性偏大的 bbox。
-        let dims = PageDims::extent_pt(page_w, page_h_map.get(page).copied().unwrap_or(0.0));
+        // #6 第 1 步 / #11b-v2：文字层页的"页尺寸"分两条来源——
+        // - **可见页框**（`page_visible_boxes`，lopdf 复刻 pdf-inspector
+        //   `CropBox ∩ MediaBox` 口径）：item 坐标系（visible box 帧，原点=框
+        //   左下、y 向上）与框同帧 → 可作归一化分母，kind=`PageBoxPdfPt`
+        //   （y 语义 = baseline-flip，换算见 `PageDimsKind::PageBoxPdfPt`）。
+        //   前提是该页坐标帧 Upright（rotation map 无此页）。
+        // - **整页内容流转正页**（rotation map 命中，Ccw/Cw）：item 已被
+        //   pdf-inspector 转进 turned 帧，其 y 语义（转正帧的"页顶"方向、
+        //   框-原点关系）与 baseline-flip 换算前提不兼容，且现网无实测样本
+        //   验证对调宽高后的正确性 → 宁缺勿造，维持 `ContentExtent`
+        //   （不可归一化、不给 bbox），缺口记 BACKLOG。
+        // - **无框页**（页树无 MediaBox/CropBox）：维持 #6 第 1 步的
+        //   `ContentExtent`（内容外扩），不可归一化。
+        let dims = match (page_boxes.get(page), rotations.get(page)) {
+            (Some(b), None) if b.width() > 0.0 && b.height() > 0.0 => {
+                PageDims::page_box_pdf_pt(b.width(), b.height())
+            }
+            _ => PageDims::extent_pt(page_w, page_h_map.get(page).copied().unwrap_or(0.0)),
+        };
 
         // 0) 朝向分组（借鉴 MinerU 表格朝向投票的常量族，见 `orientation` 模块）。
         // 整页单一朝向（`groups.len() == 1`，即全仓现网文档）→ 完全跳过本分支，
@@ -742,10 +784,21 @@ fn build_body_regions(
     // （空 hints + numbering=true，纯编号启发式，与 OFD 文字层同口径）。
     // #6 第 2 步：这里只**赋级别**，`#` 前缀与标题前后空行由 docir 渲染层写出
     // （TextLayerPdf 分支），故 `Region.text` 是未加前缀的行文本。
-    let lines =
-        reading_order::postprocess_lines(reading_order::order_text_regions(&regions));
+    // #11b：走 boxed 链路——`regions`（push_line_region 造的）本就带几何，
+    // 此前经 String 薄封装全丢了 → content_list v2 无 bbox。
+    // #11c：末尾追加**段落合并**。顺序 order → postprocess → merge：连字符合并
+    // 必须先于段落合并（合并后行尾连字符埋进段落中部，行对不再相邻）。合并判据
+    // 复用 `merge_into_paragraphs` 的 median_gap×1.5（与 OCR 通路块内合并同真相）；
+    // 拼接统一 MinerU 行语境规则（西方语境补空格、下行字母 CJK 语境不加）——
+    // #11c-v2 起 OCR 通路同档，Concat 分档已删（三通路一个真相）。
+    // 标题行强制独段、阅读序的列边界/页眉页脚 gap 突变自然断段。GJB 真实样本
+    // 实测：长段落 1 → 多段粒度恢复（BACKLOG #11c）。
+    let boxed = reading_order::merge_into_paragraphs(&reading_order::postprocess_lines_boxed(
+        reading_order::order_text_regions_boxed(&regions),
+    ));
+    let lines: Vec<String> = boxed.iter().map(|l| l.text.clone()).collect();
     let levels = crate::text_health::title_levels(&lines, &[], true);
-    crate::text_health::body_regions(lines, levels)
+    crate::text_health::body_regions_boxed(boxed, levels)
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。
@@ -1122,10 +1175,11 @@ fn build_spans(seg: &[pdf_inspector::TextItem]) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::{
-        LayerHit, build_line_groups, build_text_docir, clustered_row_split,
-        drop_oversized_pages, hybrid_disabled_from, is_repeated_furniture, looks_garbled,
+        LayerHit, PageBox, build_body_regions, build_line_groups, build_text_docir,
+        clustered_row_split, drop_oversized_pages, hybrid_disabled_from, is_repeated_furniture,
+        looks_garbled,
     };
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use crate::docir::{DocIR, PageSource};
     use crate::region::{Region, RegionKind};
     use crate::table_grid::{TableCell, TableGrid};
@@ -1406,7 +1460,11 @@ mod tests {
         let levels = crate::text_health::title_levels(&lines, &[], true);
         assert_eq!(levels, vec![Some(2), None, Some(3), None]);
         // 渲染视图 = 旧字面量输出（`#` 前缀由 Region::rendered_line 写出）。
-        let rendered: Vec<String> = crate::text_health::body_regions(lines.clone(), levels)
+        let rendered: Vec<String> =
+            crate::text_health::body_regions_boxed(
+                crate::reading_order::Line::from_texts(lines.clone()),
+                levels,
+            )
             .into_iter()
             .map(|r| r.rendered_line().into_owned())
             .collect();
@@ -1618,12 +1676,16 @@ mod tests {
     // 由 `tests/pages_rich_text.rs::rich_text_env_is_a_no_op_with_notice` 从
     // CLI 侧钉住"设了也不出标记"。
 
-    // ── #6 第 1 步：PDF 文字层 producer 的 dims 口径 ──
+    // ── #6 第 1 步 + #11b-v2：PDF 文字层 producer 的 dims 口径 ──
 
-    /// 文字层页只能拿到**内容外扩**（max x+width / max y+height），拿不到页面框
-    /// （pdf-inspector 的 `CropBox ∩ MediaBox` 是 `pub(crate)`）。故 kind 必须是
-    /// `ContentExtent`、单位 pt，且 `normalizable() == false`——下游投影据此拒绝
-    /// 归一化，而不是拿一个比页面框小的量当分母算出 >1 的 bbox。
+    fn empty_boxes() -> BTreeMap<u32, PageBox> {
+        BTreeMap::new()
+    }
+
+    /// **无框页**（页树无 MediaBox/CropBox → page_visible_boxes 空）：文字层页
+    /// 只能拿到**内容外扩**（max x+width / max y+height）。故 kind 必须是
+    /// `ContentExtent`、单位 pt，且 `normalizable() == false`——下游投影据此
+    /// 拒绝归一化，而不是拿一个比页面框小的量当分母算出 >1 的 bbox。
     #[test]
     fn text_layer_producer_marks_dims_not_normalizable() {
         let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
@@ -1640,6 +1702,8 @@ mod tests {
             &BTreeMap::new(),
             1,
             None,
+            &empty_boxes(),
+            &HashMap::new(),
         );
         assert_eq!(doc.pages.len(), 1);
         let dims = &doc.pages[0].dims;
@@ -1649,6 +1713,107 @@ mod tests {
         // 外扩值本身 = 内容盒右/下边界（50+400 / 0+10）。
         assert!((dims.w - 450.0).abs() < 1e-3, "got {}", dims.w);
         assert!((dims.h - 10.0).abs() < 1e-3, "got {}", dims.h);
+    }
+
+    /// #11b-v2 主路径：**有框 + Upright**（rotation map 无此页）→
+    /// `PageBoxPdfPt(w, h)`，可归一化——文字层页 bbox 的分母自此落地。
+    #[test]
+    fn text_layer_producer_uses_page_box_when_upright() {
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(1, vec![ti("正文", 50.0, 400.0)]);
+        let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
+        let mut boxes = BTreeMap::new();
+        boxes.insert(1, PageBox { x0: 0.0, y0: 0.0, x1: 595.0, y1: 842.0 });
+        let doc = build_text_docir(
+            &by_page,
+            &lines_by_page,
+            &page_w,
+            &page_h,
+            &BTreeMap::new(),
+            1,
+            None,
+            &boxes,
+            &HashMap::new(),
+        );
+        let dims = &doc.pages[0].dims;
+        assert_eq!(dims.kind, crate::docir::PageDimsKind::PageBoxPdfPt);
+        assert_eq!(dims.unit, crate::docir::PageUnit::Pt);
+        assert!(dims.normalizable(), "页框可作归一化分母");
+        assert!((dims.w - 595.0).abs() < 1e-3 && (dims.h - 842.0).abs() < 1e-3);
+    }
+
+    /// #11b-v2 纪律：**整页转正页**（rotation map 命中，Ccw/Cw）即使有框也
+    /// 维持 `ContentExtent`——turned 帧 y 语义与 baseline-flip 换算前提不兼容
+    /// 且无实测样本，宁缺勿造（不给 bbox，绝不造数）。
+    #[test]
+    fn rotated_page_frame_keeps_content_extent() {
+        let mut by_page: BTreeMap<u32, Vec<TextItem>> = BTreeMap::new();
+        by_page.insert(1, vec![ti("正文", 50.0, 400.0)]);
+        let (lines_by_page, page_w, page_h) = build_line_groups(&by_page);
+        let mut boxes = BTreeMap::new();
+        boxes.insert(1, PageBox { x0: 0.0, y0: 0.0, x1: 595.0, y1: 842.0 });
+        let mut rotations = HashMap::new();
+        rotations.insert(1, pdf_inspector::PageRotation::Ccw);
+        let doc = build_text_docir(
+            &by_page,
+            &lines_by_page,
+            &page_w,
+            &page_h,
+            &BTreeMap::new(),
+            1,
+            None,
+            &boxes,
+            &rotations,
+        );
+        let dims = &doc.pages[0].dims;
+        assert_eq!(dims.kind, crate::docir::PageDimsKind::ContentExtent);
+        assert!(!dims.normalizable());
+    }
+
+    // ── #11c：文字层段落合并（链路级）──
+
+    /// 直接构造 TextLine 绕过聚行（`ti()` 的 y 恒 0，测不了多行）。
+    fn tline(y: f32, text: &str) -> pdf_inspector::extractor::TextLine {
+        pdf_inspector::extractor::TextLine {
+            items: vec![ti(text, 50.0, 100.0)],
+            y,
+            page: 1,
+            adaptive_threshold: 0.10,
+        }
+    }
+
+    fn body_texts(regions: &[Region]) -> Vec<String> {
+        regions
+            .iter()
+            .filter(|r| r.kind == crate::region::RegionKind::Body)
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    /// 行距均匀（gap 15 < median_gap×1.5）→ 3 行并 1 段；大 gap（170）断段。
+    /// 此前文字层每视觉行即一段（GJB 真实样本实测长段 1 vs 扫描版 101）。
+    #[test]
+    fn text_layer_merges_close_lines_into_paragraphs() {
+        let lines = vec![
+            tline(400.0, "第一行甲"),
+            tline(385.0, "第一行乙"),
+            tline(370.0, "第一行丙"),
+            tline(200.0, "第二段首行"),
+        ];
+        let body = body_texts(&build_body_regions(&lines, 1, 595.0));
+        assert_eq!(body.len(), 2, "均匀行距 3 行并 1 段 + 大 gap 1 段: {body:?}");
+        assert!(body[0].contains("第一行甲") && body[0].contains("第一行丙"), "{body:?}");
+        assert_eq!(body[1], "第二段首行");
+    }
+
+    /// 标题行强制独段（即使与正文行距均匀）——merge_into_paragraphs 的
+    /// is_heading 护栏在文字层链路同样生效。
+    #[test]
+    fn text_layer_heading_stays_alone_after_merge() {
+        let lines = vec![tline(400.0, "1. 总则要求"), tline(385.0, "正文紧随标题")];
+        let body = body_texts(&build_body_regions(&lines, 1, 595.0));
+        assert_eq!(body.len(), 2, "标题行强制独段: {body:?}");
+        assert_eq!(body[0], "1. 总则要求");
     }
 
     // ── #6 第 2 步：标题级别进 IR、`#` 字面量不进 IR ──
@@ -1676,6 +1841,8 @@ mod tests {
             &BTreeMap::new(),
             1,
             None,
+            &empty_boxes(),
+            &HashMap::new(),
         );
         let regions = &doc.pages[0].regions;
         assert_eq!(regions.len(), 2, "两行须各自成区，got {regions:?}");

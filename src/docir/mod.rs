@@ -16,6 +16,7 @@
 //!
 //! Region 扩展见 [`crate::region`]（`kind` + `confidence`）。
 
+pub mod content_list;
 pub mod passes;
 pub(crate) mod render;
 
@@ -49,6 +50,20 @@ pub enum PageDimsKind {
     /// `extractor/mod.rs:14,125`，不 vendor 就拿不到）。
     /// → 该页 bbox **不可**归一化，只能输出原始 pt。
     ContentExtent,
+    /// **真实页面框（pt）+ PDF y 语义**：#11b-v2。文字层页拿得到页框时记录
+    /// （`pdf/text_layer.rs::page_visible_boxes`，lopdf 读 MediaBox/CropBox，
+    /// 口径复刻 pdf-inspector `visible_page_box`：CropBox∩MediaBox 优先）。
+    ///
+    /// 与 [`PageBox`] 的差别在 **y 方向**：本仓 IR 全局约定 y 越小越靠上
+    /// （top-down），但 PDF 文字层的行框是"baseline 翻转"形态——
+    /// `y_min = -baseline`、`y_max = -baseline + em`（见
+    /// `pdf/text_layer.rs::push_line_region`，**不是**纯 `-y` 翻转；改它会让
+    /// 混排字号时 reading_order 排序漂移，零回归红线不许动）。
+    /// 投影层换算 PDF 系框 `[baseline, baseline+em]`：
+    /// `y_pdf = -y_min`，`h = y_max - y_min`；再转 top-down：
+    /// `y0_top = H + 2·y_min - y_max`，`y1_bottom = H + y_min`。
+    /// 单测 `bbox_pdf_pt_baseline_flip_roundtrip` 钉住公式。
+    PageBoxPdfPt,
 }
 
 /// 页尺寸**单位**（#6 第 1 步）：与 `Region` 坐标的单位配对使用，二者必须一致
@@ -110,10 +125,17 @@ impl PageDims {
     pub fn extent_pt(w: f32, h: f32) -> Self {
         Self { w, h, kind: PageDimsKind::ContentExtent, unit: PageUnit::Pt }
     }
+    /// 真实页面框（pt，PDF y 语义 = baseline-flip，见
+    /// [`PageDimsKind::PageBoxPdfPt`]）：PDF 文字层页（#11b-v2）。
+    pub fn page_box_pdf_pt(w: f32, h: f32) -> Self {
+        Self { w, h, kind: PageDimsKind::PageBoxPdfPt, unit: PageUnit::Pt }
+    }
     /// 是否可用作归一化分母（`PageBox` 且两维 > 0）。
     #[allow(dead_code)] // 同上：消费方是 #10 的 bbox 投影。
     pub fn normalizable(&self) -> bool {
-        self.kind == PageDimsKind::PageBox && self.w > 0.0 && self.h > 0.0
+        matches!(self.kind, PageDimsKind::PageBox | PageDimsKind::PageBoxPdfPt)
+            && self.w > 0.0
+            && self.h > 0.0
     }
 }
 
@@ -133,10 +155,37 @@ pub struct PageIR {
     pub dims: PageDims,
 }
 
+/// 输出格式（#11）：IR 是真相，格式只是**投影**。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// GFM markdown（默认，行为与 #11 前逐字节一致）。
+    #[default]
+    Markdown,
+    /// content_list v2（`list[list[{type, content, bbox}]]` 的 JSON）。
+    ContentListV2,
+}
+
 /// 文档级 IR：页序即输出序。
 #[derive(Clone, Debug, Default)]
 pub struct DocIR {
     pub pages: Vec<PageIR>,
+}
+
+/// 终渲染：跨页表 pass → 按格式投影。
+///
+/// `ocr_render` = OCR 源（`ANYDOC_EMIT_FURNITURE` 生效）；文字层源恒 `false`
+/// ——两条通路历史上渲染风格就不同（见 [`PageSource`]），这里原样保留，
+/// #11 不改 markdown 的一个字节。
+pub(crate) fn finalize(doc: DocIR, fmt: OutputFormat, ocr_render: bool) -> String {
+    let mut doc = doc;
+    passes::cross_page_table::run(&mut doc);
+    match fmt {
+        OutputFormat::Markdown => {
+            let emit = ocr_render && std::env::var("ANYDOC_EMIT_FURNITURE").is_ok();
+            render::render_with_furniture(&doc, emit)
+        }
+        OutputFormat::ContentListV2 => content_list::to_content_list_v2_json(&doc),
+    }
 }
 
 impl DocIR {
@@ -159,6 +208,9 @@ impl DocIR {
     }
 
     /// 渲染为 GFM 文本（按页分段、段间空行；详见 [`render`]）。
+    ///
+    /// 生产路径走 [`finalize`]（pass + 按格式投影），本方法留给单测直接看渲染结果。
+    #[allow(dead_code)]
     pub fn render(&self) -> String {
         render::render(self)
     }

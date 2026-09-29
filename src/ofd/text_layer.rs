@@ -294,7 +294,11 @@ mod tests {
         ];
         let levels = crate::text_health::title_levels(&lines, &[], true);
         assert_eq!(levels, vec![Some(2), None, Some(1)]);
-        let rendered: Vec<String> = crate::text_health::body_regions(lines, levels)
+        let rendered: Vec<String> =
+            crate::text_health::body_regions_boxed(
+                crate::reading_order::Line::from_texts(lines),
+                levels,
+            )
             .into_iter()
             .map(|r| r.rendered_line().into_owned())
             .collect();

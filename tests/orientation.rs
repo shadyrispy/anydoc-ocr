@@ -74,20 +74,23 @@ fn rotated_table_block_is_grouped_and_upright() {
 
 /// 单一朝向页（页 2）：投票 → 1 组 → 旧路径，逐字节不受分组改动影响。
 /// `--pages` 隔离两页对比：页 2 的输出必须恰好等于全量输出中的页 2 部分。
+/// #11c：均匀行距的 6 行正文合并为一段（MineruLang 西方语境行间补空格）——
+/// 本测试钉的是**隔离等价**（分组不改变均匀页输出），不是行粒度。
 #[test]
 fn uniform_page_output_is_untouched_by_grouping() {
     let pdf = sample("rotated_block.pdf");
     let (_, full, _) = run(&[pdf.to_str().unwrap()]);
     let (_, p2, _) = run(&[pdf.to_str().unwrap(), "--pages", "2"]);
-    // 全量输出中页 2 的六行必须原样连续出现（无表插队、无重排）
+    // 全量输出中页 2 的六行（合并成一段后）必须原样连续出现（无表插队、无重排）
     let mut expected = String::new();
     for i in 1..=6 {
         expected.push_str(&format!(
-            "Upright only page two line {i} has no rotated content at all.\n"
+            "Upright only page two line {i} has no rotated content at all. "
         ));
     }
-    assert!(full.contains(expected.trim_end()), "页 2 内容在全量输出中形态异常:\n{full}");
-    assert_eq!(p2.trim_end(), expected.trim_end(), "单朝向页经 --pages 隔离后输出漂移");
+    let expected = expected.trim_end().to_string();
+    assert!(full.contains(&expected), "页 2 内容在全量输出中形态异常:\n{full}");
+    assert_eq!(p2.trim_end(), expected, "单朝向页经 --pages 隔离后输出漂移");
 }
 
 /// 表主导页（rotated_table.pdf）：正文与表各自成形，互不吞并。

@@ -78,6 +78,27 @@ pub fn table_fill_on() -> bool {
     *V.get_or_init(|| std::env::var("ANYDOC_TABLE_FILL").is_ok())
 }
 
+/// 弧行矫正开关（#5a，`ANYDOC_SEAL_ARC` 存在即开启，**默认关**）。
+///
+/// 默认关是**实测后**的裁定，不是保守拖延：展开几何本身正确（合成弧带的
+/// 内容摆放单测全绿，章顶/章底弧的字头与阅读方向都对），但本仓 fixture
+/// `seal_scan.pdf` 上实测只能恢复「北京测式科技有限公司」（真值「北京测试
+/// 科技有限公司」，8 字错 1 且条带内字有叠加）。根因不在展开——取证见
+/// BACKLOG #5a「2026-09-28 实测」：DB 输出的弧带多边形**内缘被字身切断**
+/// （顶点序里内缘 θ 从 -119.3° 一次性跳到 -95.9°/-87.4°/-54.0°/-21.6°），
+/// 内缘不是连续弧，无法沿弧连续展开；要修就得先做章内单字检测，属另一个量级。
+///
+/// 因此：开启后**可能**比不开更好（该 fixture 上从「专用章」变成「北京测式科技
+/// 有限公司 专用章」，多出 8 个字中的 7 个），但字级精度不可保证 → 交给调用方
+/// 按需开，不进默认路径。
+///
+/// 不进 `EngineKey`（与 `seal_on` 不同）：本开关**不改变要建哪些模型 session**，
+/// 只改同一批 session 上的后处理动作，故不存在"引擎有/无"的错配风险。
+fn seal_arc_on() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("ANYDOC_SEAL_ARC").is_ok())
+}
+
 /// 印章检测模型解析候选（纯函数，便于单测）：
 /// 1. `ANYDOC_MODEL_DIR` 下 MinerU 文件名（`seal_PP-OCRv4_det_infer.onnx` →
 ///    本仓资产目录实际落名 `seal_ppocrv4_det.onnx`，两名为兼容都探）；
@@ -267,12 +288,18 @@ impl PostPass {
         };
         // 行框 → 摆正 → rec。印章检测对**环排文字**输出沿弧走行的多顶点
         // 多边形，min-area-rect 摆正只会得到残缺字（实测「北京测试科技有限公司」
-        // →「时技有限」），故按 [`crate::seal::is_curved_band`] 显式跳过，
-        // 只识别近似直的行（章底「专用章」等）。弧行矫正见 backlog #5a。
+        // →「时技有限」），故按 [`crate::seal::is_curved_band`] 分流：
+        // 判直 → quad（同前）；判弧 → 极坐标展开（#5a）后照常送 rec。
         // y 升序（章内多行自上而下，同 MinerU SortPolyBoxes）。
         let mut rows: Vec<(f32, RgbImage)> = Vec::new();
         for d in &dets {
             if crate::seal::is_curved_band(&d.bbox.points) {
+                if seal_arc_on() {
+                    // 章心 = 裁剪图几何中心（Seal bbox 是环形章外接框），不拟合。
+                    if let Some(strip) = crate::seal::unroll_arc_band(crop, &d.bbox.points, None) {
+                        rows.push((d.bbox.y_min(), strip));
+                    }
+                }
                 continue;
             }
             let quad = d.bbox.get_min_area_rect().get_box_points();

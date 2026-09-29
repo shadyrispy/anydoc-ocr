@@ -7,6 +7,7 @@
 //! 只做**窄高条**的显式判定，避免把通栏/整宽元素误判为竖排；非竖排 regions 由调用方
 //! （`blocks::order_structure`）继续走原块驱动排序，竖排段落优先输出。
 
+use super::lines::Line;
 use crate::region::Region;
 
 /// 竖排判定：region 高 > 该倍数的宽（窄高条）。
@@ -21,7 +22,7 @@ const COL_TOL_MIN: f32 = 6.0;
 ///
 /// 返回 `(竖排段落, 消费掩码)`——掩码与输入 `regions` 等长，`true` 表示该 region
 /// 已被竖排消费，调用方应从后续横排排序中剔除。
-pub fn order_vertical(regions: &[Region]) -> (Vec<String>, Vec<bool>) {
+pub fn order_vertical(regions: &[Region]) -> (Vec<Line>, Vec<bool>) {
     if regions.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -69,7 +70,7 @@ pub fn order_vertical(regions: &[Region]) -> (Vec<String>, Vec<bool>) {
             .partial_cmp(&a[0].1.center_x())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut paras: Vec<String> = Vec::new();
+    let mut paras: Vec<Line> = Vec::new();
     let mut mask = vec![false; mask_len];
     for mut col in cols {
         col.sort_by(|a, b| {
@@ -78,15 +79,18 @@ pub fn order_vertical(regions: &[Region]) -> (Vec<String>, Vec<bool>) {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut text = String::new();
+        // #11b：一列 = 一个竖排段落 → 几何取列内所有 region 的**并集**。
+        let mut bbox: Option<(f32, f32, f32, f32)> = None;
         for (i, r) in col {
             if !text.is_empty() {
                 text.push('\n');
             }
             text.push_str(r.text.trim());
+            bbox = Line::union_bbox(bbox, Line::from_region(r).bbox);
             mask[i] = true;
         }
         if !text.is_empty() {
-            paras.push(text);
+            paras.push(Line { y: bbox.map_or(0.0, |b| b.2), text, bbox });
         }
     }
     (paras, mask)
@@ -123,7 +127,7 @@ mod tests {
         ];
         let (paras, mask) = order_vertical(&regions);
         assert_eq!(paras.len(), 1);
-        assert_eq!(paras[0], "第三字\n第二字\n第一字", "列内应自上而下");
+        assert_eq!(paras[0].text, "第三字\n第二字\n第一字", "列内应自上而下");
         assert_eq!(mask, vec![true, true, true]);
     }
 
@@ -138,8 +142,8 @@ mod tests {
         ];
         let (paras, mask) = order_vertical(&regions);
         assert_eq!(paras.len(), 2);
-        assert_eq!(paras[0], "右一\n右二", "右侧列应优先");
-        assert_eq!(paras[1], "左一\n左二");
+        assert_eq!(paras[0].text, "右一\n右二", "右侧列应优先");
+        assert_eq!(paras[1].text, "左一\n左二");
         assert_eq!(mask, vec![true, true, true, true]);
     }
 

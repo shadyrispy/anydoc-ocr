@@ -329,6 +329,17 @@ impl Region {
         self.y_max - self.y_min
     }
 
+    /// 本块是否带**真实几何**（非零面积的正框）。
+    ///
+    /// 多个 producer 用 `Region::new(0,0,0,0, text)` 造"只有文本没有框"的块
+    /// （OFD 文字层正文、PDF 文字层成品表格 / OCR 兜底页、`gfm_adapter` 的
+    /// 表/网格块……）。渲染层不吃几何所以无人关心，但 #11 的 bbox 投影吃——
+    /// 把退化框当真就会输出 `[0,0,0,0]`，那是**造数据**（见 #6 第 1 步
+    /// "不伪造分母"同一条纪律）。故投影层遇退化框必须省略 `bbox` 键。
+    pub fn has_geometry(&self) -> bool {
+        self.width() > 0.0 && self.height() > 0.0
+    }
+
     pub fn center_x(&self) -> f32 {
         (self.x_min + self.x_max) / 2.0
     }

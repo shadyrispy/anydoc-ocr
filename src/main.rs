@@ -8,6 +8,25 @@ use anydoc_ocr::convert_to_markdown;
 use anydoc_ocr::models::{MINERU_ENGINE_HELP, OcrLayout, OcrTier};
 use clap::Parser;
 
+/// `--format` 的 CLI 枚举（库侧用 [`anydoc_ocr::OutputFormat`]，同名同义）。
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OutputFormatArg {
+    /// GFM markdown（默认）
+    #[default]
+    Md,
+    /// content_list v2（结构化 JSON）
+    ContentListV2,
+}
+
+impl OutputFormatArg {
+    fn to_lib(self) -> anydoc_ocr::OutputFormat {
+        match self {
+            OutputFormatArg::Md => anydoc_ocr::OutputFormat::Markdown,
+            OutputFormatArg::ContentListV2 => anydoc_ocr::OutputFormat::ContentListV2,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "anydoc-ocr",
@@ -41,6 +60,13 @@ struct Cli {
     /// 与 --pdf-force-ocr / --ofd-force-ocr 互斥（同时给出立即报错）。
     #[arg(long)]
     text_only: bool,
+    /// 输出格式（#11）：`md`（默认，GFM）/ `content-list-v2`（结构化 JSON，
+    /// 按页分组的 `{type, content, bbox}`，bbox 为 0–1000 归一化整数，与 MinerU
+    /// content_list v2 同 schema）。content-list-v2 仅支持 PDF / OFD / 图片输入
+    /// ——其余格式本仓走 anydoc 前端直出 markdown，IR 里没有 bbox 与类型语义，
+    /// 显式报 unsupported 而不是产出假结构。
+    #[arg(long, value_enum, default_value_t = OutputFormatArg::Md)]
+    format: OutputFormatArg,
     /// OCR 推理线程数（页级并行）。A 改造后：进程级 ORT 线程池按
     /// `intra = max(1, 核心数/threads)` 提交，使总线程≈核心数、不再超额订阅。
     /// 默认 0 = 自动取可用并行度（飞腾 D2000 8 核→8），结合 intra=1 全核利用；
@@ -92,6 +118,8 @@ fn main() -> Result<()> {
         ocr: anydoc_ocr::OcrConfig { tier: cli.ocr_tier, layout: OcrLayout::Doc },
         parallel: anydoc_ocr::ParallelConfig { page_parallel: threads, ort_intra: 0 },
         pages: cli.pages.clone(),
+        // #11：输出格式是 IR 的投影，不是另一条转换通路。
+        format: cli.format.to_lib(),
         // quality_route 已从 CLI 撤下（参数面取消，语义与 MinerU 默认档冲突，
         // 见 src/quality.rs）：恒用 Default = Off。库调用方仍可显式构造 Auto。
         ..Default::default()

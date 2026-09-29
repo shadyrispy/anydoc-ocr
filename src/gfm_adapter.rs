@@ -20,7 +20,7 @@
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
 use crate::docir::{DocIR, PageSource};
 use crate::reading_order::{
-    is_isolated_marker, norm_membership, order_structure, page_scale, postprocess_lines,
+    is_isolated_marker, norm_membership, order_structure_boxed, page_scale, postprocess_lines_boxed,
     title_level,
 };
 use crate::region::{NoiseKind, Region, RegionKind, Span};
@@ -311,12 +311,16 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
         // 游离行，此处把孤立 marker 与下一内容行合并为一项（与 a) 形态一致）。
         // T6-②：配对前剔除孤立 ≤1 字符噪声碎片（`馆`），防 marker 误配对。
         let mut out: Vec<Region> = {
-            let lines = postprocess_lines(order_structure(page, &regions));
+            // #11b：走 **boxed** 链路（order → postprocess → body_regions），几何
+            // 一路带到 Region 上 → content_list v2 才有 bbox 可投影。文本判定
+            // （标题级别）仍按纯文本跑，与改造前同口径。
+            let lines = postprocess_lines_boxed(order_structure_boxed(page, &regions));
+            let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
             // hints 对**未加前缀**的行匹配（与旧通路同口径），赋级别不写字面量。
             let layout_on = std::env::var("ANYDOC_HEADINGS_LAYOUT").is_ok();
             let titles = title_hints(page, layout_on);
-            let levels = crate::text_health::title_levels(&lines, &titles, false);
-            crate::text_health::body_regions(lines, levels)
+            let levels = crate::text_health::title_levels(&texts, &titles, false);
+            crate::text_health::body_regions_boxed(lines, levels)
         };
         let kept: Vec<Region> = out
             .into_iter()
@@ -325,15 +329,27 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
         out = merge_isolated_markers(kept);
         for table in &tables {
             if let Some(html) = &table.html_structure {
+                // #11b：表块几何 = 表格元素自带的 `bbox`（`TableResult.bbox`，
+                // 原图坐标）。此前恒退化框 → content_list v2 投影只能省略 bbox。
+                let b = &table.bbox;
                 out.push(
-                    Region::new(0.0, 0.0, 0.0, 0.0, simplify_table_html(html))
+                    Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), simplify_table_html(html))
                         .with_kind(RegionKind::TableHtml),
                 );
             }
         }
         // Image 跨页表（Grid）：同列续接 / 换表定格 / 表格中断由 pass 承担
         if let Some(g) = img_grid {
-            out.push(Region::new(0.0, 0.0, 0.0, 0.0, String::new()).with_kind(RegionKind::Grid(g)));
+            // #11b：Grid 块的几何 = 触发它的 Image 元素 bbox（重建源）。
+            let gb = page
+                .layout_elements
+                .iter()
+                .find(|el| el.element_type == LayoutElementType::Image)
+                .map(|el| (el.bbox.x_min(), el.bbox.x_max(), el.bbox.y_min(), el.bbox.y_max()))
+                .unwrap_or((0.0, 0.0, 0.0, 0.0));
+            out.push(
+                Region::new(gb.0, gb.1, gb.2, gb.3, String::new()).with_kind(RegionKind::Grid(g)),
+            );
         }
         // 印章识别行（#10b 起**默认开启**，`ANYDOC_NO_SEAL_OCR` 关闭）：`ocr_post::seal_pass` 已把
         // 识别文本写回 Seal 元素的 `LayoutElement.text`（默认路径该字段恒
@@ -341,21 +357,26 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
         // 印章文字本就整体丢失，写回不会与正文行重复）。按 y 升序输出，
         // 每枚章一行 `【印章】<文本>`。
         if crate::ocr_post::seal_on() {
-            let mut seals: Vec<(f32, String)> = page
+            let mut seals: Vec<(f32, (f32, f32, f32, f32), String)> = page
                 .layout_elements
                 .iter()
                 .filter(|el| el.element_type == LayoutElementType::Seal)
                 .filter_map(|el| {
-                    el.text.as_ref().map(|t| (el.bbox.y_min(), t.clone()))
+                    el.text.as_ref().map(|t| {
+                        let b = &el.bbox;
+                        (b.y_min(), (b.x_min(), b.x_max(), b.y_min(), b.y_max()), t.clone())
+                    })
                 })
                 .collect();
             seals.sort_by(|a, b| a.0.total_cmp(&b.0));
-            for (_, t) in seals {
+            for (_, box4, t) in seals {
+                // #11b：识别文本写回自该 Seal 元素 → 行几何 = Seal 元素框
+                //（此前退化框，content_list v2 只能省略 bbox）。
                 out.push(Region::new(
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
+                    box4.0,
+                    box4.1,
+                    box4.2,
+                    box4.3,
                     format!("{}{}", crate::seal::SEAL_TAG, t),
                 ));
             }
@@ -454,6 +475,20 @@ fn merge_isolated_markers(lines: Vec<Region>) -> Vec<Region> {
             }
             out.extend(skipped);
             if let Some(content) = paired {
+                // #11b：配对合并 → 几何取并集（marker 行与内容行合成一项）。
+                // 与 `Line::union_bbox` 同口径：**两侧都有几何才并**，任一侧没有
+                // 就退化（合并后的行没有可辩护的完整框，不拿半边的冒充）。
+                if cur.has_geometry() && content.has_geometry() {
+                    cur.x_min = cur.x_min.min(content.x_min);
+                    cur.x_max = cur.x_max.max(content.x_max);
+                    cur.y_min = cur.y_min.min(content.y_min);
+                    cur.y_max = cur.y_max.max(content.y_max);
+                } else {
+                    cur.x_min = 0.0;
+                    cur.x_max = 0.0;
+                    cur.y_min = 0.0;
+                    cur.y_max = 0.0;
+                }
                 let content = content.rendered_line();
                 cur.text = format!("{} {}", cur.text, content.trim_start());
             }

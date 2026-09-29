@@ -7,7 +7,7 @@
 
 ## #5a 印章环排（弧形）文字识别
 
-状态：**部分完成**（#5a 本体仍停在这里，未随 #10b 推进）。直排行已通且**自 #10b 起默认开启**（`ANYDOC_NO_SEAL_OCR` 关闭）；环排公司名显式跳过。
+状态：**展开内核已落地（2026-09-28），默认关闭**（`ANYDOC_SEAL_ARC` 存在即开启）。直排行已通且**自 #10b 起默认开启**（`ANYDOC_NO_SEAL_OCR` 关闭）；环排弧行**默认仍跳过**——叠加伪影的几何根因（DB 多边形内缘被字身切断）未修；文本识别率随 rec 资产换代已实测 **8/8 全对**（2026-09-29 事实修正，见节末实验小节），**默认值待重议**。
 
 ### 已交付（本次）
 
@@ -67,6 +67,80 @@
 展开几何对了也可能识别不全；先在 fixture 上量一轮再决定是否需要印章色通道分离
 （R 通道减 B 通道可显著提对比，成本一个 pixelwise pass）。
 
+### 2026-09-28 实测：`unroll_arc_band` 已落地，但**默认关闭**（`ANYDOC_SEAL_ARC`）
+
+**已实现**（`src/seal.rs`，纯几何内核 + 内容摆放单测全绿）：极坐标展开按
+BACKLOG 推荐的设计落——章心外部供给（默认裁剪图几何中心，**不拟合**）、每列
+`x ↔ θ` 映射、径向极值由顶点按 θ 分内外链插值（**不配链**，端帽天然给出完整
+`[r_lo, r_hi]`）、字头方向按 θ 均值所在半区判定。`ocr_post::recognize_seal`
+在 `is_curved_band` 的弧分支里接线。
+
+**验收用的是内容摆放，不是几何量回归**（本轮正是靠这条钉住方向）：合成弧带在
+已知 (θ, r) 处画墨块 → 断言落在预期的 (列, 行) 半区。章顶弧左端+外缘 → 条带
+左上；章底弧左端+**内缘** → 条带左上（字头朝内，与章顶相反）。这条就是失败路
+(b) 翻车的那处。
+
+**实测结论（决定默认关）**：fixture `seal_scan.pdf` 上开弧行矫正，
+`【印章】专用章` → `【印章】北京测式科技有限公司 专用章`。真值是
+「北京测试**科技**有限公司」，8 字错 1（试→式），且展开条带内相邻字有叠加。
+
+**根因不在展开几何**（这条别再回头调参数）：
+
+- 取证方式：把 DB 检测多边形的 89 个顶点 dump 成文本（`r` / `θ` 序列）。
+- 顶点序是**对的**：外缘左行 → 端帽 → 内缘右行 → 端帽 → 回起点，闭合。
+- 但**内缘（r≈88）不是连续弧**：θ 序列在 -119.3° → -95.9° → -87.4° → -54.0°
+  → -21.6° 处一次性跳 20–30°（共 14 处 >8.6° 的跳变）。原因：DB 沿**文字带外
+  轮廓**走，内缘弧被字身凹陷切断。
+- 后果：内缘插值在断裂区间只能外推成直线，与真实字带内缘不符 → 字被纵向压扁、
+  互相叠加。已在 `interp_r` 加 `CHAIN_MAX_GAP`（≈17°）断裂检测，断裂处退回全局
+  极值兜底（宁可用整条带，不可外推假边界）——**修不掉，只防更坏**。
+- 要真正修，得先做**章内单字检测**（逐字取弧段），属另一个量级的工程。
+
+**故默认关、按需开**：开了**可能**更好（该 fixture 上多出 8 字中的 7 个），但
+字级精度不可保证，不能进默认路径（BACKLOG #5a 原文立场：残缺字写进输出比不写
+更坏——此处是"7/8 字对 + 字有叠加"，处于可接受的边缘，故留开关而非直接否决）。
+零回归已验证：默认关时 20 个样本 CLI 输出 md5 与批 D 前基线**逐字节一致**。
+
+**后续若要做**（按性价比）：① 章内单字检测（真修法，量大）；② ~~红通道分离~~
+**已实验（2026-09-29）：中性，不采纳**（见下节）。
+
+### 2026-09-29 实验：红通道分离（R−B）中性 + rec 资产换代后 8/8 事实修正
+
+**红通道分离**（"后续若要做"②，R−B pixelwise 提对比）：子代理在 fixture 上
+A/B 实测（含 b2r/r 变体）——基线与分离后印章弧行文本**逐字一致，增益 0 字、
+退化 0 字**。结论：**不采纳**。当前 rec 模型对章内红字召回不是瓶颈，分离
+pass 纯增成本。实验代码已还原（`git checkout`），零残留。
+
+**关键事实修正（比实验本身更重要，别再抄旧数字）**：上节"8 字错 1
+（试→式）"的取证是**旧 rec 资产**时代的。当前 rec 资产（pp-ocrv6）下复测：
+仅开 `ANYDOC_SEAL_ARC` 的 A 组已 **8/8 全对**（「北京测试科技有限公司
+专用章」），文本无叠字写进输出；展开条带内相邻字的**叠加伪影仍在**（视觉
+层面，DB 内缘断裂几何根因未修），但文本层未被它带坏。
+
+**默认值重议建议**：原"7/8 + 叠字 → 残缺比缺失更坏"的两条否决论据，一条
+（错字）已消失、一条（叠字）实测未伤及文本。`ANYDOC_SEAL_ARC` 翻默认的
+收益（含章文档开箱即得多出环排公司名）与风险面都变了——**值得另立决策票
+重裁定**：用当前 pp-ocrv6 资产在更多含章样本上重取证后再定，不在本节就地翻。
+本节上文的展开几何取证（DB 内缘断裂、`CHAIN_MAX_GAP` 兜底）仍然有效。
+
+### 2026-09-29 重议取证：NUAA 真实扫描件裁定——**维持默认关，票关闭**
+
+重议前置（多样本 + 真实语料）一次补齐，当天定案：
+
+| 样本 | 章 | 默认（跳弧） | `ANYDOC_SEAL_ARC=1` |
+|---|---|---|---|
+| seal_scan.pdf（合成，干净渲染） | 环排公司名 8 字 | — | **8/8 全对** |
+| nuaa_tupian.pdf（真实扫描 37 页） | L613 章 | `=`（1 个垃圾字符） | `2 1 k 47 = 7`（7 个垃圾字符，**0 真字**） |
+| 同上 | L660 章 | `识信息服务中心 ，`（7 真字） | `识信息服务中心 (ea1 ，`（7 真字 + 4 垃圾） |
+
+- 零回归面：去【印章】行后两版 **1322 行逐字节一致**——弧档影响严格限于
+  印章行，与架构保证一致。
+- **裁定**：合成 fixture 的高估被真实扫描证伪——压缩伪影/分辨率/墨色衰减下，
+  弧档 **0 真字增益、+11 垃圾字符**。"残缺字写进输出比不写更坏"的原立场在
+  真实语料上重新成立。**维持默认关，本票关闭**，不再挂"待议"。
+- 未来翻默认的前置（两条件同时满足）：① 章内单字检测（真修法，见上）或
+  等效新几何；② 有更多真实含章扫描语料复测转正。
+
 ---
 
 # MinerU 4.0.5 缺口清单（#6–#14）
@@ -108,7 +182,12 @@
 
 ## #6 结构表示：IR 为真相，MinerU schema 作投影（阻塞 #11）
 
-状态：**决策已定，未实施**。这是本节唯一需要先做架构决断的条目。
+状态：**第 0–5 步全部已落地（2026-09-28），#11 依赖已解除**。逐节见下：字段清单
+（第 0 步）→ 页尺寸（第 1 步）→ 标题级别（第 2 步）→ `continues_prev`（第 3 步）
+→ `Span/spans`（第 4 步）→ `Noise`/`Footnote`（第 5 步 + #10 例外项）。
+下面"决策与理由"四条的**结论仍然有效**（不新增第二套真相、不投资 legacy
+middle_json、对齐输出 schema 字段语义而非内部表示、沿用 P1.5 的"IR 加字段 + 渲染
+层分流"模式）——只是它不再是"决策已定未实施"。
 
 **问题 → 动作**：输出面只有 markdown，加任何结构化输出都要动主链路 → 先做**字段清单**（第 0 步），不要先动 `region.rs`。
 
@@ -1106,7 +1185,7 @@ blocks 3 + gfm_adapter 4；lib 264 → **271**）。
 
 ## #10 块类型覆盖：chart / code / index / aside / footnote / list
 
-状态：**未开始**。
+状态：**列表标记独段护栏已落地（2026-09-29，切片 1，见节末）；其余子项未开始**。
 
 **问题 → 动作**：code/index/aside/footnote 退化或丢失 → 按 basic 的 13 项（非 23 项）排顺序，且多数子项要等 #6。
 
@@ -1128,7 +1207,7 @@ PIPELINE_DET_TYPE, True`）。→ 下表按 **13 项**算缺口，23 项是"将�
 | `INDEX`（content 目录块） | 无缩进/点线还原 |
 | `ASIDE_TEXT` | 与正文混排，页边注落进正文流 |
 | `PAGE_FOOTNOTE` / `REF_TEXT` / `vision_footnote` | 无脚注/引用挂接 |
-| `LIST` / `text_list` / `reference_list` | 只有**孤立前缀识别**（`src/reading_order/list.rs`，且刻意不做数字式避免与标题冲突），不成结构。**注意**：LIST 不在 `PIPELINE_DET_TYPE` 的 13 项里，列表结构是 VLM 线产物 → 优先级低于上面几行 |
+| `LIST` / `text_list` / `reference_list` | 前缀识别 + **段落级独段护栏**已落地（2026-09-29 切片 1，见节末）：列表标记行开新段、无标记续行并入所在项；list block 结构仍无。**注意**：LIST 不在 `PIPELINE_DET_TYPE` 的 13 项里，列表结构是 VLM 线产物 → 结构化优先级低于上面几行 |
 | `CHART` | 仅存在于 `VLM_LAYOUT_LABEL_MAP`（`constants.py:77`）与 `LOCAL_LAYOUT_IMAGE_BLOCK_BODY_TYPES`（`constants.py:65`），**不在 basic 的 13 项内** → 属 VLM 线，非本轮债 |
 | `DOC_TITLE` vs `PARAGRAPH_TITLE` | 级别由规则三信号投票给（`src/heading_levels.rs`），非 MinerU 的 LLM 分级（那条默认关闭，`config.py:395-397`）→ 口径差异需在 README 说明 |
 | header / footer / page_number | 现按**噪声丢弃**（`src/reading_order/blocks.rs:15-22` 的 `NOISE_TYPES`，含 Seal），MinerU 走 `NOT_EXTRACT_TYPES` 不进提取、但在 content_list v2 有独立类型（`PAGE_HEADER`/`PAGE_FOOTER`/`PAGE_NUMBER`）→ 语义差别很大：我们**丢**，它**分流保留** |
@@ -1144,6 +1223,39 @@ producer 接线 + `ANYDOC_EMIT_FURNITURE` 可选输出，详见 #6 "第 5 步已
 
 **验收判据**：每类各有 1 个合成/真实样本，输出结构可断言（列表是真列表、代码有
 fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变。
+
+### 切片 1 已落地（2026-09-29）：列表标记行开新段（不依赖 #6 的最小切片）
+
+**为什么先切这片**：#11c 落地后 GJB 文字版段落 940 → 210，但 `f)/g)/h)` 等
+列表条目与其续行被整段合并，长段落虚胖（列表堆叠段混进 >=60 字统计）。列表
+结构化要等 #6 的块级 IR，但"标记行不该吞进上一段"在段落语义层面就能修——
+`merge_into_paragraphs` 一处护栏即可，不依赖 IR。
+
+**实现**：
+- `src/reading_order/list.rs` 新增 `pub fn starts_with_list_marker`：行首标记
+  （可带内容）——bullet `-•·*`（后随空白或孤立）、字母括号式 `a)` / `A、`
+  （不要求后随空格）、中文括号 `（一）`（内芯纯数字/中文数字）。**裸数字式
+  （`1.` / `4.2`）刻意不做**——与标题编号判定冲突，维持既有立场；`#` 排除
+  （是标题）。12 正例 + 7 负例单测钉死。
+- `src/reading_order/lines.rs` `merge_into_paragraphs` 护栏为**段落语义**：
+  `next_is_list` 只看**下一行**——标记行开新段；无标记续行**并入所在列表项**。
+  第一版 `cur_is_list || next_is_list` 的独段语义是错的（g) 项 170 字续行被
+  甩成 3 段），已修。
+- `（一）` 行实际被 `title_level` 先判成中文编号标题 → `is_heading` 护栏命中
+  独段，list 护栏对它冗余不冲突（测试期望按标题语义写）。
+
+**实测（GJB 9001C-2017 文字版，content-list-v2）**：
+
+| 指标 | pre-#11c | #11c 后 | 切片 1 后 | 扫描版参照 |
+|---|---|---|---|---|
+| 段落数 | 940 | 210 | **478** | — |
+| 长段落（>=60 字） | 4 | 88 | **76** | 101 |
+| 长段落（>=100 字） | 0 | 72 | **47** | — |
+
+向扫描版长段分布靠拢；`g)` 项 170 字正文完整保留为一段（第一版缺陷的回归
+证据）。无列表标记的样本零影响——golden/batch_golden 重基线**仅 gjb 一个
+快照漂移**，text / text_font / cross_page_table / batch_text 等全部原样。
+lib **314 passed**，其余 7 个集成测试全绿。
 
 ---
 
@@ -1192,25 +1304,11 @@ fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变
 
 ---
 
-**依赖**：本条目除"页眉页脚保留"外，多数子项依赖 #6（没有块级 IR 就无处安放）。
-建议 #6 落地后按 chart → code → list 结构 → index/aside/footnote 顺序拆小票。
-**例外**：页眉页脚"不丢弃而是标注 + 可选输出"可先做，因为它就是当前默认路径上的
-一处信息损失，改动面小（一个 kind + 渲染器多一条分支）。**已落地（2026-09-28，
-随 #6 第 5 步枚举先行一并交付）**：`RegionKind::Noise(NoiseKind)`/`Footnote`
-producer 接线 + `ANYDOC_EMIT_FURNITURE` 可选输出，详见 #6 "第 5 步已落地"小节；
-本条目其余子项（chart → code → list 结构 → index/aside/footnote 的类型识别与
-渲染分支）仍待样本。
-
-**验收判据**：每类各有 1 个合成/真实样本，输出结构可断言（列表是真列表、代码有
-fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变。
-
----
-
 ## #11 结构化输出投影：content_list v2 优先，middle_json 次之
 
-状态：**未开始，硬依赖 #6**。
+状态：**content_list v2 已落地（2026-09-28，v1）**；middle_json 未做（维持下方原取舍：只做读取兼容，等 #6 稳定后再评）。
 
-**问题 → 动作**：没有结构化产物 → #6 完成后抄类型名/bbox 约定做常量表，再写 renderer（顺序不可颠倒）。
+**问题 → 动作**：没有结构化产物 → #6 完成后抄类型名/bbox 约定做常量表，再写 renderer（顺序不可颠倒）。**顺序已守住**：#6 第 0–5 步全部落地后才动本条。
 
 MinerU 输出面（`parser/api_server.py:146-154`）：`markdown` / `middle_json` /
 `structured_content` / `html` / `latex` / `docx` / `zip`，其中 html/latex/docx
@@ -1231,6 +1329,320 @@ MinerU 输出面（`parser/api_server.py:146-154`）：`markdown` / `middle_json
 **验收判据**：同一文档，本仓 content_list v2 与 MinerU basic 的 content_list v2 在
 **类型序列**与块数上对齐率可量化（复用已有 IoU 对拍工具链，README 的
 `ANYDOC_DUMP_DIR` 一行）；schema 字段名与本仓单测里硬编码的 MinerU 常量表逐字等值。
+
+---
+
+### content_list v2 已落地（2026-09-28，v1）
+
+**实现落点**：`src/docir/content_list.rs`（新，~490 行）+ `src/docir/mod.rs` 的
+`OutputFormat` + `finalize()`；CLI `--format md|content-list-v2`；库侧
+`ConvertRequest{ format }`（`Default` = Markdown）。
+
+**前提改造（本条真正的工程量）**：原来 4 个出口在装配层就把 IR **提前渲染成
+String**，投影层根本看不到 IR。改为 pass-before（统一在 `docir::finalize()` 里
+「跨页表 pass → 按格式投影」）：
+
+| 出口 | 改前 | 改后 |
+|------|------|------|
+| `pdf::text_layer::TextHit::Complete` | `String` | `DocIR` |
+| `pdf::merge_hybrid` | `Option<String>` | `Option<DocIR>` |
+| `pdf::assemble_doc_result` | 内部渲染 | 新增 `fmt: OutputFormat` 参数 |
+| `ofd::assemble_docir` | `String` | `DocIR` |
+| `finalize_text_docir` | 存在 | **删除**（被 `finalize` 取代） |
+
+**schema 口径逐字抄 MinerU 源码**（`content_list.rs` 模块头注有出处行号，改前先读
+本机 `mineru` 包）：顶层 `list[list[dict]]` 按页分组；item `{type, content, bbox}`；
+bbox = `int(v*1000)` 0–1000 归一化整数（`content_list/common.py:118-122`）；24 个
+类型名逐字抄 `types.py::ContentTypeV2`（单测 `type_names_match_mineru_verbatim`
+逐条钉死字面值）；span 样式名与**顺序**抄 `docvortex/schema.py::INLINE_STYLE_ORDER`
+（7 项，`emphasis` 本仓无证据源恒 false，`superscript`/`subscript` 按 MinerU 口径
+互斥折叠，取上标）；印章按 MinerU 归 `image` + `sub_type="seal"`
+（`constants.py:92` / `layout.py:43-44` / `ocr.py:266-297`）。
+
+**三条"宁缺勿造"纪律**（与 #6 第 1 步"不伪造分母"同一条线）：
+1. **页尺寸不可归一化 → 不给 bbox**（PDF 文字层的 `ContentExtent`）；
+2. **区块无几何 → 不给 bbox**（新增 `Region::has_geometry()`，判定退化框。
+   此前会输出 `[0,0,0,0]`——那是伪造"页左上角零尺寸"的坐标，比省略更坏）；
+3. **`table_type` 恒 `null`**——MinerU 用 `classify_table(html)` 判 simple/complex，
+   本仓无该判别器，不自造。
+另：`Grid`/`TableHtml` 沿用渲染层 `table_grid_to_html` 产 html；`continues_prev`
+块跳过（内容已并入首表页那份，重行会重复）。
+
+**零回归证据（markdown 通路）**：`git stash` → 基线构建 → 20 个 PDF + 4 个 OFD 的
+输出 md5，与改动后**逐字节一致**（PDF / OFD 均打印"逐字节一致"）。测试：lib
+**291 passed / 0 failed**（#11 自带 12 个单测），golden 11 checked，全量 EXIT=0。
+
+**端到端测试**：`tests/content_list.rs`（4 个用例，全程 `--text-only`
+→ **不加载任何模型**，CI 绿得住）：顶层按页分组形状 + item 键集、文字层页
+bbox 落地且 0–1000/top-down（#11b-v2 起，原"不给 bbox"断言反转）、默认
+`md` 不受影响、office 输入显式 `unsupported`。schema 的逐字
+对齐仍由 `src/docir/content_list.rs` 的单测钉（含 24 个类型名字面值）。
+
+**已知缺口（按性价比排序，均不在 v1 范围内）**：
+1. ~~**OCR 通路的正文/标题行没有 bbox**~~ → **已落地（2026-09-29，#11b）**，见下节。
+2. ~~**PDF 文字层页整页没有 bbox**~~ → **已落地（2026-09-29，#11b-v2）**，见下节。
+   落地时验证结论：主链路坐标即 visible page box 系（`CropBox ∩ MediaBox`，
+   原点框左下），**无需 pdfium**——lopdf 复刻读取规则即可，不引入 .so 依赖。
+3. **类型序列对齐率尚未量化**——验收判据里的对拍（本仓 vs MinerU basic 的
+   content_list v2）还没跑，等 13 个 real_samples 到位后与 #7/#8 默认翻转一起做。
+4. `zip` 产物（#12 图片输出后近乎免费）、middle_json 读取兼容：仍未排期。
+
+---
+
+### #11b 已落地（2026-09-29）：OCR 通路几何贯通（bbox 覆盖率 1/86 → 40/86）
+
+**问题**：#11 v1 实测 18 个 PDF 样本 bbox 覆盖率 **1/86**（只有印章 furniture 块
+有框）——OCR 通路的正文/标题行在阅读序管线里就把几何丢了：`order_structure`
+把 region 拍平成 `(y, text)`，`postprocess_lines`/`body_regions` 全链路
+`Vec<String>`，`body_regions` 只能 `Region::new(0,0,0,0, text)`。
+
+**修法**：阅读序管线的行载体从 `String` 换成 [`Line`]（`y` + `text` + `bbox`，
+`src/reading_order/lines.rs`），**合并点统一取并集**：
+
+| 合并点 | 几何语义 |
+|---|---|
+| 段落合并（`merge_into_paragraphs`） | 参与各行的并集（纵向拉通） |
+| 连字符合并（`merge_hyphenated_lines_boxed`） | 两行并集（断词拼回一行） |
+| 竖排列（`vertical::order_vertical`） | 列内所有 region 的并集 |
+| 列表项配对（`gfm_adapter::merge_isolated_markers`） | marker + 内容行并集 |
+| stitch 文本（`assemble_blocks`） | **整块** bbox（stitch 的换行无 y 信息） |
+| 表块（`TableHtml`/`Grid`） | `TableResult.bbox` / 触发它的 Image 元素框 |
+| 印章正文行（`【印章】…`） | 来源 `Seal` 元素框 |
+
+三条纪律贯穿：**两侧都有几何才并**（一侧缺 → 结果缺，不拿半边冒充整行）；
+**没有几何就是没有**（不给退化框，与 #11 "不输出 `[0,0,0,0]`"同一条线）；
+**真相只有一份**（`*_boxed` 是真相，`order_structure` String 版已删除——它已无
+生产调用方；`postprocess_lines`/`body_regions` 保留薄封装给文字层通路，行为
+逐字节不变）。
+
+**实测（18 个 PDF，content-list-v2）**：1/86 → **40/86**。分通路看：
+- **OCR 通路（扫描件）全覆盖**：multipage 8/8、seal_scan 10/10、formula_mixed
+  5/5、image 1/1、image_table 2/2、real_table 2/2、table_rot90 1/1、
+  table_upright 1/1、wired 1/1、wireless_simple 1/1、wireless_span 1/1、
+  mixed_scan/mixed_blank 的 OCR 页有框；
+- **文字层 PDF 仍无 bbox**（rich_text/text/cross_page_table/rotated_block/
+  rotated_table/mixed 的文字层页）——`ContentExtent` 无合法分母，归 #11b-v2
+  （见上节第 2 条，先验证坐标系再动）。
+
+**零回归证据（markdown 通路）**：`git stash` 前后 20 PDF + 4 OFD 输出 md5
+**逐字节一致**（渲染层不消费几何，这是结构保证而非巧合）。测试：lib
+**294 passed / 0 failed**（#11b 新增 4 个：段落合并并集 / 连字符并集 /
+union_bbox 语义 / 无几何行为不变 + 列检测几何断言），全量 EXIT=0。
+
+---
+
+### #11b-v2 已落地（2026-09-29）：PDF 文字层页 MediaBox（文字层 bbox 从 0 → 42/44）
+
+**问题**：#11b 后文字层 PDF 仍无 bbox——`ContentExtent` 无合法分母，而
+pdf-inspector 的 `visible_page_box` 是 `pub(crate)`，`CropBox ∩ MediaBox` 拿不到。
+
+**前置验证（纪律要求，先验证坐标系再动）**：
+- pdf-inspector 公开 position API（`extract_text_with_positions*`，本仓主链路）
+  返回 **visible page box 系**坐标（`CropBox ∩ MediaBox`，原点=框左下，y 向上）；
+  "markdown 管线内部 raw user space" 仅指 `extract_pages_markdown` 内部，与本链路无关；
+- 由此**不需要 pdfium**——用已在依赖树的 lopdf 0.45.0 复刻读取规则即可
+  （`src/pdf/page_box.rs`，逐条对齐 `extractor/page_box.rs:127-180`）。
+
+**修法**：
+1. `page_visible_boxes`（lopdf）：Media+Crop → `Crop∩Media`（不相交回落 Media）；
+   仅 Media → Media；仅 Crop → `LETTER∩Crop`；都无 → None；沿 `/Parent` 最多
+   32 层、元素可 Reference、只读前 4 数、退化框视同无。任何失败 → 空 map
+   （全页回落 `ContentExtent`，零行为变化）。
+2. 主链路 `extract_text_items` 换 `extract_text_with_positions_and_rotations_mem`
+   （同一提取管线、同一坐标帧 Sheet，逐 item 一致），副产物拿每页 `PageRotation`
+   ——**整页转正页（Ccw/Cw）不适用** baseline-flip 换算（turned 帧 y 语义与
+   "页顶=H"前提不兼容且无实测样本）→ 维持 `ContentExtent`，宁缺勿造。
+3. dims 决策：有框 + Upright → `PageDims::page_box_pdf_pt(w, h)`（新 kind，
+   `normalizable()=true`）；无框 / 转正页 → `extent_pt`（现状）。
+4. `bbox_of` 对 `PageBoxPdfPt` 做 **baseline-flip → top-down** 换算：
+   `y0_top = H + 2·y_min - y_max`、`y1_bottom = H + y_min`（行框是
+   `y_min=-baseline`、`y_max=-baseline+em` 的翻转形态，非纯 `-y`；改它会漂移
+   reading_order 排序，零回归红线不动它）。x 照常除 W。单测
+   `bbox_pdf_pt_baseline_flip_roundtrip` 钉公式（页顶行 y0=0、页底行 y1=1000）。
+
+**实测（content-list-v2，--text-only）**：
+- PDF 文字层：text 2/2、rich_text 5/5、mixed_scan 4/4、mixed_blank 4/4、
+  cross_page_table 3/4、rotated_block 24/25 → **42/44**（95.5%）；
+- OFD 文字层（#11b boxed 链修复生效）：text.ofd 3/3、text_font.ofd 3/3 → 6/6；
+- rotated_table 0/7 = 整页转正页（宁缺勿造，预期）；multipage/real_table/
+  wired_table/text_font.pdf 的 text-only 报错 = #13 显式拒绝契约（非 bbox 问题）。
+
+**零回归证据**：`git stash` 前后 8 个文字层样本 markdown md5 **逐字节一致**
+（dims.kind 只被 bbox 投影消费，渲染层零接触）。lib **309 passed**（+15：
+page_box 复刻规则 11 + dims 接线 2 + roundtrip 1 + …），全量测试全绿（含
+content_list 集成测试反转为 `with_bbox`——旧行为"文字层无 bbox"已被本票取代）。
+
+**已知缺口**（记 BACKLOG，宁缺勿造不追）：
+1. **Grid/成品表块无 bbox**：rotated_block 的 `table` 块、cross_page_table 1 项
+   ——文字层网格重建的 Region 是退化框 `(0,0,0,0)`，可按"参与行并集"补
+   （OFD 网格表同款 fold 已做，PDF Grid 未做）；
+2. **整页转正页（Ccw/Cw）无 bbox**：turned 帧 y 语义未验证，待 real_samples；
+3. **行框高 ≈1pt**：`push_line_region` 的 em = `(y_max_pdf - line.y).max(1.0)`
+   （同 baseline 行恒 1pt）→ bbox 是"基线线框"而非完整行高框，行高可用
+   `item.height` 增补（不影响 markdown，只影响 bbox 形态）。
+
+**真实样本首测（2026-09-29，GJB 9001C-2017 军标 37 页扫描件 +
+38 页文字版成对，`tests/samples/real_samples/`）**：
+- **扫描版**（ScanSnap 300dpi 纯图，OCR 通路）：默认档 4.5min，markdown
+  1323 行/154 标题；content-list-v2 **1087/1089 item 带 bbox（99.8%）**，缺的
+  2 项是页边污渍噪声段落（`éngatteta`/`pay`，无几何 → 纪律省略，正确行为）。
+- **文字版**（Word 转 PDF，文字层通路，`gjb9001c_wenzi.pdf`）：**10 秒**
+  （快 27 倍），markdown 1547 行；content-list-v2 **1171/1176 item 带 bbox
+  （99.6%）**——#11b-v2 真实文字层验收过，缺的 5 个全是文字层网格表块
+  （已知缺口 1）。正文条款/标题文本两版抽查命中，**OCR 错字可见但少**
+  （扫描版把 `GJB 3827` 识别成 `3872`，文字版全对）。
+- **对照暴露的新缺口（已落地，见下节 #11c）——文字层段落合并缺失**：文字版
+  长段落（>=60 字）仅 **4** 个 vs 扫描版 **101** 个，段落对齐率 81%/标题
+  43%（差异主因是切分粒度不是文字错）。根因：文字层无版面块 → fallback
+  链末选 `order_text_regions` **只排序不合并段落**（`merge_into_paragraphs`
+  只在块内跑），每视觉行即一段——这是文字层通路既有行为（#11b 零回归
+  保护的正是它），非回归。修法：fallback 末选追加行距启发式合并
+  （`merge_into_paragraphs` 的 median_gap×1.5 判据复用），走零回归对拍 +
+  golden 重基线，已于同日落地。
+
+### #11c 已落地（2026-09-29）：文字层段落合并（长段落 4 → 88，粒度对齐 OCR 通路）
+
+**方案**（插入点选消费方，`blocks.rs` OCR fallback 一行不动）：
+1. `pdf/text_layer.rs` 尾步、`ofd/mod.rs` PageData::Text 分支，在 boxed 链末追加
+   `merge_into_paragraphs`，顺序 **order → postprocess → merge**——连字符合并
+   必须先于段落合并（否则跨行连字符埋进段落中部后行对不再相邻）。
+2. 共享真相：`merge_into_paragraphs` 提为 `pub(crate)`；新增 `ParaJoin` 拼接
+   策略参数——**OCR 通路 `Concat`（字节零漂移），文字层 `MineruLang`**。
+
+**为什么要拼接策略分档（text.pdf 对拍发现的真问题）**：
+- 直接复用无空格拼接，西方文本词粘连（`"anydoc-ocr"+"Text"` →
+  `anydoc-ocrText`）——OCR 时代"中文行末无空格"的假设在文字层不成立；
+- 按 MinerU `merge_para_with_text` 移植行语境规则：**下行字母** CJK 占比
+  >=0.5 → 不加空格；西方语境补一个空格；**行尾连字符不补**（文字层可并连
+  字符已在 postprocess 合掉，能留到 merge 的都是 `well-Known` 类真连字符；
+  OCR 通路连字符合并后置，补空格会制造 `main- tance`——这是不改 OCR 拼接
+  行为的第二个理由）；
+- **字母口径**（第一版踩坑后修正）：数字/标点不计入判定——MinerU
+  `detect_lang` 只统计 `[a-zA-Z]+`，整字符口径会把数字密集中文行误判西方
+  （`第二段：发票号码 2024001，金额 1280.00 元。` 被插空格）。下行无字母
+  → 继承段落已积累语境；两者皆无 → 中文语境不加空格。
+
+**实测（GJB 9001C-2017 文字版 38 页，content-list-v2）**：
+
+| 指标 | pre-#11c | post-#11c | 扫描版参照 |
+|---|---|---|---|
+| 段落数 | 940 | **210** | — |
+| 长段落（>=60 字） | 4 | **88** | 101 |
+| 长段落（>=100 字） | 0 | **72** | — |
+| 段落平均长度 | 23 字 | **99 字** | — |
+| 标题数 | 231 | 252 | 154 |
+
+markdown 1547 → 863 行。最长段 705 字完整连贯，`f)/g)/h)` 列表项标记保留
+（列表感知分段归 #10，两通路判据一致）。标题 231→252：`title_levels` 对
+合并后行序列重判的正常波动。
+
+**零回归证据**：
+- **OCR 通路红线**：NUAA 37 页扫描件复跑，md + content-list-v2 与 pre-#11c
+  **md5 逐字节一致**（`e64e70…` / `5df37d…`）；5 件合成 OCR 样本 golden 通过；
+- **文字层变化全定性**（stash 前后 4 样本 diff）：全部为"多行并一段 +
+  MineruLang 空格"，表格内容零变化（cross_page_table 正文段并 1、表原样）；
+- golden/batch_golden 重基线 **6 快照**（text.pdf / text.ofd / text_font.ofd /
+  cross_page_table.pdf / batch_text.*）+ **2 件真实样本新基线**（gjb 文字层默认
+  档 / nuaa 挂 `ANYDOC_GOLDEN_OCR=1` 档——真实样本正式纳入回归网）；
+- lib **312 passed**（+3：链路级 2 + 拼接策略 1）；content_list 集成测试按
+  新粒度适配（2 item → 1 段 + 空格 + bbox 跨两行）；orientation 的
+  `uniform_page_output_is_untouched_by_grouping` 形态断言随 #11c 更新
+  （其核心断言"--pages 隔离 == 全量"原样保留）。
+
+**已知缺口**：
+1. **无编号标题并入正文段** → **#11c-v3 已定案（2026-09-29，见上方字号护栏
+   节）**：merge 点位在标题赋级之前，`is_heading` 护栏只覆盖编号/`#` 字面量
+   （`文档标题样例` 被并）。原记"行框高度 baseline ≈1pt 无区分度、不可廉价
+   达成"**已修正**——`TextItem.font_size` 是独立于行框高度的信号，GJB 实测
+   标题/正文 1.6×/2.6× 区分度充分；字段路径与实施清单已定稿，**待实施**；
+2. ~~OCR 通路西方语境行粘连~~ **已落地**（同日 #11c-v2，见下节）；
+3. ~~列表条目并入段落~~ **段落级已修**（2026-09-29，#10 切片 1：标记行开新段、
+   续行并入所在项，GJB 210 → 478 段）；list block 结构化仍归 #10。
+
+### #11c-v2 已落地（2026-09-29）：OCR 通路同档拼接，`ParaJoin` 分档删除
+
+**改动**：`blocks.rs` 两处消费点（内块合并 + leftover 合并）从
+`Concat` 换 `MineruLang`——西方语境补空格的 OCR 侧既有缺陷就此关闭。
+既然三通路同档，`ParaJoin` 枚举与 `merge_into_paragraphs_with` 包装失去
+消费方，按"薄封装零调用即删"纪律删除，`merge_into_paragraphs` 回归单一
+签名（MinerU 行语境规则即唯一行为）。
+
+**零漂移证据**：golden OCR 档全过（432s，5 件合成 OCR 件 + GJB 扫描版
+37 页）——快照**零漂移、无需重基线**（GJB 中文文档英文行几乎不跨行合并，
+预测"近零"兑现为"零"）。文字层三样本输出 md5 与收敛前逐字节一致
+（签名收敛无行为变化）。lib 312 passed，其余集成测试全绿。
+
+**与 #11 量化的关系**：扫描版 json 不变 → `scripts/align_rate.py` 的
+量化基线数字自动保持有效。
+
+### #11c-v3 已定案待实施（2026-09-29）：字号护栏解"无编号标题并段"（中票）
+
+**证据链**（本轮全部实测闭环）：
+1. **字号抽取层就有**：`pdf_inspector::TextItem.font_size`（em 高度，旋转 run
+   语义同保证）；行构造点 `line.items` 直取 max——**不需要动 Key/Span**，
+   富文本 span 投影零风险（原估"要贯穿 Span"，实读后推翻，改动面缩小一档）。
+2. **真实语料区分度极强**（GJB 9001C 文字版临时 dump，跑完已删）：正文主体
+   **10.0pt × 1163 行**；无编号标题 **16.0pt × 5**（「目 次」「前 言」「中央军委
+   装备发展部颁布」——正是缺口1 的受害者）+ **26.0pt × 1**（「质量管理体系
+   要求」），比值 **1.6× / 2.6×**；干扰源页眉 10.5pt（1.05×）、引用行 11.3pt
+   （1.13×）均低于护栏阈值。上节缺口1 原记"行框 baseline ≈1pt 无区分度"
+   指的是行框**高度**（y_max−y_min，合并行后失真）；font_size 是独立信号，
+   实测区分度充分——**缺口1 从"不可廉价达成"修正为"可廉价达成"**。
+3. OCR 通路天然免疫：`Region.font_size` 对 OCR/OFD 源恒 `None` → 护栏
+   双方 `Some` 才判 → OCR 红线零风险。
+
+**字段路径**（定稿）：
+- `region.rs` `Region` 加 `font_size: Option<f32>`（IR 字段，投影层 #10/#11
+  未来同读）；
+- PDF 行构造点（`pdf/text_layer.rs` `Region::new` 处，`line.items` 在手上）赋
+  `Some(max font_size)`；OFD 行构造点同——需先给 OFD 文字层解析加
+  TextObject `Size` 属性（当前 `ofd/text_layer.rs` 不抽任何字号，grep 零命中
+  已核）；
+- `merge_into_paragraphs` 护栏：`next.font_size > cur.font_size * 1.15` →
+  开新段。**单向**：只拦"下行更大"——注释行 8.5pt、图内小字 6–7pt、页码
+  9pt 都是变小方向，天然避开；双向护栏留实测后另议。
+
+**实施清单**：字段 + 两处赋值 + 护栏 + 单测（16pt/10pt 不并、同字号照旧、
+None 照旧）+ golden 实测（GJB「目次/前言」独段化 → gjb 快照重基线；text 系
+合成样本字号单一，预期零漂移）+ README/BACKLOG 记账。规模：**1 个批次**。
+
+### #11 量化已落地（2026-09-29）：成对样本类型序列 / 文本对齐率
+
+**工具**：`scripts/align_rate.py`（可复现，口径即定义）——
+- **类型序列对齐率** = LCS(两版 item 类型序列)/max(len)，相等判据 type 相同
+  （numpy dp 回溯）；
+- **文本对齐率** = 对齐对内 difflib ratio 达标比例，分母 = min(两版该类型数)，
+  双阈值 0.8（严格）/ 0.6（宽松，OCR 错字容忍）；
+- 双口径：全量 / 去 furniture（page_header/footer/number/footnote 是扫描版
+  版面模型独有）。
+
+**实测（GJB 9001C-2017 扫描版 1089 items vs 文字版 467 items，扫描版为
+OCR `Concat` 档产物）**：
+
+| 指标 | 数值 |
+|---|---|
+| 全量类型序列对齐率 | 351/1089 = **32.2%** |
+| 内容序列对齐率（去 furniture） | 351/1027 = **34.2%** |
+| title 文本对齐率 ≥0.6 / ≥0.8 | **44.2%** / 27.9%（147 对齐对） |
+| paragraph 文本对齐率 ≥0.6 / ≥0.8 | 32.9% / 17.6%（203 对齐对） |
+| table ≥0.6 | 1/3 |
+
+**定性**（数字怎么读）：
+- title 44.2% 与首测手工估算 43% 吻合 → 口径有效；
+- paragraph 32.9% 显著低于手工估 81%——差异主因是**聚合粒度不同构**：
+  扫描版 866 段（OCR 版面块内合并）vs 文字版 210 段（全页 median_gap 合并），
+  一段对多段的"前缀包含"型漂移在 difflib ratio 下天然低分，不是文字错
+  （文字版对扫描版错字率接近零：`GJB 3827` vs `3872` 类）；
+- 序列对齐率 32% 被 paragraph 计数失衡（866 vs 210）拖累；文字版把罗马
+  页码 `I/II/III`、目次条目判成 paragraph/title（无版面模型，既有差异），
+  与扫描版 page_number/page_header 错位对齐。
+- **用途**：这是两通路结构同构性的第一个量化基线。后续若做"文字层版面
+  感知切分"或"OCR 段落聚合对齐 MinerU 粒度"，以本表数字为前后对照。
+
+---
+- 类型分布差异照实说：扫描版有 page_header/footer/page_number（版面模型
+  剔除），文字版全计 paragraph（文字层无版面模型）；文字版 title 231 vs
+  扫描版 154（目次条目被判 title）。
 
 ---
 

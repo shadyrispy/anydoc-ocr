@@ -40,7 +40,9 @@ use crate::{ConvertRequest, Result, gfm_adapter};
 
 pub mod render;
 mod text_layer;
-pub(crate) use text_layer::{TextHit, classify_pages, finalize_text_docir, text_layer_probe};
+pub(crate) use text_layer::{TextHit, classify_pages, text_layer_probe};
+
+mod page_box;
 
 pub fn convert_pdf(
     path: &Path,
@@ -132,7 +134,7 @@ pub(crate) fn merge_hybrid(
     mut text: DocIR,
     pages: &[(u32, oar_ocr::domain::structure::StructureResult)],
     dims: &[Option<(u32, u32)>],
-) -> Option<String> {
+) -> Option<DocIR> {
     let covered: std::collections::BTreeSet<u32> = pages.iter().map(|(p, _)| *p).collect();
     if covered.len() != pages.len() {
         return None;
@@ -162,7 +164,9 @@ pub(crate) fn merge_hybrid(
     // 3) 页号升序：跨页表 pass 按 vec 序判定相邻性、渲染按 page_no 分桶归位，
     //    两者都要求页序正确。
     text.pages.sort_by_key(|p| p.page_no);
-    Some(finalize_text_docir(text))
+    // #11：返回 **pass 前** 的 DocIR，终渲染（pass + 按格式投影）由调用方做——
+    // 原来这里直接 `finalize_text_docir`，投影层就看不到 IR 了。
+    Some(text)
 }
 
 /// 跨文档 OCR pipeline 的**单文档规格**（ADR-0005 候选 2 + anydoc 0.2.4 缺页路由）。
@@ -325,6 +329,7 @@ pub(crate) fn convert_pdf_ocr_docs(
             doc_idx,
             &dump_dir,
             &page_dims,
+            opts.format,
         );
         out.push((doc_idx, md));
     }
@@ -367,6 +372,7 @@ fn assemble_doc_result(
     doc_idx: usize,
     dump_dir: &Option<String>,
     page_dims: &BTreeMap<(usize, usize), (u32, u32)>,
+    fmt: crate::docir::OutputFormat,
 ) -> Result<String> {
     if let Some(e) = doc_error {
         return Err(e);
@@ -412,7 +418,7 @@ fn assemble_doc_result(
                     },
                 ));
             }
-            merge_hybrid(text, &ocr, &ocr_dims).ok_or_else(|| {
+            let doc = merge_hybrid(text, &ocr, &ocr_dims).ok_or_else(|| {
                 crate::error::ConvertError::new(
                     crate::error::ErrorKind::NeedsOcr,
                     crate::error::Stage::Ocr,
@@ -421,7 +427,10 @@ fn assemble_doc_result(
                         fmt_pages(missing.unwrap_or_default())
                     ),
                 )
-            })
+            })?;
+            // 混合文档含 OCR 页，但渲染风格按**文字层**口径（与旧
+            // `finalize_text_docir` 一致，golden 守护）。
+            Ok(crate::docir::finalize(doc, fmt, false))
         }
         // 图片型整篇 OCR（旧行为）
         None => {
@@ -432,7 +441,13 @@ fn assemble_doc_result(
             let idxs: Vec<usize> = ordered.iter().map(|(pi, _)| *pi).collect();
             let dims = align_page_dims(doc_idx, &idxs, page_dims);
             let res: Vec<_> = ordered.into_iter().map(|(_, r)| r).collect();
-            Ok(gfm_adapter::to_markdown(&res, &dims))
+            // #11：IR 是真相 —— 按格式投影（markdown 与旧 `to_markdown` 字节一致：
+            // 同为 pass + render_with_furniture）。
+            Ok(crate::docir::finalize(
+                gfm_adapter::to_docir(&res, &dims),
+                fmt,
+                true,
+            ))
         }
     }
 }
@@ -543,12 +558,23 @@ mod tests {
         }
     }
 
+    /// #11：`merge_hybrid` 返回 **pass 前** 的 DocIR（投影层要看到 IR），
+    /// 老断言是按 markdown 写的，这里补一步终渲染——口径与旧
+    /// `finalize_text_docir`（跨页表 pass + render）逐字节一致。
+    fn merge_md(
+        text: DocIR,
+        pages: &[(u32, oar_ocr::domain::structure::StructureResult)],
+    ) -> String {
+        let doc = merge_hybrid(text, pages, &[]).expect("merge ok");
+        crate::docir::finalize(doc, crate::docir::OutputFormat::Markdown, false)
+    }
+
     /// 缺页 OCR 结果按真实页号插回：1(文字) + 2(OCR) + 3(文字) 顺序输出。
     #[test]
     fn merge_hybrid_inserts_ocr_pages_in_page_order() {
         let text = body_doc(&[(1, "第一页"), (3, "第三页")]);
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
+        let md = merge_md(text, &pages);
         let i1 = md.find("第一页").expect("p1");
         let i2 = md.find("第二页扫描件").expect("p2 ocr");
         let i3 = md.find("第三页").expect("p3");
@@ -570,7 +596,7 @@ mod tests {
     fn merge_hybrid_replaces_same_page_no_placeholder() {
         let text = body_doc(&[(1, "第一页"), (2, "")]);
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
+        let md = merge_md(text, &pages);
         assert!(md.contains("第二页扫描件"));
         // 空文字层页被丢弃后只剩两页段
         assert_eq!(md, "第一页\n\n第二页扫描件");
@@ -584,7 +610,7 @@ mod tests {
         text.pages.push(grid_page(1, 2, &["a1", "a2"]));
         text.pages.push(grid_page(3, 2, &["b1", "b2"]));
         let pages = vec![(2u32, ocr_page("第二页扫描件"))];
-        let md = merge_hybrid(text, &pages, &[]).expect("merge ok");
+        let md = merge_md(text, &pages);
         let n_open = md.matches("<table").count();
         let n_close = md.matches("</table>").count();
         assert_eq!(n_open, 2, "两表应各自定格，got {n_open}: {md}");
@@ -638,6 +664,7 @@ mod tests {
             0,
             &None,
             &std::collections::BTreeMap::new(),
+            crate::docir::OutputFormat::Markdown,
         )
     }
 

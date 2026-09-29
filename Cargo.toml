@@ -13,6 +13,9 @@ image = "^0.25.10"
 htmd = "=0.5.5"
 # 末页表探针零拷贝映射（T11）：已由 fontdb 传递引入，提升为直接依赖不增编译单元
 memmap2 = "^0.9.11"
+# #11b-v2 文字层页框读取（MediaBox/CropBox 继承链）：pdf-inspector 的
+# `visible_page_box` 是 pub(crate)，用其同款 lopdf 复刻读取规则（不 vendor）
+lopdf = "^0.45.0"
 oar-ocr = { version = "=0.9.2", default-features = false, features = ["auto-download", "simd"] }
 # 直接依赖 ort（与 oar-ocr-core 锁定的 =2.0.0-rc.13 同版本、特性完全镜像），
 # 仅为拿到进程级线程池 API（A：消除 rayon×ORT 线程超额订阅）。特性与上游一致，

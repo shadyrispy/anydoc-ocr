@@ -68,6 +68,7 @@ anydoc-ocr <输入文件或目录> [选项]
 | `--pages <expr>` | 全部 | 页码选择（**仅 PDF**，语法对齐 MinerU/docvortex）：1 基含端点、逗号分隔，如 `1-5,8`；`rN` 从末页倒数（`r3-r1` = 末三页）；`all` = 全部。排序去重、越界裁剪；倒序区间 / 与文档无交集 / 非法语法立即报错。所选外的页不抽取、不渲染、不进输出；非 PDF 或目录输入显式给页直接拒绝 |
 | `--ofd-force-ocr` | off | 文字型 OFD 也强制走 OCR（重建表格结构） |
 | `--pdf-force-ocr` | off | 文字型 PDF 当图片渲染后 OCR（图片型校准用） |
+| `--format <md\|content-list-v2>` | `md` | 输出格式（#11）：`md` = GFM markdown（默认，与加该参数前逐字节一致）；`content-list-v2` = MinerU `content_list_v2` 同 schema 的结构化 JSON（`list[list[{type, content, bbox}]]`，按页分组，bbox 为 0–1000 归一化整数）。**仅支持 PDF / OFD / 图片输入**（只有它们走 DocIR、能给 bbox 与类型语义），office/html/csv 等通道显式报 `unsupported`。bbox 覆盖率见「已知限制」 |
 | `--text-only` | off | **绝不加载任何模型**的文字层直出（#13，MinerU `--ocr-mode txt` 的**更严**版）：PDF/OFD 只抽内嵌文字层，缺文字的页在 stderr 列页码警告（不静默）；纯扫描件/图片输入直接报 `needsOcr`（图片没有文字层可抽）；与 `--pdf-force-ocr`/`--ofd-force-ocr` 互斥（立即 `unsupported`）。用途：无网机器上的应急抽取与文字层调试 |
 
 > 参数面已按"默认即 MinerU"收敛：`--ocr-layout`（换版面模型会把 PP-DocLayoutV2 整个替掉，与默认流程互斥）与 `--quality-route`（其语义是 tiny→small 升档，两端都不是默认档）从 CLI 撤下；两者在库 API 仍可用（`OcrConfig{layout}` / `ConvertRequest{quality_route}`，且 MinerU 档下路由自动让位，见 `quality::routing_applies`）。
@@ -141,6 +142,18 @@ let force = ForceFlags::default();
 let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 ```
 
+结构化出口（#11）走同一入口，只换 `format` 字段（IR 是真相，格式只是投影）：
+
+```rust
+use anydoc_ocr::{convert_to_markdown, ConvertRequest, ForceFlags, OutputFormat};
+
+let opts = ConvertRequest { format: OutputFormat::ContentListV2, ..Default::default() };
+let json = convert_to_markdown(std::path::Path::new("公文.pdf"), &opts, ForceFlags::default())?;
+// json: `[[{ "type": "paragraph", "content": {...}, "bbox": [..] }], ...]`，按页分组
+```
+
+> `OutputFormat::Markdown` 是 `Default`，即不写该字段时输出与加该字段前逐字节一致；`ContentListV2` 对 office/html/csv 等非 DocIR 输入返回 `unsupported`。
+
 > 库模式 `OcrEngine::predict` 页序契约被破坏时返回 `Err` 而非 panic，宿主进程不会被打翻。
 
 ## 环境变量
@@ -160,6 +173,7 @@ let md = convert_to_markdown(std::path::Path::new("公文.ofd"), &opts, force)?;
 | `ANYDOC_RICH_TEXT` | **已废弃（#6 决策 (c)）：设与不设都不再改变任何行为**——它曾把 PDF 文字层的行内样式（bold/italic/underline/strikeout）注入成 `**粗**`/`*斜*`/`<u>下划线</u>`/`<s>删除线</s>` 字面量（借鉴 MinerU `prepare/apply_text_evidence`），标题启发式则在剥掉标记的判定视图上跑。废弃理由：样式是**结构**信息，焊进正文再靠正则剥回来会让 markdown 与 IR 分叉，也让"输出什么"取决于一个环境变量。**替代 = 结构化 span**（内部 IR 的 `Region.spans`，`BACKLOG.md` #6 第 4 步；不打算再提供渲染开关）。变量存在时（不限值，与原判据一致）stderr 打一次 `[anydoc-ocr] 警告：ANYDOC_RICH_TEXT 已废弃…`，每进程一次、批处理不刷屏；`--help` 的"已废弃变量"一节同口径 |
 | `ANYDOC_HEADINGS_LAYOUT` | 存在即开启**布局驱动标题分级**（仅 OCR 通路，借鉴上游 `infer_paragraph_title_levels`）：默认路径只有编号语义一条信号，无编号标题（"总则""适用范围"）一律抹平为 `##`；开启后追加行高、缩进两条 k-means 布局信号做三信号加权投票（语义 2 > 行高 1 = 缩进 1），把同级标题按字号/缩进拉开。编号命中的标题级别不变，故开关只影响原本回落 `##` 的那批。**默认关闭**（字节一致） |
 | `ANYDOC_NO_SEAL_OCR` | 存在即关闭**印章文字识别**（**#10b 行为变更**：此前为 `ANYDOC_SEAL_OCR` 存在即开启、默认关闭；现**默认开启**，对齐 MinerU basic=medium 档默认跑 seal OCR）。链路不变：版面模型的 `Seal` 元素 → 页图裁剪 → 印章专用 DB 检测（`pp-ocrv4_mobile_seal_det`/`seal_ppocrv4_det`，auto-download 或 `ANYDOC_MODEL_DIR`）→ 行框摆正 → tier 同款 rec → 输出 `【印章】…` 行。**代价可控**：页面无 `Seal` 元素时 `seal_pass` 早退、一个额外模型都不加载，成本只落在真含章的页上。**限制**：环排（弧形）公司名当前显式跳过（弧行摆正只会产出残缺字，取证见 `BACKLOG.md` #5a），章内直排文字（"专用章"等）可识别 |
+| `ANYDOC_SEAL_ARC` | **A/B 用，默认关闭**（#5a）：存在即给环排（弧形）印章文字加极坐标展开（章心取裁剪图几何中心，不做圆拟合——DB 多边形内缘被字形打断，拟合不可靠）。展开内核已落地并通过"内容落位"验收（已知角度/半径的墨块 → 期望的 (列,行) 半平面），但**实测不进默认**：`seal_scan.pdf` 上 `【印章】专用章` → `【印章】北京测式科技有限公司 专用章`（真值「北京测试**科技**有限公司」，8 字中 7 字但字形叠压），根因是 `SealTextDetectionPredictor` 的 89 点多边形**内缘不是连续弧**（θ 跳变 14 处 >8.6°，字形把内缘切断），无连续弧可展。真修法要按字符级印章检测（另一个量级）。取证与实测数据见 `BACKLOG.md` #5a，勿再调参数 |
 | `ANYDOC_SEAL_OCR` | （遗留别名）#10b 前的开关名，现**恒为等价默认值的 no-op**——设不设都是开，绝不把默认翻转成关（老脚本 `ANYDOC_SEAL_OCR=1` 行为不变）。与 `ANYDOC_NO_SEAL_OCR` 同时设置时以关闭为准并 stderr 提示一次 |
 | `ANYDOC_EMIT_FURNITURE` | 存在即开启**页面家具/脚注输出**（#10 例外项）：OCR 通路版面检出的页眉/页脚/页码/印章区/脚注文本此前**无痕丢弃**，现仍不进正文（默认输出逐字节不变），但开关打开时每页段末追加 HTML 注释行 `<!-- header: … -->` / `<!-- footer: … -->` / `<!-- page-number: … -->` / `<!-- seal: … -->` / `<!-- footnote: … -->`（按 y 升序；文本中的 `-->` 替换为 `->`）。注释形态是过渡——正式的结构化出口是 content_list v2 投影（`PAGE_HEADER`/`PAGE_FOOTER`/`PAGE_NUMBER` 独立 item，`BACKLOG.md` #10/#11） |
 | `ANYDOC_TABLE_FILL` | 存在即开启**空单元格 OCR 回捞**（对齐 MinerU flash 表填充）：表格网格中文字为空的格单独裁剪 → 重跑一遍行检测（`box_thresh 0.5`/`unclip 1.6`，比整页尺度更宽松）→ rec → 文本写回并按 `structure_tokens` 的 (row,col) 网格重建 HTML（含 colspan/rowspan 落位）。无空格时对输出逐字节无影响；无结构 token 时保守不改写 HTML。默认关闭 |
@@ -285,11 +299,13 @@ scripts/             build-x64 / build-aarch64 / package-single / install-font
 - **ORT 全局线程池仅首次生效**：宿主已先初始化 ORT 时 `init_runtime` 配置被忽略（幂等）。
 - **模型加载失败不自动重试下载**：`ANYDOC_MODEL_DIR` 缺文件时该模型回退裸名下载；自备模型不能放 `$OAR_HOME`。
 - **图片型是先渲染（或直提）成整页光栅再整页 OCR**，不做 unpaper 式全局去噪/去歪斜——靠 100dpi 分辨率 + 文档方向矫正保障精度（与 MinerU 同思路）。
-- **印章识别只覆盖直排行**（默认开启，#10b）：章顶环排（弧形）公司名当前**显式跳过**——弧行摆正只会产出残缺字（实测"北京测试科技有限公司"→"时技有限"），残缺字比缺失更坏。弧行矫正方案的取证与下一步设计见 `BACKLOG.md` #5a。
+- **印章识别只覆盖直排行**（默认开启，#10b）：章顶环排（弧形）公司名**默认跳过**（`ANYDOC_SEAL_ARC` 可开）。弧行摆正已用真实扫描件重议裁定（2026-09-29）：合成图上 8 字全对，但真实扫描上 0 真字增益、仅增垃圾字符——维持默认关。取证见 `BACKLOG.md` #5a。
 - **印章默认开对离线包的影响**（#10b 行为变更）：tiny/small 离线包**不内置**印章检测模型（4.8MB，注册表资产）。含章文档在离线机上会触发一次 auto-download 尝试，失败只告警一次并跳过，主链路结果不受影响；确定不需要印章的环境可 `ANYDOC_NO_SEAL_OCR=1` 彻底关掉这次尝试。
 - **后处理层（印章默认开 / `ANYDOC_TABLE_FILL`）不改 vendored 管线**：模型缺失或单框推理失败只告警一次并跳过该项填充，主链路结果原样返回；两者都进引擎缓存键（开关切换重建引擎，防串会话）。不含 `Seal` 版面元素的页在 `seal_pass` 早退，印章默认开对无章文档零额外推理。
 - **安全闸（口径对齐 MinerU，超限显式报错、绝不静默截断/降质）**：输入 200 MiB（`ANYDOC_MAX_INPUT_BYTES`，stdin 有界读 + 文件入口预检）；单文档 1000 页（`ANYDOC_MAX_PAGES`，PDF 在 classify 元数据阶段拦、OFD 在逐页判定循环拦，均先于渲染/OCR）；`--dpi` 限 50–400；整页渲染长边 3500px（超则整体降 scale，`ANYDOC_RENDER_EDGE_CAP`）；单页原生文字 >65535 字符放弃文字层直判 OCR（`ANYDOC_NATIVE_TEXT_CHARS`）。
 - **`--pages` 仅 PDF 通道**：每个 PDF 调度时多付一次 classify 元数据读取（~10–50ms，不渲图）用于页数闸与选页求值，输出不变。行内样式注入（`ANYDOC_RICH_TEXT`）**已废弃**——现在设与不设输出逐字节相同，仅 stderr 提醒一次；样式信息的替代是结构化 span（见上方环境变量表）。
+- **`--format content-list-v2` 的 bbox 是"有就给、没有就省略"，不是"一定有"**（#11/#11b/#11b-v2）：MinerU 每个块都带 bbox，本仓只给**带真实几何的块**。**OCR 通路（扫描件）已全覆盖**（正文/标题/表格/印章行带框，18 样本实测 1/86 → 40/86）；**文字层页也已落地**（#11b-v2：lopdf 读 MediaBox/CropBox 作归一化分母，baseline-flip 坐标换算——PDF 文字层实测 42/44、OFD 文字层 6/6）。仍会**省略 `bbox` 键**（而不是输出 `[0,0,0,0]` 伪坐标）的情形：① 无几何的纯文本块与文字层网格表块（退化框）；② 整页内容流转正的 PDF 页（转正帧 y 语义未验证，宁缺勿造）。类型名/bbox 归一化/样式顺序等 schema 口径不受影响（逐字抄 MinerU，单测钉死）。
+- **段落按行距启发式合并，三通路同档**（#11c/#11c-v2）：PDF/OFD 文字层与 OCR fallback 的段落合并共用 `merge_into_paragraphs`（median_gap×1.5 判据）；拼接统一按 MinerU `merge_para_with_text` 行语境规则——下行字母 CJK 主导不加空格、西方语境补空格、行尾连字符不补（OCR 通路换档后全语料 golden 零漂移）。已知边界：**无编号标题可能并入正文段**（合并点位在标题赋级之前，护栏只覆盖编号/`#` 字面量；字号信号贯穿立项 #11c-v3）；**列表标记行独段、续行并入所在项**（#10 切片 1：`a)`/`A、`/`（一）`/bullet 开新段；裸数字式 `1.` 刻意不做，避免与标题编号冲突；list block 结构化归 #10）。GJB 9001C 真实样本实测：文字层段落 940 → 210（#11c）→ 478（列表护栏），长段落（>=60 字）4 → 88 → 76（扫描版参照 101）；成对样本类型/文本对齐率量化见 `scripts/align_rate.py`（#11）。
 
 ## 许可
 

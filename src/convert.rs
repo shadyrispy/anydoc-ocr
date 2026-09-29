@@ -84,6 +84,11 @@ pub struct ConvertRequest {
     /// 同式：`1-5,8,r3-r1`、`all`）。`None` / `Some("all")` / 空白 = 不限制。
     /// 非 PDF 显式给出 → `Unsupported` 拒绝（MinerU `page_range_invalid` 同口径）。
     pub pages: Option<String>,
+    /// 输出格式（#11）：IR 是真相，格式只是投影。`Default` = markdown
+    /// （与本字段引入前逐字节一致）；`ContentListV2` 出 content_list v2 的 JSON，
+    /// 仅 PDF / OFD / 图片三种输入支持（其余显式 `Unsupported`，见
+    /// [`convert_per_doc`]）。
+    pub format: crate::docir::OutputFormat,
 }
 
 /// 已废弃环境变量的一次性告警。
@@ -194,7 +199,9 @@ pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, force: &ForceFlags) 
         // force_ocr：丢弃文字层结果整篇送 OCR（图片型校准，行为不变）
         Ok(_) if force.pdf_force_ocr => PdfRoute::Ocr { pages: sel },
         // 文字层命中且无缺页：快速路径（与旧行为字节一致）
-        Ok(Some(pdf::TextHit::Complete(md))) => PdfRoute::Done(Ok(md)),
+        Ok(Some(pdf::TextHit::Complete(doc))) => {
+            PdfRoute::Done(Ok(crate::docir::finalize(doc, opts.format, false)))
+        }
         // 混合：只补缺页；#13 `--text-only` 下按 `ANYDOC_NO_HYBRID` 既有语义出
         // 文字层（缺页丢弃），但**必须显式告警列出页号**——静默丢页正是当初
         // hybrid 路由要修掉的缺陷，这里不是"悄悄降级"。
@@ -207,7 +214,7 @@ pub(crate) fn route_pdf(path: &Path, opts: &ConvertRequest, force: &ForceFlags) 
                     path.display(),
                     pages.join(",")
                 );
-                return PdfRoute::Done(Ok(pdf::finalize_text_docir(text)));
+                return PdfRoute::Done(Ok(crate::docir::finalize(text, opts.format, false)));
             }
             PdfRoute::Hybrid { text, missing_pages }
         }
@@ -267,7 +274,9 @@ fn convert_image(path: &Path, opts: &ConvertRequest, text_only: bool) -> Result<
         opts.parallel.page_parallel,
         None,
     )?;
-    Ok(crate::gfm_adapter::to_markdown(&results, &[Some((w, h))]))
+    // #11：IR 是真相 —— 图片输入同样走 DocIR → 按格式投影，不直接产 markdown。
+    let doc = crate::gfm_adapter::to_docir(&results, &[Some((w, h))]);
+    Ok(crate::docir::finalize(doc, opts.format, true))
 }
 
 /// 图片解码 + 像素闸（#12）：任一边超过 [`crate::limits::render_edge_cap`]（默认
@@ -396,6 +405,22 @@ pub(crate) fn convert_per_doc(
     opts: &ConvertRequest,
     force: &ForceFlags,
 ) -> Result<String> {
+    // #11：content_list v2 是**结构**投影——只有走 DocIR 的通道（PDF / OFD /
+    // 图片）产得出；HTML / CSV / Office 走的是 anydoc 前端直出 markdown，IR 里
+    // 没有 bbox 与类型语义，投出来的 content_list 是假的。宁可显式拒绝。
+    if opts.format != crate::docir::OutputFormat::Markdown
+        && !matches!(kind, DocKind::Ofd | DocKind::Image)
+    {
+        return Err(ConvertError::new(
+            ErrorKind::Unsupported,
+            Stage::Convert,
+            format!(
+                "content_list v2 暂不支持 {} 输入（只有 PDF / OFD / 图片走 DocIR，能给出 bbox 与类型语义）: {}",
+                format!("{kind:?}").to_lowercase(),
+                path.display()
+            ),
+        ));
+    }
     match kind {
         // #13：OFD 侧与 PDF 侧同一契约——`--text-only` 下不加载任何模型；与
         // `--ofd-force-ocr` 的互斥在 convert_ofd 入口判（各通道入口统一校验惯例）。

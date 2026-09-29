@@ -120,8 +120,12 @@ pub fn convert_ofd(
     }
     t.stage("gfm");
 
-    // 第三遍：DocIR 装配（跨页表合并 pass + 统一渲染）。
-    Ok(assemble_docir(&pages, &mut full_out))
+    // 第三遍：DocIR 装配（跨页表合并 pass + 按格式投影）。
+    Ok(crate::docir::finalize(
+        assemble_docir(&pages, &mut full_out),
+        opts.format,
+        false,
+    ))
 }
 
 /// #6 第 1 步：文字层页的页尺寸 = 该页 `PhysicalBox`（mm，与 `OfdTextLine` 的
@@ -522,7 +526,7 @@ fn ocr_pending_pages(
 
 /// 第三遍：输出装配（P1.5 DocIR producer）。跨页表格（文字层网格，免 OCR）
 /// 合并由 `docir::passes::cross_page_table` 承担；图片型 OCR/普通行各自落页。
-fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> String {
+fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> DocIR {
     let mut doc = DocIR::default();
     for (page, data) in pages.iter().enumerate() {
         let page = page as u32;
@@ -571,10 +575,26 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> 
                 if !has_columns
                     && let Some(grid) = table_grid::reconstruct_table_grid(&blocks, page_w)
                 {
+                    // #11b：Grid 块几何 = 参与行的并集（网格横跨这些行的范围）。
+                    let gb = blocks.iter().fold(None, |acc, r| {
+                        let cur = if r.has_geometry() {
+                            Some((r.x_min, r.x_max, r.y_min, r.y_max))
+                        } else {
+                            None
+                        };
+                        match (acc, cur) {
+                            (None, c) => c,
+                            (a, None) => a,
+                            (Some((x0, x1, y0, y1)), Some((cx0, cx1, cy0, cy1))) => {
+                                Some((x0.min(cx0), x1.max(cx1), y0.min(cy0), y1.max(cy1)))
+                            }
+                        }
+                    })
+                    .unwrap_or((0.0, 0.0, 0.0, 0.0));
                     doc.push_page(
                         page,
                         PageSource::TextLayerOfd,
-                        vec![Region::new(0.0, 0.0, 0.0, 0.0, String::new())
+                        vec![Region::new(gb.0, gb.1, gb.2, gb.3, String::new())
                             .with_kind(RegionKind::Grid(grid))],
                         *pdims,
                     );
@@ -583,15 +603,26 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> 
                 // 2) 普通页：文字层行（F4 赋标题级别）为 Body 区块，docir 渲染层
                 //    按页 join("\n")（历史无标题空行语义）。#6 第 2 步：`#` 前缀
                 //    由渲染层按 `Region.heading_level` 写出，producer 不再拼字面量。
-                let md = reading_order::postprocess_lines(reading_order::order_text_regions(lines));
+                //    #11b：走 boxed 链路——`lines` 本就带几何（`to_regions` 造的
+                //    真实框），此前经 String 薄封装全丢了 → content_list v2 无 bbox。
+                //    #11c：追加段落合并（顺序 order → postprocess → merge，理由
+                //    与 PDF 文字层同——见 `pdf/text_layer.rs` 尾步注释）。拼接用
+                //    拼接与 PDF 文字层同（MinerU 行语境规则，三通路同档）。
+                let boxed = reading_order::merge_into_paragraphs(
+                    &reading_order::postprocess_lines_boxed(
+                        reading_order::order_text_regions_boxed(&regions),
+                    ),
+                );
+                let md: Vec<String> = boxed.iter().map(|l| l.text.clone()).collect();
                 let levels = crate::text_health::title_levels(&md, &[], true);
-                let out = crate::text_health::body_regions(md, levels);
+                let out = crate::text_health::body_regions_boxed(boxed, levels);
                 doc.push_page(page, PageSource::TextLayerOfd, out, *pdims);
             }
         }
     }
-    crate::docir::passes::cross_page_table::run(&mut doc);
-    doc.render()
+    // #11：返回 **pass 前** 的 DocIR，终渲染（pass + 按格式投影）由调用方做——
+    // 原来这里直接 pass + render，投影层就看不到 IR 了。
+    doc
 }
 
 #[cfg(test)]
