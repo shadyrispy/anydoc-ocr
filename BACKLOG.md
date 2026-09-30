@@ -1207,7 +1207,7 @@ PIPELINE_DET_TYPE, True`）。→ 下表按 **13 项**算缺口，23 项是"将�
 | `INDEX`（content 目录块） | 无缩进/点线还原 |
 | `ASIDE_TEXT` | 与正文混排，页边注落进正文流 |
 | `PAGE_FOOTNOTE` / `REF_TEXT` / `vision_footnote` | 无脚注/引用挂接 |
-| `LIST` / `text_list` / `reference_list` | 前缀识别 + **段落级独段护栏**已落地（2026-09-29 切片 1，见节末）：列表标记行开新段、无标记续行并入所在项；list block 结构仍无。**注意**：LIST 不在 `PIPELINE_DET_TYPE` 的 13 项里，列表结构是 VLM 线产物 → 结构化优先级低于上面几行 |
+| `LIST` / `text_list` / `reference_list` | 前缀识别 + 段落级独段护栏（2026-09-29 切片 1）+ **content_list v2 `list` item 聚合已落地**（2026-09-30 切片 4，见节末）：相邻连续 marker 段聚合成一个 `list` item（`list_type: text_list` + `attribute` 投票），markdown 原文输出零变化（MinerU 对 text_list 的 md 形态即原文）。**注意**：LIST 不在 `PIPELINE_DET_TYPE` 的 13 项里（basic 档版面 23 类无 list 标签），本仓 marker 检测是对 VLM 线产物缺口的独立增强，投影形态对齐 VLM 线 |
 | `CHART` | 仅存在于 `VLM_LAYOUT_LABEL_MAP`（`constants.py:77`）与 `LOCAL_LAYOUT_IMAGE_BLOCK_BODY_TYPES`（`constants.py:65`），**不在 basic 的 13 项内** → 属 VLM 线，非本轮债 |
 | `DOC_TITLE` vs `PARAGRAPH_TITLE` | 级别由规则三信号投票给（`src/heading_levels.rs`），非 MinerU 的 LLM 分级（那条默认关闭，`config.py:395-397`）→ 口径差异需在 README 说明 |
 | header / footer / page_number | 现按**噪声丢弃**（`src/reading_order/blocks.rs:15-22` 的 `NOISE_TYPES`，含 Seal），MinerU 走 `NOT_EXTRACT_TYPES` 不进提取、但在 content_list v2 有独立类型（`PAGE_HEADER`/`PAGE_FOOTER`/`PAGE_NUMBER`）→ 语义差别很大：我们**丢**，它**分流保留** |
@@ -1256,6 +1256,212 @@ fence、旁注不进正文流）；未涉及类型的样本输出逐字节不变
 证据）。无列表标记的样本零影响——golden/batch_golden 重基线**仅 gjb 一个
 快照漂移**，text / text_font / cross_page_table / batch_text 等全部原样。
 lib **314 passed**，其余 7 个集成测试全绿。
+
+### 切片 2 已落地（2026-09-30）：目次（INDEX）类型
+
+**权威口径（实读 4.0.8 源码，非转述）**：
+- `mineru/render/_internal/content_list/v2.py::_render_index`——目录是**一个**
+  item：`{"type": "index", "content": {"list_type": "text_list", "list_items":
+  [{"item_type": "text", "item_content": [spans]}, …]}}`（条目递归展平
+  `flatten_index_leaves`，每条可带内部锚点 `_add_anchor`）；
+- `mineru/render/_internal/content_list/v1.py::_render_index_items`——markdown
+  形态是 `f"{'    ' * leaf.depth}- {label}"`，即 `- ` 列表项 + 缩进；
+- 出发点：#11c-v4 之前我们已经能"逐条成段"（点线护栏），缺的只是**类型标注**
+  （当时输出是 `## 1  范围………1` 这类带编号标题的段落）。
+
+**实现**（四处，均是最小改动）：
+1. `text_health::mark_index_entries`：点线行（`is_index_entry`，连续 ≥3 个
+   `…．.·・‥`）的 `Body` region → `RegionKind::Index`，**并清空 heading_level**
+   ——`- ` 列表项不该再带 `#`（GFM 会读成标题而非列表项，且 MinerU 的 index
+   item 没有 `level` 字段）。
+2. 接线只接**文字层**（`pdf/text_layer.rs` 尾步 + `ofd/mod.rs` 尾步）：点线形态
+   是文字层无版面模型时唯一拿得到的 INDEX 信号；OCR 通路**刻意不接**——它的
+   正途是接版面模型的 `IndexBlock`（等 #11b 之后的版面类型贯通）。
+3. `docir/render.rs`：Index 与 Body **同道输出**（在同一 `bodies` 序列里，保持
+   阅读顺序），渲染形态 `- {text}`；列表块**进出**各补一个空行——GFM 里列表与
+   前导块之间没有空行会把前一段吞进列表项。
+4. `docir/content_list.rs::page_items`：把**相邻连续**的 Index 行聚合成一个
+   `index` item（逐条 `list_items` + **并集 bbox**）；中间隔着正文行就拆成两个
+   index item——与 MinerU 的 `IndexBlock` 同构（它也不会跨段落把两段目录拼一个块）。
+
+**MinerU 4.0.8 真 CLI 对照（GJB）**：
+
+| 维度 | MinerU | 本仓 | 一致 |
+|---|---|---|---|
+| md 目次形态 | `## 目 次` + 逐条 `- 前言……IV` | 同 | ✅ |
+| 目次条目数 | 85 | **85** | ✅ |
+| 条目文本（去点线归一） | — | **85/85 完全相等** | ✅ |
+| content_list v2 | 1 个 index item / `text_list` / 逐条 list_items | 同（3 页共 3 个 item：38+43+4 条） | ✅ 结构一致 |
+
+**零回归**：golden 重基线**仅 gjb 一个快照**（其余文字层样本均无点线行，含 OFD
+通路的两个 gov_taiyuan 样本 → 零漂移）；batch_golden 2 passed（OCR 通路
+不打标，红线兑现）；lib **327 passed**（+2：`index_entry_renders_as_list_item`、
+`index_runs_collapse_into_one_index_item`；原 `placeholder_variants_never_render`
+里的 Index 已不是占位，挪出该断言）；其余 12 个集成测试全绿。
+
+**已知边界**：① 只认**带点线**的条目——MinerU 靠版面模型可把无点线的目录行也
+收进 `IndexBlock`；② 无 MinerU 的内部锚点链接（`_add_anchor`），本仓无链接信息；
+③ 跨页目录不聚合成一整个 item（MinerU 按页给数组，我们也按页，口径一致）。
+
+### 切片 3 已落地（2026-09-30）：OCR 通路接版面 Content 块（最后一个通路差）
+
+切片 2 留下的"OCR 通路刻意不接"在本步兑现：扫描件的目录块现在与文字层同形态
+出 `- ` 条目，md/content_list 两层全部对齐。
+
+**权威口径（实读 4.0.8 源码）**：
+- `mineru/backend/analysis/pdf/constants.py:73` `VLM_LAYOUT_LABEL_MAP["content"] =
+  BlockType.INDEX`——**全档共用**（含 basic 的 medium，`_build_vl_style_layout_blocks`
+  无档位分支）；`PIPELINE_DET_TYPE` **含** index → 块内行照常 OCR、进正文流，
+  仅类型标 index；
+- `mineru/model/layout/pp_doclayout_v2_base.py:25` PP-DocLayoutV2 label 4 =
+  "content"，注释「只在大的目录块中出现」，置信度阈值 **0.5**。
+
+**实现**（两处）：
+1. `reading_order/blocks.rs::fallback_order` 末选：`Line::from_texts`（无几何）
+   → `order_text_regions_boxed`（带几何）。**结构性修复**：OCR 真实链路
+   `order_index`/`region_blocks` 均无人填充（oar-core 不产、本仓不补）→ 末选
+   就是常态路径；无几何让 content_list v2 的 bbox 投影恒退化 0 框、版面回贴
+   无从判定。`order_text_regions` 本就是它的 text 投影，行序逐行一致 → 文本
+   输出不变，几何从 0 框变真实框（#11 投影层在 OCR 源上的实质补全）。
+2. `gfm_adapter.rs::mark_layout_index`：`body_regions_boxed` 之后，Body 行
+   **中心点落在版面 Content bbox 内且行文本过 `is_index_entry` 点线判据** →
+   `RegionKind::Index` 并清 `heading_level`；Content 元素另设 `confidence >= 0.5`
+   门槛（对齐 MinerU PP-DocLayout）。marker 合并后回贴（合并不改行归属）。
+
+**护栏来龙去脉（multipage.pdf 实测教训）**：纯几何判据首版实测把 multipage.pdf
+（满页规则文本的性能验证样本）整页正文全部降级成 `- ` 列表——PP-DocLayout-S
+会把整页密集文本误检为 "content"（「只在大的目录块中出现」是大模型口径，S 版
+小模型误检率高，且高置信度也拦不住）。故版面框只做**候选区**，行文本形态才是
+**确认**：漏判退回旧行为（目录行当正文，文本不丢），误判则正文被破坏——保守
+取态。`confidence >= 0.5` 门槛是第二道护栏（低置信度误检不回贴，有单测钉死）。
+
+**零回归验证**：batch_golden 2 passed（multipage 快照 hash 保 `9c1474a0…`，
+OCR 通路文本逐字节不变）；lib **331 passed**（新增 4 个测试：`layout_content_
+block_marks_index_entries`、`no_content_element_keeps_body_untouched`、
+`layout_index_marking_only_touches_body`、`low_confidence_content_not_marked`）；
+全量 **393 passed / 0 failed**。golden 未重基线（文字层零漂移）。
+
+### 切片 4 已落地（2026-09-30）：列表标记段升格 content_list v2 `list` item
+
+切片 1 只做了"标记行独段"（markdown 里仍是普通段落文本）；本切片把它们在
+**结构化输出**里升成真正的 `list` item。markdown **零变化**——这不是妥协，
+恰是 MinerU 口径：`docvortex/render/_internal/markdown/blocks.py::_render_list`
+对 text_list 的 markdown 形态就是**条目原文逐行输出**（保留原 marker、不换
+`- `、不重排序），与普通 text 块无 markdown 差别；list 的语义信息只活在
+content_list v2 / docx / html 等结构化层。
+
+**权威口径（实读 4.0.8 源码）**：
+- `mineru/render/_internal/content_list/v2.py::_render_list`——
+  `{"type":"list","content":{"list_type":"text_list","list_items":
+  [{"item_type":"text","item_content":[spans]},…],"attribute":"ordered"|"unordered"}}`，
+  `attribute` 只在 text_list 给；递归嵌套由 `flatten_list_leaves` 展平（带 depth，
+  本仓 marker 段无嵌套 → 恒 depth 0）；
+- `docvortex/render/_internal/common/list_items.py::parse_list_item_marker`——
+  kind 分类：`[-*+]` unordered / `\d+\.` `[A-Za-z]\.` 罗马. ordered / `\d+\)`
+  `\(\d+\)` `[A-Za-z]\)` 罗马\) `[..]` explicit / 其余 none；**中文顿号式 `A、`
+  与中文括号式 `（一）` MinerU 不识别**（none）；
+- `infer_list_attribute`——「最浅层叶子 kind 全 `ordered` → `"ordered"`，
+  否则 `"unordered"`」：explicit/none 全归 unordered。本仓对应 `marker_is_ordered`：
+  只有字母点式 `a.` 是 `Some(true)`，其余 marker `Some(false)`，非 marker `None`。
+
+**basic 档口径备注（重要）**：MinerU basic **不产 ListBlock**——版面 23 类
+（PP_DOCLAYOUT_V2_LABELS）无 list 标签、`PIPELINE_DET_TYPE` 不含 LIST；列表
+结构是 VLM 线产物。本仓 marker 检测（切片 1 的保守集合）是对该缺口的**独立
+增强**：markdown 层与 basic 对照零影响，content_list v2 层比 basic 多给 list
+语义（形态逐字对齐 VLM 线投影）。
+
+**实现**（四处）：
+1. `region.rs`：`Region.list_item: bool`（默认 false）。渲染层**不感知**，
+   markdown 输出零变化；唯一消费方是 content_list v2 投影。
+2. `reading_order/list.rs`：`marker_is_ordered`（ordered 投票，见上）。
+3. `text_health.rs::body_regions_boxed`（**三通路共用** Lines→Region 转换点，
+   OCR/OFD/PDF 文字层全覆盖）：段落以 marker 开头（`starts_with_list_marker`，
+   与切片 1 merge 独段**同判据同文本视图**）且**未赋标题级别** → 打 flag。
+   标题行不打——赋了级别的行不是列表项。
+4. `docir/content_list.rs::page_items`：相邻连续的 `list_item && Body` 段聚合
+   成一个 `list` item（与 index run 同构：被正文行/Index 行/家具打断即拆开；
+   bbox = 成员框并集）；`list_run_item` 产 item + attribute 投票。
+
+**零回归验证**：lib **335 passed**（+4：`list_marker_runs_collapse_into_one_
+list_item`、`all_letter_dot_markers_vote_ordered`、`marker_is_ordered_cases`、
+`list_item_flag_marks_marker_paragraphs_only`）；markdown 层零变化 → golden /
+batch_golden 零漂移（渲染层不读 flag）。
+
+### 切片 5 已落地（2026-09-30）：OCR 目录块**条目粒度**（真实扫描件 vs MinerU 真 CLI 对照）
+
+切片 3 只做到"类型标 index"，粒度是错的：**整页一个 index item、1 条 list_items**。
+与 MinerU 4.0.8 真 CLI（basic 档）在真实扫描件 `tests/samples/real_samples/
+nuaa_tupian.pdf`（37 页 GJB 9001C 扫描件）上的对照把它钉死：
+
+| | 目次条目数 | 分页分布（pdf 页 2/3/4） | content_list v2 |
+|---|---|---|---|
+| MinerU 4.0.8 basic（真 CLI） | **85** | 38 / 43 / 4 | — |
+| 本仓（切片 3 后） | **3**（整页合并的大坨） | — | 每页 1 个 index item、`list_items` 长度 1 |
+| 本仓（切片 5 后） | **85** | **38 / 43 / 4** | 每页 1 个 index item、`list_items` = 38/43/4 |
+
+全篇 37 页重跑：md `^- ` 计数 **85**（其余 33 页零误判，没有多余 `- ` 行）。
+
+**四处根因，逐层取证**（都是先看数据再动手，不是猜的）：
+
+1. **`stitched_block_text` 块级拼接把目录页拼成一坨**（最致命）。
+   `assemble_blocks` 里 stitch 快路优先级最高：块上游已拼好的文本直接出，
+   实测把 Content 块内 **40 个 det/rec 行拼成 1 行**。目录条目的真值粒度是
+   行级（MinerU 逐条），走 stitch 必然整页一坨，且行级 bbox 与 `no_merge`
+   围栏都无从生效（stitch 分支里 `Line` 是整块封的，per-region 信息全丢）。
+   → **目录块跳过 stitch 快路**，改走 det/rec 行兜底：行级文本 + 行级 bbox。
+   单一真相源：确证信号直接读 producer 打的 `Region::index_member`，不在
+   blocks.rs 里重判几何/形态（免两处判据漂移）。`inner_idx` 非空才跳（空则
+   宁可退回 stitch，不丢字）；跳过时**只消费 `inner_idx`**，不做 stitch 的
+   "子串宽松消费"——那会把块外的行吃掉却不输出（静默丢字），留给 leftover
+   兜底才零丢失。
+2. **`is_index_entry` 是纯文本判据，OCR 丢点线时整页失效**。目录页 43 行里
+   `1 范围1` `7 支持5` `7.2 能力7` 等 20+ 行的引导点线被 OCR 吃掉了 → 形态
+   判据接不住 → 被 `merge_into_paragraphs` 合并。误检护栏不松：改成**版面几何
+   确证**——Content 块内**只要有一行**命中点线形态，就确证该块是目录块，块内
+   全部行（含丢点线的）打 `Region::index_member` → `Line::no_merge`，
+   `merge_into_paragraphs` **双向不开并**（既不被前段回吸、也不吸收后一行）。
+   误检的满页正文块内没有任何点线行 → 不确证 → 合并行为不变。
+3. **归一化基准失真，目录块下缘行落在块外**。`norm_membership` 用"各自页内
+   最大值"归一化，两套 max 常被不同元素撑到不同大小——实测该文档第 3 页：
+   text 侧 `th=1118`，layout 侧被一个竖排 `AsideText`（y 到 1193）撑成
+   `lh=1193` → 目录块下缘归一化后被压小（`1092/1193 = 0.915`），而块内最后
+   三行 `10 改进18` / `10.1 总则…18` / `10.2 不合格和纠正措施…18` 的归一化 y
+   是 `0.926 / 0.943 / 0.965` → 整段判到块外，目录尾部漏 3 条（81 vs 85）。
+   → 新增 `norm_membership_union`：**取两侧 max 作统一分母**，消除失真。
+   只用于 Content：页眉/页脚/表格的判定块都很小，宽松化会把正文误判成家具
+   吃掉（误判比漏判危险得多），那些仍走严格的 `norm_membership`。
+4. **倾斜扫描件：列检测误判双列 + det 拆行**。扫描件有 1–3° 倾斜，同一视觉
+   行内各框 `y_min` 差几个像素——实测 `4.2`（y_min 408 / x 74–109）与
+   `理解相关方的需求和期望……2`（y_min **406** / x 102–717）属同一行，纯 y 排序
+   把编号甩到条目文字**之后**（`- 理解相关方…` 后跟一个光秃秃的 `- 4.2`）；
+   `detect_column_split` 还会把"编号 + 点线 + 页码"误判成双列（窄编号归左列、
+   宽条目归整宽 → 输出 mid→left 交错）。→ 新增 `sort_by_row_boxed`：目录块
+   **禁列切分**，按 y 聚类成视觉行（阈值 = 行高中位数的一半），**簇内按 x
+   升序拼成一条**（PP-OCR det 常把"编号 + 标题"拆成两个框，MinerU 是一条
+   `- 4.2 理解相关方的需求和期望………2`），簇间按簇首 y 升序。只目录块启用——
+   正文的倾斜错位是另一张票，本次不动（避免 golden 面扩散）。
+
+**对照结论**：85 条与 MinerU **逐页一致、条目一一对应**（`SequenceMatcher`
+非等块 21 处，全是 OCR rec 文本差异，如 `前言V` vs `前`、`63变更的策划5` vs
+`63变更的策5`——本仓多处把页码也识别出来了，rec 质量不差于 MinerU）。
+
+**实现**（六处）：`region.rs`（`Region.index_member` + `with_index_member`）、
+`reading_order/lines.rs`（`Line.no_merge` + `from_region` 带 + merge 双向围栏）、
+`reading_order/columns.rs`（`sort_by_row_boxed` / `flush_index_row` + 目录块短路）、
+`reading_order/blocks.rs`（`norm_membership_union` + 目录块跳过 stitch + 禁列切分）、
+`text_health.rs`（`no_merge → index_member` 回传）、`gfm_adapter.rs`（目录块确证
++ 打标 + 回贴判据取"形态 **或** `index_member`"）。
+
+**零回归验证**：lib **339 passed**（+4：`index_block_skips_stitched_block_text`、
+`sort_by_row_boxed_joins_skewed_index_row_by_x`、`index_member_no_merge_is_
+bidirectional`、`index_block_confirmation_marks_dotless_entries`）；全量
+**401 passed / 0 failed**；golden / batch_golden 零漂移、未重基线（multipage
+满页正文块内无点线行 → 不确证 → 合并行为逐字节不变，由 `index_block_skips_
+stitched_block_text` 的对照组 + batch_golden 快照双重钉死）。
+
+> 构建环境备注：沙箱里并发链接会稳定触发 `ld terminated with signal 7 [Bus error]`
+> （`llvm::identify_magic` 读 .rlib 时 mmap 出错），`-j 2` 时好时坏、`-j 4+` 必现。
+> 本轮验证统一用 `./scripts/build-x64.sh test -j 1`（7m08s，401 passed）。
 
 ---
 

@@ -20,8 +20,8 @@
 //! 跨页续接合并。防误判见 `reconstruct_image_table`。
 use crate::docir::{DocIR, PageSource};
 use crate::reading_order::{
-    is_isolated_marker, norm_membership, order_structure_boxed, page_scale, postprocess_lines_boxed,
-    title_level,
+    is_index_entry, is_isolated_marker, norm_membership, norm_membership_union,
+    order_structure_boxed, page_scale, postprocess_lines_boxed, title_level,
 };
 use crate::region::{NoiseKind, Region, RegionKind, Span};
 use crate::table_grid::{self, TableGrid};
@@ -229,6 +229,51 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .iter()
             .filter_map(|el| furniture_kind_of(el.element_type).map(|k| (&el.bbox, k)))
             .collect();
+        // #10 INDEX（OCR 通路）：版面 Content 块（PP-DocLayout-S 类别 5 "content"，
+        // 目录块）。MinerU 口径：`VLM_LAYOUT_LABEL_MAP["content"] → BlockType.INDEX`
+        // 对全部档生效（含 basic 的 medium，`_build_vl_style_layout_blocks` 无档位
+        // 分支），`PIPELINE_DET_TYPE` 含 index → 块内行照常 OCR、进正文流，仅类型
+        // 标 index。本仓同构：行照常参与阅读序/段落合并（点线行由 `is_index_entry`
+        // 强制独立），`body_regions_boxed` 之后按几何+形态回贴 [`RegionKind::Index`]。
+        // 置信度门槛 0.5 = MinerU PP-DocLayout 同款（`pp_doclayout_v2_base.py:25`）。
+        let content_bboxes: Vec<&oar_ocr::processors::BoundingBox> = page
+            .layout_elements
+            .iter()
+            .filter(|el| el.element_type == LayoutElementType::Content && el.confidence >= 0.5)
+            .map(|el| &el.bbox)
+            .collect();
+        // #10 切片 5：**目录块确证**（几何先行）。MinerU 的 INDEX 块可以含不带
+        // 点线的条目（原文点线在 OCR 阶段被吃掉：实测 nuaa_tupian.pdf 目录页
+        // 43 行里 `1 范围1` `7 支持5` `7.2 能力7` 等 20+ 行无点线）→ 纯文本
+        // `is_index_entry` 判据接不住，整页并成一坨（本仓 3 条 vs MinerU 85 条）。
+        // 版面几何不受 OCR 丢字影响：Content 块内**只要有一行**命中点线形态，
+        // 就确证该块是目录块，块内全部行（含丢点线的）逐条独立 + 回贴 Index。
+        // 误检护栏：PP-DocLayout-S 会把满页密集正文误检为 content（#10 切片 3
+        // 实测），那种块内没有任何点线行 → 不确证 → 合并行为不变（golden 零漂）。
+        let mut index_blocks: Vec<bool> = vec![false; content_bboxes.len()];
+        if let Some(regs) = &page.text_regions {
+            for r in regs {
+                let Some(t) = r.text.as_ref() else { continue };
+                let t = t.trim();
+                if t.is_empty() || !is_index_entry(t) {
+                    continue;
+                }
+                let b = &r.bounding_box;
+                let cx = (b.x_min() + b.x_max()) / 2.0;
+                let cy = (b.y_min() + b.y_max()) / 2.0;
+                for (i, cb) in content_bboxes.iter().enumerate() {
+                    if norm_membership_union(cx, cy, scale, cb) {
+                        index_blocks[i] = true;
+                    }
+                }
+            }
+        }
+        let in_index_block = |cx: f32, cy: f32| {
+            content_bboxes
+                .iter()
+                .enumerate()
+                .any(|(i, cb)| index_blocks[i] && norm_membership_union(cx, cy, scale, cb))
+        };
         let mut furniture: Vec<Region> = Vec::new();
         let mut regions: Vec<Region> = Vec::new();
         if let Some(regs) = &page.text_regions {
@@ -254,6 +299,8 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
                 if in_img {
                     continue;
                 }
+                // #10 切片 5：目录块成员 → 逐条独立 + INDEX 回贴（见上）。
+                let idx_member = in_index_block(cx, cy);
                 // 页眉/页脚/页码/印章/脚注（layout 已检出）：分流进 furniture
                 if let Some((_, k)) = furniture_els
                     .iter()
@@ -272,7 +319,8 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
                 regions.push(
                     Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), t.to_string())
                         .with_confidence(r.confidence)
-                        .with_spans(vec![Span::plain(t.to_string())]),
+                        .with_spans(vec![Span::plain(t.to_string())])
+                        .with_index_member(idx_member),
                 );
             }
         }
@@ -327,6 +375,9 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .filter(|r| !is_noise_fragment(r))
             .collect();
         out = merge_isolated_markers(kept);
+        // #10 INDEX（OCR 通路）：marker 合并后再回贴——合并不改变行归属，且此时
+        // 区域几何/文本已定型。
+        out = mark_layout_index(out, &content_bboxes, scale);
         for table in &tables {
             if let Some(html) = &table.html_structure {
                 // #11b：表块几何 = 表格元素自带的 `bbox`（`TableResult.bbox`，
@@ -413,6 +464,51 @@ fn furniture_kind_of(ty: LayoutElementType) -> Option<RegionKind> {
         LayoutElementType::Footnote => Some(RegionKind::Footnote),
         _ => None,
     }
+}
+
+/// #10 INDEX（OCR 通路）：几何+形态双判据回贴版面 Content 块。
+///
+/// 正文 Region 中心点落在版面 `Content`（目录块）bbox 内 **且** 行文本过
+/// [`is_index_entry`] 点线判据 → `RegionKind::Index` 并清 `heading_level`
+/// （MinerU index item 不带级别）。只动 `Body`——表格 HTML、家具、已定级
+/// 标题不回贴。无 Content 元素时零成本直返（多数页面常态）。
+///
+/// 形态判据不可省：multipage.pdf（满页规则文本）实测 PP-DocLayout-S 会把
+/// 整页密集文本误检为 content（MinerU 注释「只在大的目录块中出现」是按大
+/// 模型口径；S 版小模型误检率更高），纯几何会让整页正文降级成列表。
+/// 版面框只做候选区，行文本形态才是确认——漏判退回旧行为（目录行当正文，
+/// 文本不丢），误判则正文被破坏，保守取态。
+///
+/// 切片 5 增补：`index_member`（`to_docir` 里按"Content 块内存在点线行"确证
+/// 的目录块成员）与形态判据取**或**。形态判据在 OCR 丢点线时整页失效（本仓
+/// 3 条 vs MinerU 85 条），几何确证接住这部分；误检护栏不松动——误检的满页
+/// 正文块内没有点线行，不确证，`index_member` 恒 false。
+fn mark_layout_index(
+    mut regions: Vec<Region>,
+    content_bboxes: &[&oar_ocr::processors::BoundingBox],
+    scale: (f32, f32, f32, f32),
+) -> Vec<Region> {
+    if content_bboxes.is_empty() {
+        return regions;
+    }
+    for r in regions.iter_mut() {
+        // 切片 5：`index_member`（目录块确证，几何先行）或行自身点线形态。
+        // 前者覆盖 OCR 丢点线的条目行（`1 范围1`），后者是文字层/未确证块的
+        // 形态兜底——两者是"或"，几何 membership 仍是必要项（下一个 if）。
+        if !matches!(r.kind, RegionKind::Body) || !(r.index_member || is_index_entry(&r.text)) {
+            continue;
+        }
+        let cx = (r.x_min + r.x_max) / 2.0;
+        let cy = (r.y_min + r.y_max) / 2.0;
+        if content_bboxes
+            .iter()
+            .any(|cb| norm_membership_union(cx, cy, scale, cb))
+        {
+            r.kind = RegionKind::Index;
+            r.heading_level = None;
+        }
+    }
+    regions
 }
 
 /// 多页 StructureResult → GFM 文本（OCR 源便捷入口，P1.5）。
@@ -1267,6 +1363,166 @@ mod tests {
             assert!(!dims.normalizable());
             assert_eq!((dims.w, dims.h), (0.0, 0.0));
         }
+    }
+
+    // ── #10 INDEX（OCR 通路）：版面 Content 块几何回贴 ──
+
+    /// 版面 Content（目录块）内的行 → `RegionKind::Index`；块外正文行不动。
+    /// MinerU basic 口径：PP-DocLayout label "content" → `BlockType.INDEX`
+    /// （`VLM_LAYOUT_LABEL_MAP` 全档共用），块内行照常 OCR 进正文流。
+    #[test]
+    fn layout_content_block_marks_index_entries() {
+        fn page() -> StructureResult {
+            StructureResult {
+                // Content 目录块 + 一个底部 Text 锚点（把 layout 尺度撑到与
+                // text 尺度同页——真实情形里版面框覆盖整页，两个坐标系的最大
+                // 值接近，归一化才忠实）。
+                layout_elements: vec![
+                    LayoutElement::new(
+                        BoundingBox::from_coords(40.0, 100.0, 400.0, 160.0),
+                        LayoutElementType::Content,
+                        0.9,
+                    ),
+                    LayoutElement::new(
+                        BoundingBox::from_coords(40.0, 250.0, 400.0, 300.0),
+                        LayoutElementType::Text,
+                        0.9,
+                    ),
+                ],
+                text_regions: Some(vec![
+                    tr(50.0, 105.0, 390.0, 120.0, "前言.......IV"),
+                    tr(50.0, 130.0, 390.0, 145.0, "1 范围.......1"),
+                    tr(50.0, 250.0, 390.0, 265.0, "正文行在块外"),
+                ]),
+                tables: Vec::new(),
+                ..StructureResult::new("t", 0)
+            }
+        }
+        let doc = to_docir(&[page()], &[]);
+        let regions = &doc.pages[0].regions;
+        let kinds: Vec<_> = regions.iter().map(|r| (&r.text, &r.kind)).collect();
+        let idx: Vec<&Region> = regions
+            .iter()
+            .filter(|r| matches!(r.kind, RegionKind::Index))
+            .collect();
+        assert_eq!(
+            idx.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec!["前言.......IV", "1 范围.......1"],
+            "两条目录行都应回贴 Index，实得 {kinds:?}"
+        );
+        let body: Vec<&Region> = regions
+            .iter()
+            .filter(|r| matches!(r.kind, RegionKind::Body))
+            .collect();
+        assert_eq!(body.len(), 1, "块外正文行不受影响，实得 {kinds:?}");
+        assert_eq!(body[0].text, "正文行在块外");
+        // 渲染 `- ` 条目（GFM 列表语义，与文字层 INDEX 同形态）
+        let md = doc.render();
+        assert!(md.contains("- 前言.......IV"), "渲染应含条目行：{md:?}");
+        assert!(md.contains("- 1 范围.......1"));
+    }
+
+    /// 版面无 Content 元素 → 回贴零成本直返，页面输出与改造前一致。
+    #[test]
+    fn no_content_element_keeps_body_untouched() {
+        let d = to_docir(&[ocr_page_1()], &[]);
+        assert!(d.pages[0]
+            .regions
+            .iter()
+            .all(|r| matches!(r.kind, RegionKind::Body)));
+    }
+
+    /// #10 切片 5：目录块**确证**——Content 块内只要有**一行**含点线，块内丢
+    /// 点线的条目行（`1 范围1` `7 支持5`：OCR 把引导点线整段吃掉）也标 Index
+    /// 且逐条独立。纯形态判据在这些行上整页失效（实测本仓 3 条 vs MinerU 85 条）。
+    #[test]
+    fn index_block_confirmation_marks_dotless_entries() {
+        let page = StructureResult {
+            layout_elements: vec![
+                LayoutElement::new(
+                    BoundingBox::from_coords(40.0, 100.0, 400.0, 300.0),
+                    LayoutElementType::Content,
+                    0.9,
+                ),
+                LayoutElement::new(
+                    BoundingBox::from_coords(40.0, 400.0, 400.0, 450.0),
+                    LayoutElementType::Text,
+                    0.9,
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(50.0, 105.0, 390.0, 120.0, "前言.......IV"), // 点线确证行
+                tr(50.0, 150.0, 390.0, 165.0, "1 范围1"),       // 丢点线
+                tr(50.0, 195.0, 390.0, 210.0, "7 支持5"),       // 丢点线
+                tr(50.0, 400.0, 390.0, 415.0, "正文行在块外"),
+            ]),
+            tables: Vec::new(),
+            ..StructureResult::new("t", 0)
+        };
+        let doc = to_docir(&[page], &[]);
+        let idx: Vec<&str> = doc.pages[0]
+            .regions
+            .iter()
+            .filter(|r| matches!(r.kind, RegionKind::Index))
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(
+            idx,
+            vec!["前言.......IV", "1 范围1", "7 支持5"],
+            "确证后块内条目须全部逐条独立并回贴 Index，块外正文不受影响"
+        );
+    }
+
+    /// 回贴只动 `Body`：同坐标同文本，Body 升格 Index，表格 HTML / 标题不被覆盖。
+    #[test]
+    fn layout_index_marking_only_touches_body() {
+        let mut table = Region::new(50.0, 390.0, 105.0, 120.0, "前言.......IV".to_string());
+        table.kind = RegionKind::TableHtml;
+        let mut body = Region::new(50.0, 390.0, 105.0, 120.0, "前言.......IV".to_string());
+        body.kind = RegionKind::Body;
+        let cb = BoundingBox::from_coords(40.0, 100.0, 400.0, 160.0);
+        let out = mark_layout_index(vec![table, body], &[&cb], (390.0, 120.0, 400.0, 160.0));
+        assert!(matches!(out[0].kind, RegionKind::TableHtml), "表格 HTML 不回贴");
+        assert!(matches!(out[1].kind, RegionKind::Index), "Body 应升格 Index");
+    }
+
+    /// 低置信度 Content 误检不回贴。PP-DocLayout-S 在满页规则文本上会把整页
+    /// 误检为 content（multipage.pdf 实测），阈值 0.5 对齐 MinerU PP-DocLayout
+    /// （`pp_doclayout_v2_base.py:25`）。形态判据（`is_index_entry`）由
+    /// `layout_content_block_marks_index_entries` 的块外正文行负例覆盖。
+    #[test]
+    fn low_confidence_content_not_marked() {
+        fn page() -> StructureResult {
+            StructureResult {
+                layout_elements: vec![
+                    LayoutElement::new(
+                        BoundingBox::from_coords(40.0, 100.0, 400.0, 160.0),
+                        LayoutElementType::Content,
+                        0.4,
+                    ),
+                    LayoutElement::new(
+                        BoundingBox::from_coords(40.0, 250.0, 400.0, 300.0),
+                        LayoutElementType::Text,
+                        0.9,
+                    ),
+                ],
+                text_regions: Some(vec![
+                    tr(50.0, 105.0, 390.0, 120.0, "前言.......IV"),
+                    tr(50.0, 250.0, 390.0, 265.0, "正文行在块外"),
+                ]),
+                tables: Vec::new(),
+                ..StructureResult::new("t", 0)
+            }
+        }
+        let doc = to_docir(&[page()], &[]);
+        assert!(
+            doc.pages[0]
+                .regions
+                .iter()
+                .all(|r| matches!(r.kind, RegionKind::Body)),
+            "0.4 置信度 Content 不得回贴：{:?}",
+            doc.pages[0].regions.iter().map(|r| &r.kind).collect::<Vec<_>>()
+        );
     }
 
     // ── #10 例外项：家具/脚注分流（收集进 IR，渲染默认跳过）──

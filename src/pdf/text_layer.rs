@@ -802,7 +802,9 @@ fn build_body_regions(
     // （对齐 MinerU basic 的 doc_title `#` / paragraph_title `##`）。
     let sizes: Vec<Option<f32>> = boxed.iter().map(|l| l.font_size).collect();
     let levels = crate::text_health::merge_font_levels(levels, &sizes);
-    crate::text_health::body_regions_boxed(boxed, levels)
+    // #10 INDEX：点线行升格为 `RegionKind::Index`（渲染成 `- ` 列表项、
+    // content_list v2 聚合成一个 index item）；标题级别随之清空。
+    crate::text_health::mark_index_entries(crate::text_health::body_regions_boxed(boxed, levels))
 }
 
 /// 从每行内找出"列间隙"候选（gap 中点），按 x 聚类；主簇 >=3 行才返回全局 split_x。

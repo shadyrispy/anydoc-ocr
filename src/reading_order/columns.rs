@@ -2,7 +2,7 @@
 //!
 //! 把所有区域按 x 中心排序，取最大间隙切分出列；每列内按 y 排序、列间从左到右。
 
-use super::lines::Line;
+use super::lines::{Line, resolve_line_boundary};
 use crate::region::Region;
 
 /// OCR 文本区域的阅读顺序还原。
@@ -19,6 +19,14 @@ pub fn order_text_regions(regions: &[Region]) -> Vec<String> {
 pub(crate) fn order_text_regions_boxed(regions: &[Region]) -> Vec<Line> {
     if regions.is_empty() {
         return Vec::new();
+    }
+    // #10 切片 5：目录块（任一行带 `index_member`）**禁列切分**，纯 y 排序。
+    // 目录页的"编号+标题 …… 页码"会被 `detect_column_split` 的最大间隙逻辑误
+    // 判成双列（窄编号行归左列、宽条目行归整宽）→ 输出顺序 mid→left 交错，
+    // 实测 `4.1 理解组织…2` / `理解相关方…2` / `4.2`（编号跑到条目后）。目录
+    // 不是分栏排版，y 序就是阅读序。
+    if regions.iter().any(|r| r.index_member) {
+        return sort_by_row_boxed(regions);
     }
     let page_w = Region::page_w(regions);
     if page_w <= 0.0 {
@@ -121,11 +129,77 @@ fn ord_y(a: &Line, b: &Line) -> std::cmp::Ordering {
     a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal)
 }
 
-/// 单栏/无可切分列时的退化为纯 y 排序（保持旧行为兼容）
-fn sort_by_y_boxed(regions: &[Region]) -> Vec<Line> {
+/// 单栏/无可切分列时的退化为纯 y 排序（保持旧行为兼容）。
+pub(super) fn sort_by_y_boxed(regions: &[Region]) -> Vec<Line> {
     let mut v: Vec<Line> = regions.iter().map(Line::from_region).collect();
     v.sort_by(ord_y);
     v
+}
+
+/// #10 切片 5：目录块的**行簇 + 行内 x** 排序（禁列切分的配套真相）。
+///
+/// 为什么不能纯 y 排：扫描件常有 1–3° 倾斜，同一视觉行内各框的 `y_min` 会差
+/// 几个像素——实测 nuaa_tupian.pdf 目录页 `4.2`（y_min 408，x 74–109）与
+/// `理解相关方的需求和期望……2`（y_min **406**，x 102–717）属于同一行，纯 y
+/// 排序把编号甩到条目文字**之后**（`- 理解相关方…` 后跟一个光秃秃的 `- 4.2`）。
+/// 目录条目是"编号 → 标题 → 页码"的横向序列，行内必须按 x 走。
+///
+/// 做法：y 升序扫描聚类（相邻 y 差 <= 行高中位数的一半判为**同一视觉行**），
+/// 簇内按 `x_min` 升序，簇间按簇首 y 升序。仅目录块启用——正文的倾斜错位是
+/// 另一个票，本次不动（避免 golden 面扩散）。
+pub(super) fn sort_by_row_boxed(regions: &[Region]) -> Vec<Line> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let mut items: Vec<(f32, f32, Line)> = regions
+        .iter()
+        .map(|r| (r.y_min, r.x_min, Line::from_region(r)))
+        .collect();
+    items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // 行高中位数（region 高度；退化框兜底 1.0，防除零/全零 tol）
+    let mut hs: Vec<f32> = regions.iter().map(|r| (r.y_max - r.y_min).max(1.0)).collect();
+    hs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let tol = hs.get(hs.len() / 2).copied().unwrap_or(20.0) * 0.5;
+
+    let mut out: Vec<Line> = Vec::with_capacity(items.len());
+    let mut row: Vec<(f32, f32, Line)> = Vec::new();
+    let mut row_y = items[0].0;
+    for it in items {
+        if !row.is_empty() && it.0 - row_y > tol {
+            flush_index_row(&mut row, &mut out);
+            row_y = it.0;
+        }
+        row.push(it);
+    }
+    flush_index_row(&mut row, &mut out);
+    out
+}
+
+/// 一个视觉行簇 → **一条**目录条目：簇内按 x 升序拼接（与 [`Line::union_bbox`]
+/// 取几何并集），文本边界按 `resolve_line_boundary`（docvortex 口径）。
+///
+/// 为什么要拼：PP-OCR det 常把"编号 + 标题"拆成两个框（`4.2` x74–109 与
+/// `理解相关方的需求和期望……2` x102–717 属同一行）→ 不拼就出两条
+/// （`- 4.2` / `- 理解相关方…`），而 MinerU 是一条
+/// （`- 4.2 理解相关方的需求和期望………2`）。横向序列拼回一条才对齐。
+fn flush_index_row(row: &mut Vec<(f32, f32, Line)>, out: &mut Vec<Line>) {
+    row.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut iter = row.drain(..);
+    let Some((_, _, mut cur)) = iter.next() else {
+        return;
+    };
+    for (_, _, next) in iter {
+        let next_text = next.text.trim_start();
+        if next_text.is_empty() {
+            continue;
+        }
+        let (head, sep) = resolve_line_boundary(&cur.text, &next.text);
+        cur.text = head;
+        cur.text.push_str(sep);
+        cur.text.push_str(next_text);
+        cur.bbox = Line::union_bbox(cur.bbox, next.bbox);
+    }
+    out.push(cur);
 }
 
 /// 将 region 按列切分线 `split` 分为左/右/整宽三组（消除 `order_text_regions` 与
@@ -273,5 +347,32 @@ mod tests {
             order_text_regions(&regions),
             vec!["top", "middle", "bottom"]
         );
+    }
+
+    /// #10 切片 5：倾斜扫描件目录页——同一视觉行被 det 拆成"编号框 + 条目框"，
+    /// 且条目框的 `y_min` **比编号框更靠上**（倾斜所致）→ 纯 y 排序会把编号甩到
+    /// 条目之后。行簇排序按 x 拼回一条。
+    #[test]
+    fn sort_by_row_boxed_joins_skewed_index_row_by_x() {
+        // 复刻 nuaa_tupian.pdf 第 2 页实测：`4.2` y_min 408 / x 74–109，
+        // `理解相关方的需求和期望……2` y_min **406**（更靠上）/ x 102–717。
+        let mut regions = vec![
+            reg(72.0, 719.0, 384.0, "4.1 理解组织及其环境……2"),
+            reg(102.0, 717.0, 406.0, "理解相关方的需求和期望……2"),
+            reg(74.0, 109.0, 408.0, "4.2"),
+            reg(72.0, 719.0, 449.0, "44 质量管理体系及其过程……2"),
+        ];
+        for r in regions.iter_mut() {
+            r.index_member = true;
+        }
+        let out = super::sort_by_row_boxed(&regions);
+        let texts: Vec<&str> = out.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts.len(), 3, "4.2 与条目文字属同一视觉行，须拼成一条：{texts:?}");
+        assert_eq!(texts[0], "4.1 理解组织及其环境……2");
+        assert!(
+            texts[1].starts_with("4.2") && texts[1].contains("理解相关方"),
+            "编号必须在条目文字之前：{texts:?}"
+        );
+        assert_eq!(texts[2], "44 质量管理体系及其过程……2");
     }
 }

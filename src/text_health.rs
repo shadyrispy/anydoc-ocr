@@ -6,7 +6,7 @@
 //! PDF 与 OFD 共用同一阈值（50 字符 / 20% 占比），常量集中于此，防异名漂移。
 
 use crate::reading_order;
-use crate::region::Region;
+use crate::region::{Region, RegionKind};
 
 /// 标题最大行宽：超过此字符数视为正文，不赋标题级别（编号启发式分支）。
 pub const TITLE_MAX_CHARS: usize = 60;
@@ -171,7 +171,41 @@ pub(crate) fn body_regions_boxed(
         .zip(levels)
         .map(|(l, level)| {
             let (x0, x1, y0, y1) = l.bbox.unwrap_or((0.0, 0.0, 0.0, 0.0));
-            Region::new(x0, x1, y0, y1, l.text).with_heading_level(level)
+            let mut r = Region::new(x0, x1, y0, y1, l.text).with_heading_level(level);
+            // #10 切片 4：段落以列表 marker 开头 → list item 标注。三通路共用
+            // 本转换点（OCR gfm_adapter / OFD mod.rs / PDF text_layer），与切片 1
+            // 的 merge 独段护栏同判据同文本视图。标题行不打——赋了级别的行不是
+            // 列表项。渲染层不感知（markdown 零变化），content_list v2 消费。
+            if level.is_none() && reading_order::starts_with_list_marker(&r.text) {
+                r.list_item = true;
+            }
+            // #10 切片 5：目录块成员标记回传（Line::no_merge → Region）。
+            // 合并阶段已凭它逐条独立，此处把事实带回 Region 供 INDEX 回贴。
+            r.index_member = l.no_merge;
+            r
+        })
+        .collect()
+}
+
+/// #10 INDEX 类型票：把目次（INDEX）条目行从 `Body` 升格为
+/// [`RegionKind::Index`]，**同时清掉标题级别**（MinerU 的 index item 不带
+/// `level`；且 `- ` 列表项若再写 `#` 前缀，GFM 会读成标题而非列表项）。
+///
+/// 只对**点线行**打标（[`crate::reading_order::lines::is_index_entry`]）：
+/// MinerU 靠版面模型把整个目录块判为一个 `IndexBlock`（可含不带点线的条目），
+/// 本仓文字层无版面模型，点线形态是唯一拿得到的 INDEX 信号——故本函数是
+/// **文字层专属**，OCR 通路刻意不调用（它的正途是接版面模型的 INDEX 类型）。
+pub(crate) fn mark_index_entries(regions: Vec<Region>) -> Vec<Region> {
+    regions
+        .into_iter()
+        .map(|mut r| {
+            if r.kind == RegionKind::Body
+                && crate::reading_order::lines::is_index_entry(&r.text)
+            {
+                r.kind = RegionKind::Index;
+                r.heading_level = None;
+            }
+            r
         })
         .collect()
 }
@@ -215,6 +249,22 @@ mod tests {
             .into_iter()
             .map(|r| r.rendered_line().into_owned())
             .collect()
+    }
+
+    /// #10 切片 4：list_item 标注——marker 行且无标题级别 → true；
+    /// 标题行（有级别）与普通行 → false。
+    #[test]
+    fn list_item_flag_marks_marker_paragraphs_only() {
+        let lines = vec!["f)  确定产品通用化要求".to_string(), "4.2 组织环境".to_string()];
+        let levels = vec![None, Some(2)];
+        let rs = body_regions_boxed(crate::reading_order::Line::from_texts(lines), levels);
+        assert!(rs[0].list_item, "marker 行且无级别 → list_item");
+        assert!(!rs[1].list_item, "赋了级别的标题行不是列表项");
+        let plain = body_regions_boxed(
+            crate::reading_order::Line::from_texts(vec!["普通正文行".to_string()]),
+            vec![None],
+        );
+        assert!(!plain[0].list_item);
     }
 
     #[test]

@@ -26,15 +26,19 @@
 
 mod blocks;
 mod columns;
-mod lines;
+pub(crate) mod lines;
 mod list;
 mod title;
 mod vertical;
 
 pub use columns::detect_column_split;
 pub use list::is_isolated_marker;
+pub use list::marker_is_ordered;
+pub use list::starts_with_list_marker;
 pub use title::title_level;
 
-pub(crate) use blocks::{norm_membership, order_structure_boxed, page_scale};
+pub(crate) use blocks::{
+    norm_membership, norm_membership_union, order_structure_boxed, page_scale,
+};
 pub(crate) use columns::order_text_regions_boxed;
-pub(crate) use lines::{Line, merge_into_paragraphs, postprocess_lines_boxed};
+pub(crate) use lines::{Line, is_index_entry, merge_into_paragraphs, postprocess_lines_boxed};

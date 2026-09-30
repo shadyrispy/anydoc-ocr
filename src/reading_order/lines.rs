@@ -38,6 +38,10 @@ pub(crate) struct Line {
     /// 的字号护栏判据。`None` = 来源无字号证据（OCR det 框 / 无几何行）——
     /// 护栏对 None 不动作，OCR 通路零行为变化。
     pub font_size: Option<f32>,
+    /// 段落合并围栏（#10 切片 5）：来自 [`crate::region::Region::index_member`]。
+    /// `true` = 本行是目录块成员，`merge_into_paragraphs` **双向不开并**
+    /// （既不与前一行并，也不吸收后一行）→ 目录页逐条独立。
+    pub no_merge: bool,
 }
 
 impl Line {
@@ -48,12 +52,13 @@ impl Line {
             text: r.text.clone(),
             bbox: if r.has_geometry() { Some((r.x_min, r.x_max, r.y_min, r.y_max)) } else { None },
             font_size: r.font_size,
+            no_merge: r.index_member,
         }
     }
 
     /// 只有文本的行（文字层通路 / 末级兜底）：**明确无几何**，不伪造。
     pub fn from_text(y: f32, text: impl Into<String>) -> Self {
-        Self { y, text: text.into(), bbox: None, font_size: None }
+        Self { y, text: text.into(), bbox: None, font_size: None, no_merge: false }
     }
 
     /// 从 `Vec<String>` 造无几何行序列（薄封装用）。
@@ -147,12 +152,20 @@ pub(crate) fn merge_into_paragraphs(lines: &[Line]) -> Vec<Line> {
             }
             _ => false,
         };
+        // #10 切片 5：目录块成员（版面 Content + 块内点线确证）双向不开并。
+        // 动机：`is_index_entry` 是**纯文本**判据，OCR 常把引导点线整段丢掉
+        // （实测 nuaa_tupian.pdf 目录页 43 行里 `1 范围1` `7 支持5` `7.2 能力7`
+        // 等 20+ 行无点线）→ 形态判据接不住 → 整页并成一坨（本仓 3 条 vs
+        // MinerU 85 条）。几何是 OCR 通路能拿到的、det 丢失点线后仍然成立的
+        // 唯一信号。双向（cur||next）：既防被前段回吸，也防吸收后一行。
+        let no_merge = cur.no_merge || w[1].no_merge;
         // 标题行强制独段；新列表项开启新段；目次条目逐条；字号突变分段；
-        // 间距超阈值则分段
+        // 目录块成员不开并；间距超阈值则分段
         if cur_is_heading
             || next_is_heading
             || next_is_list
             || next_is_index
+            || no_merge
             || font_break
             || gap > merge_threshold
         {
@@ -187,7 +200,7 @@ pub(crate) fn merge_into_paragraphs(lines: &[Line]) -> Vec<Line> {
 /// 阈值 3：正文省略号通常是 2 连（`……`），>=3 才是引导点线。
 pub(crate) const INDEX_DOTS_MIN: usize = 3;
 
-fn is_index_entry(line: &str) -> bool {
+pub(crate) fn is_index_entry(line: &str) -> bool {
     let mut run = 0usize;
     for c in line.chars() {
         if matches!(c, '…' | '．' | '.' | '·' | '・' | '‥') {
@@ -538,10 +551,10 @@ mod tests {
     fn merge_into_paragraphs_joins_close_lines() {
         // y=100,110,120 间距 10（小）→ 合一段；y=200 间距 80（大）→ 分段
         let lines = vec![
-            Line { y: 100.0, text: "第一行".into(), bbox: Some((10.0, 90.0, 100.0, 110.0)), font_size: None },
-            Line { y: 110.0, text: "第二行".into(), bbox: Some((10.0, 90.0, 110.0, 120.0)), font_size: None },
-            Line { y: 120.0, text: "第三行".into(), bbox: Some((10.0, 90.0, 120.0, 130.0)), font_size: None },
-            Line { y: 200.0, text: "第二段".into(), bbox: Some((10.0, 90.0, 200.0, 210.0)), font_size: None },
+            Line { y: 100.0, text: "第一行".into(), bbox: Some((10.0, 90.0, 100.0, 110.0)), font_size: None, no_merge: false },
+            Line { y: 110.0, text: "第二行".into(), bbox: Some((10.0, 90.0, 110.0, 120.0)), font_size: None, no_merge: false },
+            Line { y: 120.0, text: "第三行".into(), bbox: Some((10.0, 90.0, 120.0, 130.0)), font_size: None, no_merge: false },
+            Line { y: 200.0, text: "第二段".into(), bbox: Some((10.0, 90.0, 200.0, 210.0)), font_size: None, no_merge: false },
         ];
         let out = merge_into_paragraphs(&lines);
         assert_eq!(out.len(), 2);
@@ -555,8 +568,8 @@ mod tests {
     #[test]
     fn merge_into_paragraphs_heading_standalone() {
         let lines = vec![
-            Line { y: 100.0, text: "# 标题".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "正文".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "# 标题".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "正文".into(), bbox: None, font_size: None, no_merge: false },
         ];
         let out = merge_into_paragraphs(&lines);
         let texts: Vec<&str> = out.iter().map(|l| l.text.as_str()).collect();
@@ -572,8 +585,8 @@ mod tests {
     fn merge_into_paragraphs_space_by_line_language() {
         // 英文行合并 → 行间补空格
         let en = vec![
-            Line { y: 100.0, text: "Hello anydoc-ocr".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "Text PDF smoke test".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "Hello anydoc-ocr".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "Text PDF smoke test".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(
             merge_into_paragraphs(&en)[0].text,
@@ -581,14 +594,14 @@ mod tests {
         );
         // 中文行合并 → 不补空格
         let zh = vec![
-            Line { y: 100.0, text: "质量管理".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "体系要求".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "质量管理".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "体系要求".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(merge_into_paragraphs(&zh)[0].text, "质量管理体系要求");
         // 中文行夹大量数字仍是中文语境（字母口径，数字不计）→ 不补
         let zh_num = vec![
-            Line { y: 100.0, text: "上句结束。".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "第二段：发票号码 2024001，金额 1280.00 元。".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "上句结束。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "第二段：发票号码 2024001，金额 1280.00 元。".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(
             merge_into_paragraphs(&zh_num)[0].text,
@@ -596,8 +609,8 @@ mod tests {
         );
         // 西方语境 + 行尾连字符 → 不补空格（真连字符 e-Mail 类连着拼）
         let hy = vec![
-            Line { y: 100.0, text: "well-".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "Known".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "well-".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "Known".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(merge_into_paragraphs(&hy)[0].text, "well-Known");
     }
@@ -607,10 +620,10 @@ mod tests {
     #[test]
     fn merge_into_paragraphs_list_items_start_own_paragraph() {
         let lines = vec![
-            Line { y: 100.0, text: "编制产品标准化大纲；".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "f)  确定产品通用化、系列化要求，".into(), bbox: None, font_size: None },
-            Line { y: 120.0, text: "覆盖接口与互换性。".into(), bbox: None, font_size: None },
-            Line { y: 130.0, text: "g)  按照 GJB 450 的要求确定工作项目".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "编制产品标准化大纲；".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "f)  确定产品通用化、系列化要求，".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 120.0, text: "覆盖接口与互换性。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 130.0, text: "g)  按照 GJB 450 的要求确定工作项目".into(), bbox: None, font_size: None, no_merge: false },
         ];
         let out = merge_into_paragraphs(&lines);
         assert_eq!(out.len(), 3, "正文段 + f) 项（含续行）+ g) 项: {out:?}");
@@ -622,22 +635,22 @@ mod tests {
         // bullet 行开启新段、续行并入；（一）行由 title_level 判中文编号标题，
         // is_heading 护栏先命中独段——list 护栏对它冗余不冲突
         let zh = vec![
-            Line { y: 100.0, text: "- 要点一：组织应识别相关方。".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "相关方包括顾客、供方与监管机构。".into(), bbox: None, font_size: None },
-            Line { y: 120.0, text: "- 要点二：组织应开展相关方分析。".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "- 要点一：组织应识别相关方。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "相关方包括顾客、供方与监管机构。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 120.0, text: "- 要点二：组织应开展相关方分析。".into(), bbox: None, font_size: None, no_merge: false },
         ];
         let out = merge_into_paragraphs(&zh);
         assert_eq!(out.len(), 2, "两个 bullet 项各自成段: {out:?}");
         assert_eq!(out[0].text, "- 要点一：组织应识别相关方。相关方包括顾客、供方与监管机构。");
         let cn = vec![
-            Line { y: 100.0, text: "（一）理解组织及其环境。".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "组织应识别相关方。".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "（一）理解组织及其环境。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "组织应识别相关方。".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(merge_into_paragraphs(&cn).len(), 2, "（一）是 title_level 标题，独段优先");
         // 无标记正文行照旧合并
         let plain = vec![
-            Line { y: 100.0, text: "第一段。".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "第二行内容。".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "第一段。".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "第二行内容。".into(), bbox: None, font_size: None, no_merge: false },
         ];
         assert_eq!(merge_into_paragraphs(&plain)[0].text, "第一段。第二行内容。");
     }
@@ -646,8 +659,8 @@ mod tests {
     #[test]
     fn postprocess_boxed_merges_hyphen_and_unions_boxes() {
         let lines = vec![
-            Line { y: 100.0, text: "mainten-".into(), bbox: Some((10.0, 90.0, 100.0, 110.0)), font_size: None },
-            Line { y: 120.0, text: "ance".into(), bbox: Some((10.0, 80.0, 120.0, 130.0)), font_size: None },
+            Line { y: 100.0, text: "mainten-".into(), bbox: Some((10.0, 90.0, 100.0, 110.0)), font_size: None, no_merge: false },
+            Line { y: 120.0, text: "ance".into(), bbox: Some((10.0, 80.0, 120.0, 130.0)), font_size: None, no_merge: false },
         ];
         let out = postprocess_lines_boxed(lines);
         assert_eq!(out.len(), 1);
@@ -680,6 +693,7 @@ mod tests {
             text: text.into(),
             bbox: None,
             font_size: Some(size),
+            no_merge: false,
         }
     }
 
@@ -713,14 +727,14 @@ mod tests {
     #[test]
     fn missing_font_size_disables_guard() {
         let lines = vec![
-            Line { y: 100.0, text: "OCR行一".into(), bbox: None, font_size: None },
-            Line { y: 110.0, text: "OCR行二".into(), bbox: None, font_size: None },
+            Line { y: 100.0, text: "OCR行一".into(), bbox: None, font_size: None, no_merge: false },
+            Line { y: 110.0, text: "OCR行二".into(), bbox: None, font_size: None, no_merge: false },
         ];
         let out = merge_into_paragraphs(&lines);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].font_size, None);
         // 一侧 Some 一侧 None（混合来源）：护栏不动作，字号并集记 None（宁缺勿造）
-        let lines = vec![fs(100.0, 10.0, "有字号行"), Line { y: 110.0, text: "无字号行".into(), bbox: None, font_size: None }];
+        let lines = vec![fs(100.0, 10.0, "有字号行"), Line { y: 110.0, text: "无字号行".into(), bbox: None, font_size: None, no_merge: false }];
         let out = merge_into_paragraphs(&lines);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].font_size, None);
@@ -738,6 +752,43 @@ mod tests {
         // 正文里的 2 连省略号（……）不是引导点线 → 照旧合并
         let lines = vec![fs(100.0, 10.0, "他说……"), fs(110.0, 10.0, "后来就没了。")];
         assert_eq!(merge_into_paragraphs(&lines).len(), 1);
+    }
+
+    /// #10 切片 5：目录块成员（`no_merge`）**双向**不开并——既不被前段回吸，
+    /// 也不吸收后一行。形态判据接不住丢点线的条目（`1 范围1` `7 支持5`），
+    /// 只能靠版面几何给的这个围栏。
+    #[test]
+    fn index_member_no_merge_is_bidirectional() {
+        fn ln(y: f32, t: &str, no_merge: bool) -> Line {
+            Line { y, text: t.into(), bbox: None, font_size: None, no_merge }
+        }
+        // 全目录块：间距 10 远小于 merge 阈值（median 10 × 1.5 = 15）→ 无围栏会并成 1 段。
+        // 文本刻意**不带数字编号**（`1 范围1` 会命中 `title_level` 的编号启发式，
+        // 独段另有原因，测不出围栏本身）。
+        let all = vec![
+            ln(100.0, "前言IV", true),
+            ln(110.0, "引言V", true),
+            ln(120.0, "范围1", true),
+        ];
+        assert_eq!(merge_into_paragraphs(&all).len(), 3, "目录块内逐条独立");
+
+        // 混合：正文 → 目录行 → 正文。双向都要断开（3 段）
+        let mixed = vec![
+            ln(100.0, "正文甲", false),
+            ln(110.0, "前言IV", true),
+            ln(120.0, "正文乙", false),
+        ];
+        let out = merge_into_paragraphs(&mixed);
+        assert_eq!(out.len(), 3, "目录行两侧都要断开，实得 {out:?}");
+        assert_eq!(out[1].text, "前言IV");
+
+        // 对照组：同一个混合输入去掉围栏 → 合并回 1 段（证明围栏确实在起作用）
+        let no_fence = vec![
+            ln(100.0, "正文甲", false),
+            ln(110.0, "前言IV", false),
+            ln(120.0, "正文乙", false),
+        ];
+        assert_eq!(merge_into_paragraphs(&no_fence).len(), 1);
     }
 
     /// #11c-v5：真值表由 **MinerU 4.0.8 的 `docvortex.foundation._text

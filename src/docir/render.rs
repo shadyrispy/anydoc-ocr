@@ -45,11 +45,21 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
     for page in &doc.pages {
         let mut seg = String::new();
         // 1) 正文行：`#` 前缀在此写出（#6 第 2 步下移到渲染层）。
+        //    #10 INDEX：目次条目行（`Index`）与正文同道输出（保持阅读顺序），
+        //    渲染形态改成 `- ` 列表项（MinerU v1 渲染同样写 `- ` + 可选锚点）。
         let bodies: Vec<&Region> = page
             .regions
             .iter()
-            .filter(|r| r.kind == RegionKind::Body)
+            .filter(|r| matches!(r.kind, RegionKind::Body | RegionKind::Index))
             .collect();
+        /// 单个正文/目次行的渲染形态：目次 `- `，其余 [`Region::rendered_line`]。
+        fn body_line(r: &Region) -> String {
+            if r.kind == RegionKind::Index {
+                format!("- {}", r.text)
+            } else {
+                r.rendered_line().into_owned()
+            }
+        }
         match page.source {
             // OFD 文字层：朴素单换行拼接（历史行为，无标题空行语义）。
             PageSource::TextLayerOfd => {
@@ -57,21 +67,28 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                     if i > 0 {
                         seg.push('\n');
                     }
-                    seg.push_str(&r.rendered_line());
+                    seg.push_str(&body_line(r));
                 }
             }
             // PDF 文字层 / OCR：标题（渲染后 `#` 开头）前后空行，正文行段落内单换行。
             PageSource::TextLayerPdf | PageSource::Ocr => {
+                let mut prev_index = false;
                 for r in &bodies {
+                    let is_index = r.kind == RegionKind::Index;
+                    // GFM：列表块与前导块之间必须有空行，否则前一段会被吞进列表项。
+                    if is_index != prev_index && !seg.is_empty() && !seg.ends_with("\n\n") {
+                        seg.push('\n');
+                    }
                     let is_heading = r.is_heading();
                     if is_heading && !seg.is_empty() && !seg.ends_with("\n\n") {
                         seg.push('\n');
                     }
-                    seg.push_str(&r.rendered_line());
+                    seg.push_str(&body_line(r));
                     seg.push('\n');
                     if is_heading {
                         seg.push('\n');
                     }
+                    prev_index = is_index;
                 }
             }
         }
@@ -438,8 +455,9 @@ mod tests {
         assert!(render_with_furniture(&doc, true).contains("<!-- header: a -> b -->"));
     }
 
-    /// 占位变体（Image/Code/Formula/Index/Aside）：零消费——producer 未产，
-    /// 即便有人手工构造也不应出现在任何输出里。
+    /// 占位变体（Image/Code/Formula/Aside）：零消费——producer 未产，
+    /// 即便有人手工构造也不应出现在任何输出里。`Index` 已非占位（#10 INDEX
+    /// 票有 producer），改由 [`index_entry_renders_as_list_item`] 单独钉住。
     #[test]
     fn placeholder_variants_never_render() {
         let doc = DocIR {
@@ -449,7 +467,6 @@ mod tests {
                     Region::new(0.0, 1.0, 0.0, 1.0, "图").with_kind(RegionKind::Image),
                     Region::new(0.0, 1.0, 0.0, 1.0, "码").with_kind(RegionKind::Code),
                     Region::new(0.0, 1.0, 0.0, 1.0, "式").with_kind(RegionKind::Formula),
-                    Region::new(0.0, 1.0, 0.0, 1.0, "录").with_kind(RegionKind::Index),
                     Region::new(0.0, 1.0, 0.0, 1.0, "注").with_kind(RegionKind::Aside),
                 ],
                 source: PageSource::Ocr,
@@ -458,5 +475,28 @@ mod tests {
         };
         assert_eq!(render(&doc), "");
         assert_eq!(render_with_furniture(&doc, true), "");
+    }
+
+    /// #10 INDEX：目次条目行渲染为 `- ` 列表项（MinerU v1 同形态），且与相邻
+    /// 正文块之间有空行——否则 GFM 会把前一段吞进列表项。
+    #[test]
+    fn index_entry_renders_as_list_item() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 1.0, 0.0, 1.0, "目 次").with_heading_level(Some(2)),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "前言…………IV").with_kind(RegionKind::Index),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "引言…………V").with_kind(RegionKind::Index),
+                    Region::new(0.0, 1.0, 0.0, 1.0, "正文第一段。"),
+                ],
+                source: PageSource::TextLayerPdf,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(
+            render(&doc),
+            "## 目 次\n\n- 前言…………IV\n- 引言…………V\n\n正文第一段。"
+        );
     }
 }

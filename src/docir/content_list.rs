@@ -85,12 +85,136 @@ pub fn to_content_list_v2_json(doc: &DocIR) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// 同 [`to_content_list_v2`]，TODO
 fn page_items(page: &PageIR) -> Vec<Value> {
-    page.regions
+    // #10 INDEX：MinerU 把整个目录块投成**一个** `index` item（v2.py
+    // `_render_index`：type=index，content={list_type: text_list, list_items:[…]}），
+    // 而本仓每条点线行是一个 Region——故这里把**相邻连续**的 `Index` 行聚合成
+    // 一个 item，逐条写进 `list_items`。判据只有"页内阅读序相邻"：若目次被别的
+    // body 行插开会拆成两个 index item，这与 MinerU 的 IndexBlock 口径同构
+    // （它同样不会因为中间隔着正文就把两段目录拼成一个块）。
+    // #10 切片 4：相邻连续的 list_item 段落同理聚合成一个 `list` item（v2.py
+    // `_render_list`），被 Index 行/正文行/家具打断即拆开。
+    let mut items: Vec<Value> = Vec::new();
+    let mut index_run: Vec<&Region> = Vec::new();
+    let mut list_run: Vec<&Region> = Vec::new();
+    for r in page.regions.iter().filter(|r| !r.is_continues_prev()) {
+        if r.kind == RegionKind::Index {
+            if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
+                items.push(v);
+            }
+            index_run.push(r);
+            continue;
+        }
+        if r.list_item && r.kind == RegionKind::Body {
+            if let Some(v) = index_run_item(std::mem::take(&mut index_run), page) {
+                items.push(v);
+            }
+            list_run.push(r);
+            continue;
+        }
+        if let Some(v) = index_run_item(std::mem::take(&mut index_run), page) {
+            items.push(v);
+        }
+        if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
+            items.push(v);
+        }
+        if let Some(v) = region_item(r, page) {
+            items.push(v);
+        }
+    }
+    if let Some(v) = index_run_item(index_run, page) {
+        items.push(v);
+    }
+    if let Some(v) = list_run_item(list_run, page) {
+        items.push(v);
+    }
+    items
+}
+
+/// 一组相邻连续的 list_item 段落 → 单个 `list` item；空组 → `None`。
+///
+/// 形态逐字对齐 v2.py `_render_list`（text_list 分支）：
+/// `{"type":"list","content":{"list_type":"text_list","list_items":
+/// [{"item_type":"text","item_content":[spans]},…],"attribute":…}}`。
+/// `attribute` 投票对齐 `infer_list_attribute`：成员 marker 全 `ordered`
+/// （字母点式 `a.`，`marker_is_ordered`）→ `"ordered"`，否则 `"unordered"`
+/// （bullet/括号式/中文形态在 MinerU kind 里是 unordered/explicit/none，
+/// 全归 unordered）。bbox = 成员框并集（同 [`index_run_item`] 口径）。
+fn list_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {
+    if run.is_empty() {
+        return None;
+    }
+    let list_items: Vec<Value> = run
         .iter()
-        .filter(|r| !r.is_continues_prev())
-        .filter_map(|r| region_item(r, page))
-        .collect()
+        .map(|r| {
+            json!({
+                "item_type": ct::SPAN_TEXT,
+                "item_content": spans_of(r),
+            })
+        })
+        .collect();
+    if list_items.is_empty() {
+        return None; // 全空行不产出 item（与 index run 同口径）
+    }
+    let ordered = run
+        .iter()
+        .all(|r| crate::reading_order::marker_is_ordered(&r.text) == Some(true));
+    let mut item = Map::new();
+    item.insert("type".into(), Value::String(ct::LIST.into()));
+    item.insert(
+        "content".into(),
+        json!({
+            "list_type": ct::LIST_TEXT,
+            "list_items": list_items,
+            "attribute": if ordered { "ordered" } else { "unordered" },
+        }),
+    );
+    if let Some(b) = bbox_union(&run, page) {
+        item.insert("bbox".into(), json!(b));
+    }
+    Some(Value::Object(item))
+}
+
+/// 一组相邻连续的 `Index` 行 → 单个 `index` item；空组 → `None`。
+fn index_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {    if run.is_empty() {
+        return None;
+    }
+    let list_items: Vec<Value> = run
+        .iter()
+        .map(|r| {
+            json!({
+                "item_type": ct::SPAN_TEXT,
+                "item_content": spans_of(r),
+            })
+        })
+        .collect();
+    if list_items.is_empty() {
+        return None; // 全空行不产出 item（与单体 branch 同口径）
+    }
+    let mut item = Map::new();
+    item.insert("type".into(), Value::String(ct::INDEX.into()));
+    item.insert(
+        "content".into(),
+        json!({ "list_type": ct::LIST_TEXT, "list_items": list_items }),
+    );
+    if let Some(b) = bbox_union(&run, page) {
+        item.insert("bbox".into(), json!(b));
+    }
+    Some(Value::Object(item))
+}
+
+/// 一组 region 的 bbox 并集（聚合块的几何），取不到归一分母或全无几何 → `None`。
+fn bbox_union(rs: &[&Region], page: &PageIR) -> Option<[i32; 4]> {
+    let mut acc: Option<[i32; 4]> = None;
+    for r in rs {
+        let Some(b) = bbox_of(r, page) else { continue };
+        acc = Some(match acc {
+            None => b,
+            Some(a) => [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+        });
+    }
+    acc
 }
 
 /// 单个 Region → V2 item；无对应 V2 类型（或内容为空）→ `None`（不产出）。
@@ -508,9 +632,95 @@ mod tests {
     }
 
     /// 顶层形状 = 按页分组；空页也占一个槽位（MinerU 逐页给数组）。
+    /// #10 INDEX：相邻连续的目次条目聚合成**一个** `index` item（v2.py
+    /// `_render_index` 的 `list_type: text_list` + 逐条 `list_items`）；
+    /// 中间隔着正文行则拆成两个 index item（与 MinerU 的 IndexBlock 同构）。
     #[test]
-    fn output_is_grouped_per_page() {
-        let mut d = DocIR::default();
+    fn index_runs_collapse_into_one_index_item() {
+        let idx = |t: &str| {
+            let mut r = body(t);
+            r.kind = RegionKind::Index;
+            r
+        };
+        let d = page_with(
+            PageDims::page_box_px(1000, 1000),
+            vec![
+                idx("前言…………IV"),
+                idx("引言…………V"),
+                body("正文一段"),
+                idx("1 范围…………1"),
+            ],
+        );
+        let v = to_content_list_v2(&d);
+        let types: Vec<&str> = v[0].iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(types, vec!["index", "paragraph", "index"]);
+        assert_eq!(v[0][0]["content"]["list_type"], "text_list");
+        assert_eq!(
+            v[0][0]["content"]["list_items"][1]["item_content"][0]["content"],
+            "引言…………V"
+        );
+        // item_type 逐字抄 MinerU v2 的 `{"item_type": "text", ...}`
+        assert_eq!(v[0][0]["content"]["list_items"][0]["item_type"], "text");
+        assert_eq!(v[0][2]["content"]["list_items"][0]["item_content"][0]["content"], "1 范围…………1");
+    }
+
+    /// #10 切片 4：相邻连续的 list_item 段落 → **一个** `list` item（v2.py
+    /// `_render_list`：text_list + 逐条 list_items + attribute）；被正文段
+    /// 插开则拆成两个；非 marker 段照常 paragraph。
+    #[test]
+    fn list_marker_runs_collapse_into_one_list_item() {
+        let li = |t: &str| {
+            let mut r = body(t);
+            r.list_item = true;
+            r
+        };
+        let d = page_with(
+            PageDims::page_box_px(1000, 1000),
+            vec![
+                li("a) 通用要求"),
+                li("A、总则"),
+                body("正文一段"),
+                li("- 引导启动项"),
+            ],
+        );
+        let v = to_content_list_v2(&d);
+        let types: Vec<&str> = v[0].iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(types, vec!["list", "paragraph", "list"], "marker 行聚合、正文隔开");
+        // attribute：a) explicit + A、none → 非 ordered 全员 → unordered
+        assert_eq!(v[0][0]["content"]["list_type"], "text_list");
+        assert_eq!(v[0][0]["content"]["attribute"], "unordered");
+        assert_eq!(v[0][0]["content"]["list_items"][0]["item_type"], "text");
+        assert_eq!(
+            v[0][0]["content"]["list_items"][0]["item_content"][0]["content"],
+            "a) 通用要求"
+        );
+        assert_eq!(v[0][2]["content"]["list_items"][0]["item_content"][0]["content"], "- 引导启动项");
+        // bbox = 成员并集（同 index run 口径）
+        let b: Vec<i64> = v[0][0]["bbox"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
+        assert_eq!(b, vec![10, 20, 100, 120], "两个成员框并集（body 基准框 10..100/20..120）");
+    }
+
+    /// attribute 投票：全字母点式（MinerU 唯一 ordered kind）→ `"ordered"`。
+    #[test]
+    fn all_letter_dot_markers_vote_ordered() {
+        let li = |t: &str| {
+            let mut r = body(t);
+            r.list_item = true;
+            r
+        };
+        let d = page_with(PageDims::page_box_px(1000, 1000), vec![li("a. 第一项"), li("b. 第二项")]);
+        let v = to_content_list_v2(&d);
+        assert_eq!(v[0].len(), 1);
+        assert_eq!(v[0][0]["type"], "list");
+        assert_eq!(v[0][0]["content"]["attribute"], "ordered");
+        // bullet 混入 → unordered（infer_list_attribute 的 all 判据）
+        let d2 = page_with(PageDims::page_box_px(1000, 1000), vec![li("a. 第一项"), li("• 要点")]);
+        let v2 = to_content_list_v2(&d2);
+        assert_eq!(v2[0][0]["content"]["attribute"], "unordered");
+    }
+
+    #[test]
+    fn output_is_grouped_per_page() {        let mut d = DocIR::default();
         d.push_page(0, PageSource::Ocr, vec![body("第一页")], PageDims::page_box_px(1000, 1000));
         d.push_page(1, PageSource::Ocr, vec![], PageDims::page_box_px(1000, 1000));
         d.push_page(2, PageSource::Ocr, vec![body("第三页")], PageDims::page_box_px(1000, 1000));

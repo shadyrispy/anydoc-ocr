@@ -69,8 +69,11 @@ pub enum RegionKind {
     /// （行内公式 `SpanKind::Equation` 的落点在 span 层，见 BACKLOG #9/#6 第 0 步。）
     #[allow(dead_code)] // 同上
     Formula,
-    /// 目录块（#6 第 5 步占位）：producer 未产。MinerU 13 项之 `INDEX`。
-    #[allow(dead_code)] // 同上
+    /// 目录块（MinerU 13 项之 `INDEX`）：**有 producer**（#10 INDEX 票，2026-09-30）。
+    /// 一条 Region = 一条目次条目（含点线引导符的那类），渲染为 `- ` 列表项，
+    /// content_list v2 由相邻连续条目聚合成**一个** `index` item。
+    /// 文字层专用信号：点线形态是文字层无版面模型时唯一拿得到的 INDEX 证据，
+    /// OCR 通路暂不产（它的正途是接版面模型的 `IndexBlock`）。
     Index,
     /// 旁注/边注（#6 第 5 步占位）：producer 未产。MinerU 13 项之 `ASIDE_TEXT`。
     #[allow(dead_code)] // 同上
@@ -223,6 +226,32 @@ pub struct Region {
     /// 判据来源——真实语料区分度实证见 BACKLOG #11c-v3（GJB：正文 10pt vs
     /// 无编号标题 16/26pt）。渲染层不消费，投影层（#10/#11）可直读。
     pub font_size: Option<f32>,
+    /// 列表项标注（#10 切片 4）：本段以列表 marker 开头（`starts_with_list_marker`
+    /// 判定，与切片 1 的 merge 独段护栏**同判据、同文本视图**；标题行不打——
+    /// 赋了级别的行不是列表项）。**渲染层不感知**：MinerU 对 text_list 的
+    /// markdown 形态就是条目原文逐行输出（`markdown/blocks.py::_render_list`
+    /// 保留原 marker，不换 `- `），与普通段落无 markdown 差别 → 输出零变化。
+    /// 唯一消费方是 content_list v2 投影（`docir/content_list.rs`）：相邻连续
+    /// 的 list_item 聚合成**一个** `list` item（v2.py `_render_list`：
+    /// `list_type: text_list` + 逐条 `list_items` + `attribute`）。
+    ///
+    /// MinerU 口径备注：basic 档**不产** ListBlock（版面 23 类无 list 标签、
+    /// `PIPELINE_DET_TYPE` 不含 LIST）——列表结构是 VLM 线产物。本仓的
+    /// marker 检测（切片 1/2）是对该缺口的独立增强，投影形态对齐 VLM 线。
+    pub list_item: bool,
+    /// 目录块成员（#10 切片 5 · OCR 通路）：本行落在版面 Content 块
+    /// （PP-DocLayout-S 类别 5 "content"，MinerU `VLM_LAYOUT_LABEL_MAP` →
+    /// `BlockType.INDEX`）内，**且**该块被确证是目录块（块内存在点线引导行）。
+    ///
+    /// 两个用途，都是"行级"而非"块级"：
+    /// 1. **段落合并围栏**：`merge_into_paragraphs` 对带此标记的行双向开新段
+    ///    → 目录页逐条独立，不再整页并成一坨（OCR 丢点线的行 `1 范围1`
+    ///    `7 支持5` 靠形态判据接不住，只能靠版面几何）。
+    /// 2. **INDEX 回贴**：`mark_layout_index` 把它当"已在目录块内"的证据，
+    ///    不必要求行自身含点线。
+    ///
+    /// 渲染层不感知（与 `list_item` 同）。
+    pub index_member: bool,
 }
 
 impl Region {
@@ -239,6 +268,8 @@ impl Region {
             heading_level: None,
             continues_prev: None,
             font_size: None,
+            list_item: false,
+            index_member: false,
         }
     }
 
@@ -256,6 +287,8 @@ impl Region {
             heading_level: None,
             continues_prev: None,
             font_size: None,
+            list_item: false,
+            index_member: false,
         }
     }
 
@@ -286,6 +319,12 @@ impl Region {
     /// 附加行字号（builder，#11c-v3；`None` = 无字号证据）。
     pub fn with_font_size(mut self, font_size: Option<f32>) -> Self {
         self.font_size = font_size;
+        self
+    }
+
+    /// 标注为目录块成员（builder，#10 切片 5）。
+    pub fn with_index_member(mut self, index_member: bool) -> Self {
+        self.index_member = index_member;
         self
     }
 

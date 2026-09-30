@@ -5,7 +5,9 @@
 //! 2. `RegionBlock::order_index` + `element_indices`（PP-DocBlockLayout 列级分组）
 //! 3. [`super::columns::order_text_regions`]（区域驱动兜底，行为等价现状）
 
-use super::columns::{detect_column_split, order_text_regions, split_columns};
+use super::columns::{
+    detect_column_split, order_text_regions_boxed, sort_by_row_boxed, split_columns,
+};
 use super::lines::{Line, merge_into_paragraphs};
 use crate::region::Region;
 use oar_ocr::domain::structure::{LayoutElement, LayoutElementType, RegionBlock, StructureResult};
@@ -58,6 +60,39 @@ pub(crate) fn norm_membership(
     let ix1 = lb.x_max() / lw;
     let iy0 = lb.y_min() / lh;
     let iy1 = lb.y_max() / lh;
+    tx >= ix0 && tx <= ix1 && ty >= iy0 && ty <= iy1
+}
+
+/// #10 切片 5：目录块（Content）专用的**统一基准**归一化判定。
+///
+/// 与 [`norm_membership`] 的差别只在分母：后者用**各自页内最大值**
+/// （text 侧 `tw,th` / layout 侧 `lw,lh`），而这两个 max 常被不同元素撑到
+/// 不同大小——实测 nuaa_tupian.pdf 第 3 页：text 侧 `th=1118`，layout 侧被
+/// 一个竖排 `AsideText`（y 到 1193）撑成 `lh=1193` → 目录块下缘归一化后被
+/// 压小（`1092/1193 = 0.915`），而块内最后三行 `10 改进18` / `10.1 总则…18`
+/// / `10.2 不合格和纠正措施…18` 的归一化 y 是 `0.926 / 0.943 / 0.965` →
+/// **整段落在块外**，目录尾部漏 3 条（本仓 81 vs MinerU 85）。取两侧 max 作
+/// 统一分母即消除失真（该页 `1092/1193` 对 `1078/1193` → 判定回到块内）。
+///
+/// 只用于 Content：页眉/页脚/表格的判定块都很小，宽松化会把正文误判成家具
+/// 吃掉（误判比漏判危险得多），故那些仍走严格的 [`norm_membership`]。
+pub(crate) fn norm_membership_union(
+    cx: f32,
+    cy: f32,
+    (tw, th, lw, lh): (f32, f32, f32, f32),
+    lb: &oar_ocr::processors::BoundingBox,
+) -> bool {
+    let w = tw.max(lw);
+    let h = th.max(lh);
+    if w <= 0.0 || h <= 0.0 {
+        return false;
+    }
+    let tx = cx / w;
+    let ty = cy / h;
+    let ix0 = lb.x_min() / w;
+    let ix1 = lb.x_max() / w;
+    let iy0 = lb.y_min() / h;
+    let iy1 = lb.y_max() / h;
     tx >= ix0 && tx <= ix1 && ty >= iy0 && ty <= iy1
 }
 
@@ -152,9 +187,32 @@ fn assemble_blocks<'a>(
             })
             .map(|(i, _)| i)
             .collect();
+        // #10 切片 5：**目录块跳过 stitch 快路**。
+        // `stitched_block_text` 是块级拼接——把块内 det/rec 行拼成少数几坨文本
+        // （实测 nuaa_tupian.pdf 目录页：版面 Content 块内 40 个 OCR 行 → stitch
+        // 拼成 **1 行**）。目录条目的真值粒度是**行级**（MinerU 逐条输出，实测
+        // 85 条），走 stitch 就必然整页一坨，且行级 bbox 与 `no_merge` 围栏都
+        // 无从生效。故确证为目录块时改走下面的 det/rec 行兜底：行级文本 +
+        // 行级 bbox + `merge_into_paragraphs` 的逐条围栏。
+        //
+        // 确证信号复用 producer 给的 [`Region::index_member`]（gfm_adapter 按
+        // "Content 块内存在点线引导行"打的标），**单一真相源**——此处不再重判
+        // 几何/形态，免得两处判据漂移。`inner_idx` 非空为前提：空则跳过后块
+        // 无输出（文本丢失），宁可退回 stitch。
+        let index_block =
+            !inner_idx.is_empty() && inner_idx.iter().any(|&i| regions[i].index_member);
         // 修法 1/2/3：stitch 文本优先。命中时块内 regions **一律标记已消费**
         // ——它们的文本已由 stitch 拼进元素，再留给 leftover 就是重复输出。
         if let Some(sb) = stitched_block_text(page, blk) {
+            if index_block {
+                // 目录块：只消费 `inner_idx`，**不做** stitch 的"子串宽松消费"
+                // ——那会把块外（未被 `inner_idx` 命中）的行也吃掉，而它们既不
+                // 进 stitch 输出（本次跳过）也不进 leftover → 静默丢字。留给
+                // leftover 兜底才是零丢失。
+                for &i in &inner_idx {
+                    consumed[i] = true;
+                }
+            } else {
             for &i in &inner_idx {
                 consumed[i] = true;
             }
@@ -191,8 +249,13 @@ fn assemble_blocks<'a>(
                 let bx = (b.x_min(), b.x_max(), b.y_min(), b.y_max());
                 (bx.1 > bx.0 && bx.3 > bx.2).then_some(bx)
             };
-            out.extend(sb.lines.into_iter().map(|l| Line { y: 0.0, text: l, bbox: blk_box, font_size: None }));
+            out.extend(
+                sb.lines
+                    .into_iter()
+                    .map(|l| Line { y: 0.0, text: l, bbox: blk_box, font_size: None, no_merge: false }),
+            );
             continue;
+            }
         }
         if inner_idx.is_empty() {
             continue;
@@ -201,7 +264,14 @@ fn assemble_blocks<'a>(
             consumed[i] = true;
         }
         let inner: Vec<Region> = inner_idx.iter().map(|&i| regions[i].clone()).collect();
-        out.extend(merge_into_paragraphs(&order_within_block(&inner)));
+        // 目录块：禁列切分（同 [`super::columns::order_text_regions_boxed`] 的
+        // 短路，理由见那里）——`order_within_block` 的列检测会把目录页误判双列。
+        let ordered = if index_block {
+            sort_by_row_boxed(&inner)
+        } else {
+            order_within_block(&inner)
+        };
+        out.extend(merge_into_paragraphs(&ordered));
     }
     out
 }
@@ -389,9 +459,13 @@ fn fallback_order(page: &StructureResult, regions: &[Region]) -> Vec<Line> {
             }
         }
     }
-    // 末选：现有区域驱动（`order_text_regions` 仍是 String 版——文字层通路共用，
-    // 不动它；这里封成无几何行，行为不变）。
-    Line::from_texts(order_text_regions(regions))
+    // 末选：现有区域驱动。#11b 曾封成无几何行（`Line::from_texts`，行为不变
+    // 的保守取态）；#10 INDEX 票实测发现 OCR 真实链路 `order_index`/`region_blocks`
+    // 均无人填充（oar-core 不产、本仓不补）→ **末选就是常态路径**，无几何让
+    // content_list v2 的 bbox 投影恒退化 0 框、版面 Content 回贴无从判定。
+    // 换带几何的真相函数（`order_text_regions` 本就是它的 text 投影，行序
+    // 逐行一致）→ 文本输出不变，几何从 0 框变真实框。
+    order_text_regions_boxed(regions)
 }
 
 /// ADR-0009 D3+Q6：块内排序——列检测收窄到块内 + y 排序。
@@ -641,6 +715,51 @@ mod tests {
         // y 排序：上 先于 下
         assert!(out[0].contains("上"));
         assert!(out[1].contains("下"));
+    }
+
+    /// #10 切片 5：目录块 **跳过 stitch 快路**——`stitched_block_text` 是块级
+    /// 拼接（实测把目录页 40 个 OCR 行拼成 1 坨），目录条目必须行级粒度。
+    #[test]
+    fn index_block_skips_stitched_block_text() {
+        fn page_with_content_block(text: &str) -> StructureResult {
+            StructureResult {
+                layout_elements: vec![el_text(
+                    0.0,
+                    100.0,
+                    1000.0,
+                    400.0,
+                    LayoutElementType::Content,
+                    Some(0),
+                    "content",
+                    text,
+                )],
+                text_regions: Some(vec![
+                    tr(10.0, 110.0, 900.0, 130.0, "前言……IV"),
+                    tr(10.0, 160.0, 900.0, 180.0, "引言……V"),
+                    tr(10.0, 210.0, 900.0, 230.0, "1 范围……1"),
+                ]),
+                region_blocks: None,
+                ..StructureResult::new("t", 0)
+            }
+        }
+        let stitched = "前言……IV 引言……V 1 范围……1"; // 上游拼好的整坨
+        let page = page_with_content_block(stitched);
+        let mut regions = regions_of(page.text_regions.as_ref().unwrap());
+        for r in regions.iter_mut() {
+            r.index_member = true; // producer（gfm_adapter）按"块内有点线行"打的标
+        }
+        let out = texts(order_structure_boxed(&page, &regions));
+        assert_eq!(out.len(), 3, "目录块必须逐条，实得 {out:?}");
+        assert!(
+            !out.iter().any(|t| t.contains("前言……IV 引言")),
+            "不该出现 stitch 整坨：{out:?}"
+        );
+
+        // 对照组：不是目录块（无 `index_member`）→ 照旧走 stitch 快路（1 条整坨）
+        let page2 = page_with_content_block(stitched);
+        let regions2 = regions_of(page2.text_regions.as_ref().unwrap());
+        let out2 = texts(order_structure_boxed(&page2, &regions2));
+        assert_eq!(out2, vec![stitched], "非目录块仍应优先 stitch 文本");
     }
 
     /// ADR-0009 Q6：单 Text 块裹双列 → 块内列检测分离左右列。

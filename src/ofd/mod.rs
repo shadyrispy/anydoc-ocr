@@ -618,7 +618,10 @@ fn assemble_docir(pages: &[PageData], full_out: &mut BTreeMap<u32, OcrPage>) -> 
                 // #11c-v3 附票：字号补位赋级（同 PDF 文字层，见 pdf/text_layer.rs）
                 let sizes: Vec<Option<f32>> = boxed.iter().map(|l| l.font_size).collect();
                 let levels = crate::text_health::merge_font_levels(levels, &sizes);
-                let out = crate::text_health::body_regions_boxed(boxed, levels);
+                // #10 INDEX：同 PDF 文字层（点线行 → `RegionKind::Index`）
+                let out = crate::text_health::mark_index_entries(
+                    crate::text_health::body_regions_boxed(boxed, levels),
+                );
                 doc.push_page(page, PageSource::TextLayerOfd, out, *pdims);
             }
         }

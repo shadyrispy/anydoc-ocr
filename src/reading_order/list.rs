@@ -89,6 +89,28 @@ pub fn starts_with_list_marker(line: &str) -> bool {
     false
 }
 
+/// marker 形态 → 是否 MinerU 意义上的 **ordered**（#10 切片 4）。
+///
+/// 对齐 `docvortex/render/_internal/common/list_items.py::parse_list_item_marker`
+/// 的 kind 分类：字母点式 `a.` `A.`（`[A-Za-z]\.`）是 `ordered`；bullet `-*+` 是
+/// `unordered`；字母括号式 `a)` 是 `explicit`；中文顿号式 `A、` 与中文括号式
+/// `（一）` MinerU 不识别（kind=none）。`infer_list_attribute` 的投票规则是
+/// 「最浅层叶子 kind 全 `ordered` → `"ordered"`，否则 `"unordered"`」——
+/// explicit/none 都归 unordered。故本函数只把字母点式记 `Some(true)`，
+/// 其余 marker 记 `Some(false)`，非 marker 行 `None`（不参与投票）。
+pub fn marker_is_ordered(line: &str) -> Option<bool> {
+    if !starts_with_list_marker(line) {
+        return None;
+    }
+    let t = line.trim_start();
+    let c0 = t.chars().next()?;
+    if c0.is_ascii_alphabetic() {
+        // a. → ordered；a) a） a、 A，→ explicit → unordered
+        return Some(matches!(t[1..].chars().next(), Some('.')));
+    }
+    Some(false) // bullet / 中文括号式
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +159,19 @@ mod tests {
     #[test]
     fn long_lines_not_markers() {
         assert!(!is_isolated_marker("abcdefg"), ">6 字符视为有内容");
+    }
+
+    /// #10 切片 4：marker 形态 → ordered 投票（`a.` 是唯一 ordered 组）。
+    #[test]
+    fn marker_is_ordered_cases() {
+        assert_eq!(marker_is_ordered("c.附录"), Some(true));
+        assert_eq!(marker_is_ordered("A. General"), Some(true));
+        assert_eq!(marker_is_ordered("f)  确定产品通用化要求"), Some(false), "explicit → unordered");
+        assert_eq!(marker_is_ordered("A、总则"), Some(false), "中文顿号 MinerU 不识别 → unordered");
+        assert_eq!(marker_is_ordered("（一）理解组织及其环境"), Some(false));
+        assert_eq!(marker_is_ordered("- 引导启动项"), Some(false));
+        assert_eq!(marker_is_ordered("1. 数字式不做"), None, "数字式不在本仓 marker 集");
+        assert_eq!(marker_is_ordered("普通正文行"), None);
     }
 
     /// #10 切片 1：行首标记（可带内容）——消费方是 merge 独段护栏。
