@@ -26,20 +26,22 @@ pub(crate) fn render(doc: &DocIR) -> String {
     render_with_furniture(doc, false)
 }
 
-/// 家具/脚注（`Noise`/`Footnote`）的**可选输出**渲染（#10 例外项）。
+/// 家具（`Noise`）的**可选输出**渲染（#10 例外项）。
 ///
-/// `emit = false`（默认）：与 [`render`] 逐字节相同——`Noise`/`Footnote` 区块
-/// 零消费（下面四个阶段都不匹配它们），"收集进 IR 但不输出"。
+/// `emit = false`（默认）：`Noise` 区块零消费（下面各阶段都不匹配它们），
+/// "收集进 IR 但不输出"。
 ///
 /// `emit = true`（CLI/env 开关 `ANYDOC_EMIT_FURNITURE`）：每页段末追加 HTML
 /// 注释行——`<!-- header: … -->` / `<!-- footer: … -->` /
-/// `<!-- page-number: … -->` / `<!-- seal: … -->` / `<!-- footnote: … -->`。
+/// `<!-- page-number: … -->` / `<!-- seal: … -->`。
 /// 用注释形态的原因：不污染可见 markdown 文本、可 grep、GFM 合法；正式的
 /// 结构化出口是 #10/#11 的 content_list v2 投影（`PAGE_HEADER`/`PAGE_FOOTER`/
 /// `PAGE_NUMBER` 独立 item），本分支是过渡形态。
 ///
-/// 家具项按 `y_min` 升序输出（页眉在前、页脚在后，det 顺序不作保证）；
-/// 文本中的 `-->` 会提前终止 HTML 注释，替换为 `->`（显示用标注，不做原文保真）。
+/// **Footnote 自 #10 补全（2026-10-01）起正式输出**（`<small>` HTML 形态，
+/// 对齐 MinerU `PageFootnoteBlock`），不再受 `emit` 控制、不走注释行。
+///
+/// 家具项按 `y_min` 升序输出（页眉在前、页脚在后，det 顺序不作保证）。
 pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
     let mut segments: BTreeMap<u32, String> = BTreeMap::new();
     for page in &doc.pages {
@@ -47,11 +49,10 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
         // 1) 正文行：`#` 前缀在此写出（#6 第 2 步下移到渲染层）。
         //    #10 INDEX：目次条目行（`Index`）与正文同道输出（保持阅读顺序），
         //    渲染形态改成 `- ` 列表项（MinerU v1 渲染同样写 `- ` + 可选锚点）。
-        let bodies: Vec<&Region> = page
-            .regions
-            .iter()
-            .filter(|r| matches!(r.kind, RegionKind::Body | RegionKind::Index))
-            .collect();
+        //    #10 补全：`Aside`/`Reference` 与正文同道（MinerU `PageAuxTextBlock`
+        //    /`RefTextBlock` 的 markdown 形态就是无标记普通段落）；`Code` 走
+        //    fenced block（连续 Code 行共享一个围栏，见下方状态机）。
+        let bodies: Vec<&Region> = page.regions.iter().filter(|r| is_body_like(&r.kind)).collect();
         /// 单个正文/目次行的渲染形态：目次 `- `，其余 [`Region::rendered_line`]。
         fn body_line(r: &Region) -> String {
             if r.kind == RegionKind::Index {
@@ -73,7 +74,31 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
             // PDF 文字层 / OCR：标题（渲染后 `#` 开头）前后空行，正文行段落内单换行。
             PageSource::TextLayerPdf | PageSource::Ocr => {
                 let mut prev_index = false;
+                // #10 补全：Code fence 状态机——进入 Code 输出 ```txt 开栏，
+                // 离开输出 ``` 闭栏 + 空行（GFM 围栏块独立）。连续 Code 行共享
+                // 一个围栏（MinerU `CodeBody.content` 同为块级原始内容）。
+                let mut in_code = false;
+                // 闭栏跟随开栏：正文含 ``` 时开栏用 ````，闭栏必须同长，
+                // 否则围栏提前终止（MinerU `_render_fenced_content` 同口径）。
+                let mut cur_fence = "```";
                 for r in &bodies {
+                    let is_code = r.kind == RegionKind::Code;
+                    let is_index = r.kind == RegionKind::Index;
+                    if is_code && !in_code {
+                        in_code = true;
+                        if !seg.is_empty() && !seg.ends_with("\n\n") {
+                            seg.push('\n');
+                        }
+                        // 围栏长于正文中的反引号游程（MinerU
+                        // `_render_fenced_content` 同口径）；语言本仓无判别器，恒 txt。
+                        cur_fence = if r.text.contains("```") { "````" } else { "```" };
+                        seg.push_str(cur_fence);
+                        seg.push_str("txt\n");
+                    } else if !is_code && in_code {
+                        in_code = false;
+                        seg.push_str(cur_fence);
+                        seg.push_str("\n\n");
+                    }
                     let is_index = r.kind == RegionKind::Index;
                     // GFM：列表块与前导块之间必须有空行，否则前一段会被吞进列表项。
                     if is_index != prev_index && !seg.is_empty() && !seg.ends_with("\n\n") {
@@ -89,6 +114,11 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                         seg.push('\n');
                     }
                     prev_index = is_index;
+                }
+                if in_code {
+                    // 正文流结束仍有未闭合围栏（页尾即 Code 块尾）
+                    seg.push_str(cur_fence);
+                    seg.push_str("\n\n");
                 }
             }
         }
@@ -127,14 +157,48 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                 }
             }
         }
-        // 5) 家具/脚注（#10 例外项）：默认不输出（上面四阶段不匹配 Noise/Footnote，
-        //    已天然跳过）；开关打开时段末追加注释行。占位变体 Image/Code/Formula/
-        //    Index/Aside 同样零消费——producer 未产，新类别出现才加渲染分支。
+        // 5) 脚注（#10 补全，2026-10-01）：默认输出 MinerU `PageFootnoteBlock`
+        //    的 markdown 形态——非折叠小字号浅色 HTML（`docvortex blocks.py::
+        //    _render_page_footnote` 实证）：
+        //    `<small><span class="docvortex-page-footnote" data-block-type=
+        //    "page_footnote" style="color:#6b7280">…</span></small>`，块内行间
+        //    `<br>`（MinerU 把换行统一替换为 <br>）。本仓 Footnote 是行级
+        //    Region（无块边界信息）——整页脚注行按 y 序拼进**一个**块。
+        //    文本不做 HTML 转义（MinerU 同样原样放行）。
+        let mut notes: Vec<&Region> =
+            regions_of(page, |k| matches!(k, RegionKind::Footnote)).collect();
+        if !notes.is_empty() {
+            notes.sort_by(|a, b| {
+                a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let joined = notes
+                .iter()
+                .map(|r| r.text.trim())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("<br>");
+            if !joined.is_empty() {
+                // 正文与脚注间正好一个空行：seg 以单 \n 结尾（正文行循环
+                // 常态）补 1 个；无换行结尾（成品块尾部）补 2 个。此前直接
+                // push_str("\n\n") 会叠加成 3 个换行。
+                if !seg.is_empty() && !seg.ends_with("\n\n") {
+                    if !seg.ends_with('\n') {
+                        seg.push('\n');
+                    }
+                    seg.push('\n');
+                }
+                seg.push_str(&format!(
+                    "<small><span class=\"docvortex-page-footnote\" data-block-type=\"page_footnote\" style=\"color:#6b7280\">{joined}</span></small>\n"
+                ));
+            }
+        }
+        // 6) 家具注释行（`ANYDOC_EMIT_FURNITURE` 开关）：仅 `Noise` 类（页眉/
+        //    页脚/页码/印章）——按 y_min 排序输出注释行；文本中的 `-->` 会
+        //    提前终止 HTML 注释，替换为 `->`。Footnote 已正式输出（上一步），
+        //    不再走注释形态。
         if emit {
-            let mut furniture: Vec<&Region> = regions_of(page, |k| {
-                matches!(k, RegionKind::Noise(_) | RegionKind::Footnote)
-            })
-            .collect();
+            let mut furniture: Vec<&Region> =
+                regions_of(page, |k| matches!(k, RegionKind::Noise(_))).collect();
             furniture.sort_by(|a, b| {
                 a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal)
             });
@@ -144,7 +208,6 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                     RegionKind::Noise(NoiseKind::Footer) => "footer",
                     RegionKind::Noise(NoiseKind::PageNumber) => "page-number",
                     RegionKind::Noise(NoiseKind::Seal) => "seal",
-                    RegionKind::Footnote => "footnote",
                     _ => continue,
                 };
                 let t = r.text.replace("-->", "->");
@@ -177,6 +240,21 @@ fn regions_of(
     pred: impl Fn(&RegionKind) -> bool,
 ) -> impl Iterator<Item = &Region> {
     page.regions.iter().filter(move |r| pred(&r.kind))
+}
+
+/// 正文同道判定（#10 补全）：按**普通正文流**输出位置的 kind。
+/// `Aside`/`Reference` 与 Body 同形态（MinerU markdown 为无标记普通段落），
+/// `Code` 也在正文流内原位输出（渲染循环里的 fence 状态机包裹）——四者
+/// 与 `Index`（`- ` 列表项）一样保持阅读顺序，不走段末追加。
+fn is_body_like(k: &RegionKind) -> bool {
+    matches!(
+        k,
+        RegionKind::Body
+            | RegionKind::Index
+            | RegionKind::Aside
+            | RegionKind::Reference
+            | RegionKind::Code
+    )
 }
 
 /// 取 Grid 区块的 HTML（调用处已由谓词保证类型）。
@@ -417,27 +495,57 @@ mod tests {
         }
     }
 
-    /// 默认渲染：家具/脚注零输出（与开关引入前逐字节相同）。
+    /// 默认渲染：家具（页眉/页脚/页码/印章）零输出；脚注正式输出 `<small>`
+    /// HTML（#10 补全，对齐 MinerU `PageFootnoteBlock` 的 markdown 形态）。
     #[test]
     fn furniture_hidden_by_default() {
-        assert_eq!(render(&furniture_doc()), "正文");
-        // DocIR::render() 同样默认关。
-        assert_eq!(furniture_doc().render(), "正文");
+        assert_eq!(
+            render(&furniture_doc()),
+            "正文\n\n<small><span class=\"docvortex-page-footnote\" data-block-type=\"page_footnote\" style=\"color:#6b7280\">脚注一行</span></small>"
+        );
+        // DocIR::render() 同口径。
+        assert_eq!(
+            furniture_doc().render(),
+            "正文\n\n<small><span class=\"docvortex-page-footnote\" data-block-type=\"page_footnote\" style=\"color:#6b7280\">脚注一行</span></small>"
+        );
     }
 
-    /// 开关打开：段末注释行，按 y 升序（header → seal → footnote →
-    /// page-number → footer），`Footnote` 用独立标签。
+    /// 开关打开：段末注释行按 y 升序（header → seal → page-number → footer）；
+    /// `Footnote` 已正式输出（`<small>` HTML），**不再走注释形态**。
     #[test]
     fn furniture_emitted_as_comments_in_y_order() {
         let on = render_with_furniture(&furniture_doc(), true);
         assert_eq!(
             on,
             "正文\n\
+             \n\
+             <small><span class=\"docvortex-page-footnote\" data-block-type=\"page_footnote\" style=\"color:#6b7280\">脚注一行</span></small>\n\
              <!-- header: 页眉文本 -->\n\
              <!-- seal: 章内散字 -->\n\
-             <!-- footnote: 脚注一行 -->\n\
              <!-- page-number: 第 1 页 -->\n\
              <!-- footer: 页脚文本 -->"
+        );
+    }
+
+    /// 多条脚注行拼进**一个** `<small>` 块，行间 `<br>`（MinerU 把块内换行
+    /// 统一替换为 <br>；本仓行级 Region 按全页聚合，y 升序）。
+    #[test]
+    fn multiple_footnotes_join_into_one_small_block() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 20.0, 25.0, "正文"),
+                    noise_region("注乙", 90.0, RegionKind::Footnote),
+                    noise_region("注甲", 80.0, RegionKind::Footnote),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(
+            render(&doc),
+            "正文\n\n<small><span class=\"docvortex-page-footnote\" data-block-type=\"page_footnote\" style=\"color:#6b7280\">注甲<br>注乙</span></small>"
         );
     }
 
@@ -455,9 +563,10 @@ mod tests {
         assert!(render_with_furniture(&doc, true).contains("<!-- header: a -> b -->"));
     }
 
-    /// 占位变体（Image/Code/Formula/Aside）：零消费——producer 未产，
-    /// 即便有人手工构造也不应出现在任何输出里。`Index` 已非占位（#10 INDEX
-    /// 票有 producer），改由 [`index_entry_renders_as_list_item`] 单独钉住。
+    /// 占位变体（Image/Formula）：零消费——producer 未产，即便有人手工构造
+    /// 也不应出现在任何输出里。`Index` 已非占位（#10 INDEX 票有 producer），
+    /// 改由 [`index_entry_renders_as_list_item`] 单独钉住；`Code`/`Aside`/
+    /// `Reference` 自 #10 补全起有消费（下方三个用例）。
     #[test]
     fn placeholder_variants_never_render() {
         let doc = DocIR {
@@ -465,9 +574,7 @@ mod tests {
                 page_no: 0,
                 regions: vec![
                     Region::new(0.0, 1.0, 0.0, 1.0, "图").with_kind(RegionKind::Image),
-                    Region::new(0.0, 1.0, 0.0, 1.0, "码").with_kind(RegionKind::Code),
                     Region::new(0.0, 1.0, 0.0, 1.0, "式").with_kind(RegionKind::Formula),
-                    Region::new(0.0, 1.0, 0.0, 1.0, "注").with_kind(RegionKind::Aside),
                 ],
                 source: PageSource::Ocr,
                 dims: PageDims::default(),
@@ -475,6 +582,67 @@ mod tests {
         };
         assert_eq!(render(&doc), "");
         assert_eq!(render_with_furniture(&doc, true), "");
+    }
+
+    // ── #10 补全：aside/reference 普通段落 + code fenced block ──
+
+    /// `Aside`/`Reference` 与正文同道：无标记普通段落（MinerU
+    /// `PageAuxTextBlock`/`RefTextBlock` 的 markdown 形态），保持阅读顺序。
+    #[test]
+    fn aside_and_reference_render_as_plain_paragraphs() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 0.0, 5.0, "正文一段"),
+                    Region::new(0.0, 100.0, 10.0, 15.0, "旁注一行").with_kind(RegionKind::Aside),
+                    Region::new(0.0, 100.0, 20.0, 25.0, "〔1〕参考文献条目")
+                        .with_kind(RegionKind::Reference),
+                    Region::new(0.0, 100.0, 30.0, 35.0, "正文二段"),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(render(&doc), "正文一段\n旁注一行\n〔1〕参考文献条目\n正文二段");
+    }
+
+    /// `Code` 渲染 fenced block：连续 Code 行共享一个围栏，语言恒 txt，
+    /// 围栏块前后空行（GFM 围栏独立）。行文本原样（保留换行边界）。
+    #[test]
+    fn code_regions_render_as_fenced_block() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 0.0, 5.0, "说明文字"),
+                    Region::new(0.0, 100.0, 10.0, 15.0, "let x = 1;").with_kind(RegionKind::Code),
+                    Region::new(0.0, 100.0, 20.0, 25.0, "let y = 2;").with_kind(RegionKind::Code),
+                    Region::new(0.0, 100.0, 30.0, 35.0, "后继正文"),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(
+            render(&doc),
+            "说明文字\n\n```txt\nlet x = 1;\nlet y = 2;\n```\n\n后继正文"
+        );
+    }
+
+    /// 围栏长度对齐 MinerU `_render_fenced_content`：正文含 ``` 时用四反引号，
+    /// 防围栏提前闭合。
+    #[test]
+    fn code_containing_backticks_gets_longer_fence() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![Region::new(0.0, 100.0, 0.0, 5.0, "md```code").with_kind(RegionKind::Code)],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(render(&doc), "````txt\nmd```code\n````");
     }
 
     /// #10 INDEX：目次条目行渲染为 `- ` 列表项（MinerU v1 同形态），且与相邻

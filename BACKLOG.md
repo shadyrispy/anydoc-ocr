@@ -1185,7 +1185,7 @@ blocks 3 + gfm_adapter 4；lib 264 → **271**）。
 
 ## #10 块类型覆盖：chart / code / index / aside / footnote / list
 
-状态：**列表标记独段护栏已落地（2026-09-29，切片 1，见节末）；其余子项未开始**。
+状态：**切片 1（列表标记护栏）/ 切片 2（INDEX）/ 切片 3（aside/code/reference/footnote 四类补全）已落地；chart 仍待样本**。
 
 **问题 → 动作**：code/index/aside/footnote 退化或丢失 → 按 basic 的 13 项（非 23 项）排顺序，且多数子项要等 #6。
 
@@ -1203,10 +1203,10 @@ PIPELINE_DET_TYPE, True`）。→ 下表按 **13 项**算缺口，23 项是"将�
 
 | MinerU 类型 | 本仓现状 |
 |---|---|
-| `CODE` / `algorithm`（`constants.py:75`，且在 PIPELINE_DET_TYPE 内） | 无 fence，代码块退化为普通行 |
-| `INDEX`（content 目录块） | 无缩进/点线还原 |
-| `ASIDE_TEXT` | 与正文混排，页边注落进正文流 |
-| `PAGE_FOOTNOTE` / `REF_TEXT` / `vision_footnote` | 无脚注/引用挂接 |
+| `CODE` / `algorithm`（`constants.py:75`，且在 PIPELINE_DET_TYPE 内） | **已落地（2026-10-01 切片 3，见节末）**：Algorithm→Code + fenced block 渲染 + `code` item 投影 |
+| `INDEX`（content 目录块） | **已落地（2026-09-30 切片 2，见节末）**：几何+形态双判据回贴 + list item 聚合 |
+| `ASIDE_TEXT` | **已落地（2026-10-01 切片 3，见节末）**：AsideText 框回贴 Aside kind，普通段落渲染 + `page_aside_text` 投影 |
+| `PAGE_FOOTNOTE` / `REF_TEXT` / `vision_footnote` | **已落地（2026-10-01 切片 3，见节末）**：Footnote 行 y 序 `<small>` HTML 块默认输出；Reference 框回贴 + `reference_list` 聚合。`vision_footnote`（图片型脚注）仍待样本 |
 | `LIST` / `text_list` / `reference_list` | 前缀识别 + 段落级独段护栏（2026-09-29 切片 1）+ **content_list v2 `list` item 聚合已落地**（2026-09-30 切片 4，见节末）：相邻连续 marker 段聚合成一个 `list` item（`list_type: text_list` + `attribute` 投票），markdown 原文输出零变化（MinerU 对 text_list 的 md 形态即原文）。**注意**：LIST 不在 `PIPELINE_DET_TYPE` 的 13 项里（basic 档版面 23 类无 list 标签），本仓 marker 检测是对 VLM 线产物缺口的独立增强，投影形态对齐 VLM 线 |
 | `CHART` | 仅存在于 `VLM_LAYOUT_LABEL_MAP`（`constants.py:77`）与 `LOCAL_LAYOUT_IMAGE_BLOCK_BODY_TYPES`（`constants.py:65`），**不在 basic 的 13 项内** → 属 VLM 线，非本轮债 |
 | `DOC_TITLE` vs `PARAGRAPH_TITLE` | 级别由规则三信号投票给（`src/heading_levels.rs`），非 MinerU 的 LLM 分级（那条默认关闭，`config.py:395-397`）→ 口径差异需在 README 说明 |
@@ -2156,3 +2156,76 @@ MinerU 的 `window` 相关逻辑服务于"整页图 + 版面框"的分块喂送�
 rec 差异（本仓页码更全）。验证脚本已固化入库：`scripts/compare_mineru_page.py`（单页行级
 diff 明细）、`scripts/compare_mineru_full.py`（全篇整页字符级 ratio，
 口径 docstring 内置）。
+
+## #10 切片 3 已落地（2026-10-01）：aside / code / reference / footnote 四类补全
+
+**产出**（producer 回贴 → 渲染 → content_list 投影三层全通，单测 10 个新增/更新）：
+
+- `RegionKind::Aside` + 新枚举 `RegionKind::Reference`（producer：gfm_adapter 把
+  版面 `AsideText`/`ReferenceContent`/`Reference` 元素框内的 Body 行回贴），
+  `Algorithm` → `RegionKind::Code`。回贴统一走新增 `mark_layout_kinds`
+  （`gfm_adapter.rs`）：`norm_membership_union` 中心点命中、只动 `Body`、清
+  `heading_level`，**先于 INDEX** 执行（后者只动 Body，先回贴的 kind 不被点线
+  判定覆盖）。
+- markdown 形态（MinerU `docvortex blocks.py` 实证）：aside/reference =
+  无标记普通段落（正文流原位）；code = fenced block（开栏长度 =
+  max(3, 最长反引号游程+1)，**闭栏跟随开栏**，语言恒 `txt`）；footnote =
+  `<small><span class="docvortex-page-footnote" data-block-type="page_footnote"
+  style="color:#6b7280">…</span></small>`，整页脚注行 y 序 join(`<br>`)，
+  默认输出（不走 `ANYDOC_EMIT_FURNITURE`）。
+- content_list v2 投影：aside → 独立 item `page_aside_text`
+  （`page_aside_text_content` 键）；reference → 相邻聚合 `list` item +
+  `list_type:"reference_list"`（无 `attribute`，v2.py `_reference_list_item`
+  逐字段对齐）；code → `code` item。
+- 附带修复：`restore_marker_space`（`list.rs`）——det 整行直出 rec 丢空格的
+  字母括号式标记（`a)法律法规要求；`）按原文恢复空格；刻意收窄不做数字式/
+  点式/顿号式（防 `A.1` 附录编号、`1)` 标题编号冲突）。
+
+**验证**：lib **349 passed**（含 `aside_and_reference_render_as_plain_paragraphs`、
+`code_regions_render_as_fenced_block`、`code_containing_backticks_gets_longer_fence`、
+`multiple_footnotes_join_into_one_small_block`、`aside_projects_to_page_aside_text`、
+`reference_runs_collapse_into_reference_list`、`mark_layout_kinds_marks_matched_bodies_only`）；
+golden 重基线漂移仅 footnote `<small>` 形态（预期内，见下节对拍记录）。
+
+## #15 线 C 收尾（2026-10-01）：重叠块去重 + 标记空格恢复 + 对拍口径重订
+
+**重叠块去重（stitch 空块闸，`blocks.rs`）**：根因链 = PP-DocLayout-S 输出
+bbox 交错、内容互相包含的 Text 块（页 24 8.5.3 实测）→ `stitching.rs` 对每块
+独立吸收行写 `el.text`（无全局消费标记）→ 重叠块各得一份重复 stitch text →
+`assemble_blocks` stitch 快路无条件输出。修复：块 `inner_idx` 为空且宽松消费
+无进账（after==before）→ 该块 stitch 文本必是已输出内容的重复拼贴 → 跳过
+**输出**、保留消费标记。单测 2 个（复刻页 24 的重复块被闸掉 + bbox 重叠但
+内容全新的对照块照常输出）。
+
+**验证（GJB 9001C 全篇 content_list v2 对照，`scripts/compare_mineru_full.py`）**：
+
+- **口径重订**：历史 0.9105 记录的 theirs 目录页映射不可复现（MinerU 输出为
+  "内容页"编号 1-37，跳过空白物理页 2；本仓 38 物理页含空白页 2——新旧
+  clv2 JSON 页结构一致证实）。新 canonical 口径：MinerU 内容页 1-37 按
+  `物理页 p → mp/{p-1}（p≥3）` 重建对齐目录，`n_pages=38`（空白页 2 空对空
+  = 1.0）。
+- 结果：all-38 avg **0.7667**；**剔除 7 个表格口径差异页（13/17/30/33/34/35/36）
+  后 31 文本页 avg = 0.9109**（与历史 0.9105 持平）。表格页低分全部归因：
+  33-36 跨页表格合并（本仓完整表定格 p33，MinerU 每页子表——**非文本丢失**，
+  全篇 markdown 附录 B 18 行逐行只出现一次；markdown/clv2 两层对
+  `continues_prev` 占位同口径跳过）；13/17/30 表 html vs pipe/文本化渲染形态。
+  文本页 <0.85 仅 `[1(0.71), 3(0.562), 4(0.578), 5(0.728)]`——封面标题级别/
+  目次点线页码，既有口径差。
+- **线 C 两修实证**：物理页 25（8.5.3 重复页）对拍 0.759（历史口径页 24）→
+  **0.966**；修复前后 clv2 同页 paragraph 字符 870 → 608（删去重复拼贴一份）。
+  marker 空格恢复同页验证（`2) 确保` 有空格与 `a)法律法规要求；` 补空格）。
+- 与修复前 clv2 JSON（Sep 30）逐页 diff：22 页差异均为预期影响页（footnote/
+  aside 投影 + 页 25 去重 + marker 空格），p34-36 空页与 table-only 页形态
+  完全一致（非本轮引入）。
+
+## #8 对拍结论（2026-10-01）：`ANYDOC_TABLE_ORI` 翻默认判据满足，翻默认待开销定量
+
+四件样本 OFF/ON 对拍（`gjb9001c_wenzi` / `nuaa_tupian` / `rotated_table` /
+`table_rot90`）：前三件 **IDENTICAL**（零回归）；`table_rot90` ON 侧**结构性
+修复**——表头从乱序竖排断行（`B<br/>Cherry` / `anana` / `Apple` / `Item`）恢复
+为 `Item/Quantity/Price` + 行序 Apple→Banana→Cherry（残留仅 cell 内竖排断字，
+rec 通路边界）。
+
+**翻默认双判据（旋转表修复>0 且正常表变化=0）满足**。但翻默认动作（models.rs
+语义反转为默认接线 + 测试 + 文档）**暂缓**：需先定量 doc_ori 分类器的每页推理
+开销（time/cost trade-off 未测，按优化采纳纪律补测后再执行）。

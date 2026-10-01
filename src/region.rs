@@ -76,8 +76,20 @@ pub enum RegionKind {
     /// OCR 通路暂不产（它的正途是接版面模型的 `IndexBlock`）。
     Index,
     /// 旁注/边注（#6 第 5 步占位）：producer 未产。MinerU 13 项之 `ASIDE_TEXT`。
-    #[allow(dead_code)] // 同上
+    ///
+    /// #10 补全（2026-10-01）：OCR 通路已产——版面 `AsideText` 元素 bbox 内的
+    /// 行在装配后回贴本 kind（`gfm_adapter::mark_layout_kind`）。渲染层按
+    /// **普通正文段**输出（MinerU `PageAuxTextBlock` 的 markdown 形态就是无
+    /// 标记段落，`docvortex blocks.py::PageAuxTextBlock` 分支），content_list
+    /// v2 投影为独立 `page_aside_text` item（`ct::PAGE_ASIDE_TEXT`）。
     Aside,
+    /// 参考文献条目（#10 补全，2026-10-01）：版面 `Reference`/`ReferenceContent`
+    /// 元素 bbox 内的行回贴本 kind。渲染层按**普通正文段**输出（MinerU
+    /// `RefTextBlock` 的 markdown 形态就是无标记段落）；content_list v2 由
+    /// 相邻连续条目聚合成一个 `{"type":"list","list_type":"reference_list"}`
+    /// item（MinerU `v2.py::_reference_list_item`，无 `attribute`——与
+    /// `text_list` 的差别）。
+    Reference,
     /// 脚注（#10 例外项，本步有 producer）：OCR 通路 `Footnote` 版面元素内的
     /// 文本行。**注意**这不是"被页脚吸收"——`is_footer()` 把 `Footnote` 与
     /// Footer 并列是 oar-ocr 的类型划分口径；MinerU 13 项里 `PAGE_FOOTNOTE`

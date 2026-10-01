@@ -242,6 +242,21 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .filter(|el| el.element_type == LayoutElementType::Content && el.confidence >= 0.5)
             .map(|el| &el.bbox)
             .collect();
+        // #10 补全：aside/algorithm(→code)/reference 版面元素框，装配后回贴
+        // kind（`mark_layout_kinds`）。这些行**不进 furniture**（aside/reference
+        // 的 markdown 形态是正文流普通段落，code 是原位 fenced block）。
+        let kind_bboxes: Vec<(&oar_ocr::processors::BoundingBox, RegionKind)> = page
+            .layout_elements
+            .iter()
+            .filter_map(|el| match el.element_type {
+                LayoutElementType::AsideText => Some((&el.bbox, RegionKind::Aside)),
+                LayoutElementType::Algorithm => Some((&el.bbox, RegionKind::Code)),
+                LayoutElementType::Reference | LayoutElementType::ReferenceContent => {
+                    Some((&el.bbox, RegionKind::Reference))
+                }
+                _ => None,
+            })
+            .collect();
         // #10 切片 5：**目录块确证**（几何先行）。MinerU 的 INDEX 块可以含不带
         // 点线的条目（原文点线在 OCR 阶段被吃掉：实测 nuaa_tupian.pdf 目录页
         // 43 行里 `1 范围1` `7 支持5` `7.2 能力7` 等 20+ 行无点线）→ 纯文本
@@ -375,6 +390,9 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .filter(|r| !is_noise_fragment(r))
             .collect();
         out = merge_isolated_markers(kept);
+        // #10 补全：aside/algorithm/reference 回贴**先于** INDEX（后者只动
+        // Body，先回贴的 kind 不会被点线形态判定覆盖）。
+        out = mark_layout_kinds(out, &kind_bboxes, scale);
         // #10 INDEX（OCR 通路）：marker 合并后再回贴——合并不改变行归属，且此时
         // 区域几何/文本已定型。
         out = mark_layout_index(out, &content_bboxes, scale);
@@ -464,6 +482,47 @@ fn furniture_kind_of(ty: LayoutElementType) -> Option<RegionKind> {
         LayoutElementType::Footnote => Some(RegionKind::Footnote),
         _ => None,
     }
+}
+
+/// #10 补全（2026-10-01）：版面 `AsideText` / `Algorithm` / `Reference`/
+/// `ReferenceContent` 元素内的行 → 回贴 [`RegionKind::Aside`] /
+/// [`RegionKind::Code`] / [`RegionKind::Reference`]。
+///
+/// 与 [`mark_layout_index`] 同构：只动 `Body`（标题/表格/家具/已回贴的不
+/// 覆盖），行框中心点落在版面元素 bbox 内（`norm_membership_union`）即回贴。
+/// 调用时机在段落合并/marker 配对之后——此时 Region 的 bbox 是行框或并段
+/// 并集框（stitch 快路行则携带块框），中心点仍落在所属版面元素内。
+///
+/// 三类的 markdown 形态（MinerU `docvortex blocks.py` 实证）：aside/reference
+/// 是**无标记普通段落**（渲染与 Body 同道，正文流位置不变）；code 走 fenced
+/// block。content_list v2：aside → `page_aside_text` 独立 item，reference →
+/// 相邻聚合 `reference_list`，code → `code` item。
+fn mark_layout_kinds(
+    mut regions: Vec<Region>,
+    kind_bboxes: &[(&oar_ocr::processors::BoundingBox, RegionKind)],
+    scale: (f32, f32, f32, f32),
+) -> Vec<Region> {
+    if kind_bboxes.is_empty() {
+        return regions;
+    }
+    for r in regions.iter_mut() {
+        if !matches!(r.kind, RegionKind::Body) {
+            continue;
+        }
+        let cx = (r.x_min + r.x_max) / 2.0;
+        let cy = (r.y_min + r.y_max) / 2.0;
+        if let Some((_, k)) = kind_bboxes
+            .iter()
+            .find(|(bb, _)| norm_membership_union(cx, cy, scale, bb))
+        {
+            r.kind = k.clone();
+            // 对齐 mark_layout_index：aside/reference/code 都不是标题行
+            //（MinerU RefTextBlock/PageAuxTextBlock/CodeBlock 均无级别语义），
+            // 形态判据（如 `1. 总则` 被误赋级）不带入新 kind。
+            r.heading_level = None;
+        }
+    }
+    regions
 }
 
 /// #10 INDEX（OCR 通路）：几何+形态双判据回贴版面 Content 块。
@@ -1587,6 +1646,63 @@ mod tests {
         // bbox 原样保留（投影层要落 PAGE_HEADER 的 bbox）
         assert!((hdr.x_min - 10.0).abs() < 1e-4 && (hdr.x_max - 90.0).abs() < 1e-4);
         assert!((hdr.y_min - 2.0).abs() < 1e-4 && (hdr.y_max - 8.0).abs() < 1e-4);
+    }
+
+    // ── #10 补全：aside/algorithm(→code)/reference 版面元素行回贴 kind ──
+
+    /// `mark_layout_kinds` 直接单测：Body 行中心点命中版面元素框 → 回贴
+    /// kind 并清 heading_level；框外行保持 Body；非 Body 不被覆盖。
+    /// （不走 to_docir 装配链——稀疏测试布局会被 `merge_into_paragraphs`
+    /// 按行距中位数×1.5 全部并段，装配后的 region 几何不可控。）
+    #[test]
+    fn mark_layout_kinds_marks_matched_bodies_only() {
+        // scale = (tw, th, lw, lh)：页面 100×100（`page_scale` 语义）。
+        let scale = (100.0_f32, 100.0_f32, 100.0_f32, 100.0_f32);
+        // 生产路径收集的是 layout_elements 的 bbox 引用，同构。
+        let bb_aside = BoundingBox::from_coords(0.0, 10.0, 100.0, 20.0);
+        let bb_code = BoundingBox::from_coords(0.0, 30.0, 100.0, 40.0);
+        let bb_ref = BoundingBox::from_coords(0.0, 50.0, 100.0, 100.0);
+        let bboxes = vec![
+            (&bb_aside, RegionKind::Aside),
+            (&bb_code, RegionKind::Code),
+            (&bb_ref, RegionKind::Reference),
+        ];
+        let mut body_in_aside = Region::new(10.0, 90.0, 12.0, 18.0, "旁注一行");
+        body_in_aside.heading_level = Some(2);
+        // "脚注一行"中心也落在 Aside 框内，但非 Body 不回贴。
+        let regions = vec![
+            body_in_aside,
+            Region::new(10.0, 90.0, 32.0, 38.0, "x = f(a)"),
+            Region::new(10.0, 90.0, 52.0, 58.0, "〔1〕文献一"),
+            Region::new(10.0, 90.0, 92.0, 98.0, "〔2〕文献二"),
+            // 中心 y=7：三个框都罩不住 → 保持 Body。
+            Region::new(10.0, 90.0, 5.0, 9.0, "正文一行"),
+            Region::new(10.0, 90.0, 12.0, 18.0, "脚注一行").with_kind(RegionKind::Footnote),
+        ];
+        let out = mark_layout_kinds(regions, &bboxes, scale);
+        let kind_of = |t: &str| {
+            out.iter()
+                .find(|r| r.text == t)
+                .map(|r| r.kind.clone())
+                .unwrap_or_else(|| panic!("文本 {t} 应在 IR 中"))
+        };
+        assert_eq!(kind_of("旁注一行"), RegionKind::Aside);
+        assert_eq!(kind_of("x = f(a)"), RegionKind::Code);
+        assert_eq!(kind_of("〔1〕文献一"), RegionKind::Reference);
+        assert_eq!(kind_of("〔2〕文献二"), RegionKind::Reference);
+        assert_eq!(kind_of("正文一行"), RegionKind::Body);
+        assert_eq!(kind_of("脚注一行"), RegionKind::Footnote);
+        // 回贴同时清标题级别（aside/code/reference 无级别语义，对齐
+        // mark_layout_index）。
+        let aside = out.iter().find(|r| r.text == "旁注一行").unwrap();
+        assert_eq!(aside.heading_level, None);
+        // 空框列表：零成本直返（多数页面常态）。
+        let same = mark_layout_kinds(
+            vec![Region::new(0.0, 1.0, 0.0, 1.0, "原样")],
+            &[],
+            scale,
+        );
+        assert_eq!(same[0].kind, RegionKind::Body);
     }
 
     // ── #9 修法 4：表内单元格"同一内容两份"去重 ──

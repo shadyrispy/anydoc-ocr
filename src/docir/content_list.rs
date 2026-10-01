@@ -95,19 +95,38 @@ fn page_items(page: &PageIR) -> Vec<Value> {
     // （它同样不会因为中间隔着正文就把两段目录拼成一个块）。
     // #10 切片 4：相邻连续的 list_item 段落同理聚合成一个 `list` item（v2.py
     // `_render_list`），被 Index 行/正文行/家具打断即拆开。
+    // #10 补全：相邻连续的 `Reference` 条目聚合成一个 `reference_list` item
+    // （v2.py `_reference_list_item`），被打断即拆开——与 index/list run 同构。
     let mut items: Vec<Value> = Vec::new();
     let mut index_run: Vec<&Region> = Vec::new();
     let mut list_run: Vec<&Region> = Vec::new();
+    let mut reference_run: Vec<&Region> = Vec::new();
     for r in page.regions.iter().filter(|r| !r.is_continues_prev()) {
         if r.kind == RegionKind::Index {
             if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
                 items.push(v);
             }
+            if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
+                items.push(v);
+            }
             index_run.push(r);
+            continue;
+        }
+        if r.kind == RegionKind::Reference {
+            if let Some(v) = index_run_item(std::mem::take(&mut index_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
+                items.push(v);
+            }
+            reference_run.push(r);
             continue;
         }
         if r.list_item && r.kind == RegionKind::Body {
             if let Some(v) = index_run_item(std::mem::take(&mut index_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
                 items.push(v);
             }
             list_run.push(r);
@@ -119,6 +138,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
         if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
             items.push(v);
         }
+        if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
+            items.push(v);
+        }
         if let Some(v) = region_item(r, page) {
             items.push(v);
         }
@@ -127,6 +149,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
         items.push(v);
     }
     if let Some(v) = list_run_item(list_run, page) {
+        items.push(v);
+    }
+    if let Some(v) = reference_run_item(reference_run, page) {
         items.push(v);
     }
     items
@@ -204,6 +229,41 @@ fn index_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {    if run
     Some(Value::Object(item))
 }
 
+/// 一组相邻连续的 `Reference` 条目 → 单个 `reference_list` item；空组 → `None`。
+///
+/// 形态逐字对齐 v2.py `_reference_list_item`（:167-184）：
+/// `{"type":"list","content":{"list_type":"reference_list","list_items":
+/// [{"item_type":"text","item_content":[spans]},…]}}`——**无 `attribute` 键**
+/// （那是 text_list 独有，`_render_list` 里 `if list_type == "text_list"` 才给）。
+/// bbox = 成员框并集（同 [`index_run_item`] 口径）。
+fn reference_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {
+    if run.is_empty() {
+        return None;
+    }
+    let list_items: Vec<Value> = run
+        .iter()
+        .map(|r| {
+            json!({
+                "item_type": ct::SPAN_TEXT,
+                "item_content": spans_of(r),
+            })
+        })
+        .collect();
+    if list_items.is_empty() {
+        return None; // 全空行不产出 item（与 index/list run 同口径）
+    }
+    let mut item = Map::new();
+    item.insert("type".into(), Value::String(ct::LIST.into()));
+    item.insert(
+        "content".into(),
+        json!({ "list_type": ct::LIST_REF, "list_items": list_items }),
+    );
+    if let Some(b) = bbox_union(&run, page) {
+        item.insert("bbox".into(), json!(b));
+    }
+    Some(Value::Object(item))
+}
+
 /// 一组 region 的 bbox 并集（聚合块的几何），取不到归一分母或全无几何 → `None`。
 fn bbox_union(rs: &[&Region], page: &PageIR) -> Option<[i32; 4]> {
     let mut acc: Option<[i32; 4]> = None;
@@ -232,9 +292,17 @@ fn region_item(r: &Region, page: &PageIR) -> Option<Value> {
                 "level": r.heading_level.unwrap_or(1),
             }),
         ),
-        RegionKind::Body | RegionKind::PreRendered | RegionKind::Aside => {
+        RegionKind::Body | RegionKind::PreRendered => {
             (ct::PARAGRAPH, json!({ "paragraph_content": spans_of(r) }))
         }
+        // #10 补全：aside 独立 item（v2.py `_page_content_type`：ASIDE_TEXT →
+        // "page_aside_text"，content 键 = `f"{content_type}_content"`，与
+        // header/footer/footnote 同构）。markdown 形态仍是普通段落（渲染层
+        // 与 Body 同道），只有结构化出口分列。
+        RegionKind::Aside => (
+            ct::PAGE_ASIDE_TEXT,
+            json!({ "page_aside_text_content": spans_of(r) }),
+        ),
         RegionKind::Grid(_) | RegionKind::TableHtml => (
             ct::TABLE,
             json!({
@@ -281,6 +349,12 @@ fn region_item(r: &Region, page: &PageIR) -> Option<Value> {
             ct::PAGE_FOOTNOTE,
             json!({ "page_footnote_content": spans_of(r) }),
         ),
+        // Reference 条目不出单条 item——相邻连续条目在 [`page_items`] 聚合成
+        // `reference_list`（v2.py `_reference_list_item`）。此分支仅供 match
+        // 穷尽性，正常不可达；兜底按 paragraph（markdown 形态本就是普通段落）。
+        RegionKind::Reference => {
+            (ct::PARAGRAPH, json!({ "paragraph_content": spans_of(r) }))
+        }
         RegionKind::Noise(NoiseKind::Header) => (
             ct::PAGE_HEADER,
             json!({ "page_header_content": spans_of(r) }),
@@ -717,6 +791,52 @@ mod tests {
         let d2 = page_with(PageDims::page_box_px(1000, 1000), vec![li("a. 第一项"), li("• 要点")]);
         let v2 = to_content_list_v2(&d2);
         assert_eq!(v2[0][0]["content"]["attribute"], "unordered");
+    }
+
+    /// #10 补全：aside 独立 item——`page_aside_text` + `page_aside_text_content`
+    /// 键（v2.py `_page_content_type` + `f"{content_type}_content"`，与
+    /// header/footer/footnote 同构）。不再混入 paragraph。
+    #[test]
+    fn aside_projects_to_page_aside_text() {
+        let mut r = body("旁注一行");
+        r.kind = RegionKind::Aside;
+        let d = page_with(PageDims::page_box_px(1000, 1000), vec![r]);
+        let v = to_content_list_v2(&d);
+        assert_eq!(v[0][0]["type"], "page_aside_text");
+        assert_eq!(
+            v[0][0]["content"]["page_aside_text_content"][0]["content"],
+            "旁注一行"
+        );
+    }
+
+    /// #10 补全：相邻 Reference 条目聚合成**一个** `reference_list` item
+    /// （v2.py `_reference_list_item`：list_type=reference_list + 逐条
+    /// list_items，**无 attribute**——text_list 独有）；被正文行打断拆开。
+    #[test]
+    fn reference_runs_collapse_into_reference_list() {
+        let rf = |t: &str| {
+            let mut r = body(t);
+            r.kind = RegionKind::Reference;
+            r
+        };
+        let d = page_with(
+            PageDims::page_box_px(1000, 1000),
+            vec![
+                rf("〔1〕GB/T 19000…"),
+                rf("〔2〕GJB 9001B…"),
+                body("正文一段"),
+                rf("〔3〕GJB 1400…"),
+            ],
+        );
+        let v = to_content_list_v2(&d);
+        let types: Vec<&str> = v[0].iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(types, vec!["list", "paragraph", "list"], "条目聚合、正文隔开");
+        assert_eq!(v[0][0]["content"]["list_type"], "reference_list");
+        assert_eq!(
+            v[0][0]["content"]["list_items"][1]["item_content"][0]["content"],
+            "〔2〕GJB 9001B…"
+        );
+        assert!(v[0][0]["content"].get("attribute").is_none(), "reference_list 无 attribute");
     }
 
     #[test]
