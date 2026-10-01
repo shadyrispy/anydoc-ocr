@@ -89,6 +89,47 @@ pub fn starts_with_list_marker(line: &str) -> bool {
     false
 }
 
+/// 行首列表 marker 后的**空格恢复**（#15 尾巴）。
+///
+/// OCR rec 常把 `a) 内容` 的 marker 后空格吃掉，且**同页有/无空格混出**
+/// （GJB 9001C 页 24 实测：`a)法律法规要求；` 与 `2) 确保...` 并存）。
+/// MinerU rec 保留空格，且标准文档排版原文 marker 后必有空格——按原文恢复。
+///
+/// 判据与 [`starts_with_list_marker`] 的字母**括号式**同形态（单 ASCII 字母 +
+/// `)` `）`），**刻意收窄**：
+/// - 不做数字式（`1)` 与标题编号冲突的既有立场不变，见模块注释）；
+/// - 不做点式/顿号式（`A.1` 附录编号、`A、总则` 顿号标题语义模糊，风险大）；
+/// - marker 后一位必须是**非空白、非数字**才补（已有空格的 `2) 确保` 与
+///   `a)1 项` 紧凑编号都不动）。
+///
+/// 行中出现的 `见a)条款` 不受影响（只在 trim_start 后的行首判定）；前导
+/// 空白原样保留。
+pub fn restore_marker_space(text: &str) -> String {
+    let t = text.trim_start();
+    let mut it = t.chars();
+    let Some(c0) = it.next() else {
+        return text.to_string();
+    };
+    if !c0.is_ascii_alphabetic() {
+        return text.to_string();
+    }
+    let Some(c1) = it.next() else {
+        return text.to_string();
+    };
+    if !matches!(c1, ')' | '）') {
+        return text.to_string();
+    }
+    let Some(c2) = it.next() else {
+        return text.to_string();
+    };
+    if c2.is_whitespace() || c2.is_numeric() {
+        return text.to_string();
+    }
+    // marker 段（前导空白 + c0 + c1）+ 空格 + 其余。c0 是 ASCII 恒 1 字节。
+    let prefix_len = text.len() - t.len();
+    format!("{}{}{} {}", &text[..prefix_len], c0, c1, &t[1 + c1.len_utf8()..])
+}
+
 /// marker 形态 → 是否 MinerU 意义上的 **ordered**（#10 切片 4）。
 ///
 /// 对齐 `docvortex/render/_internal/common/list_items.py::parse_list_item_marker`
@@ -195,5 +236,27 @@ mod tests {
         assert!(!starts_with_list_marker("# 标题"));
         assert!(!starts_with_list_marker(""));
         assert!(!starts_with_list_marker("（参见第 4 章）"), "括号内非纯数字");
+    }
+
+    /// #15 尾巴：marker 后空格恢复（rec 丢空格的行首字母括号式）。
+    #[test]
+    fn restore_marker_space_cases() {
+        // 命中：rec 丢空格的字母括号式（GJB 页 24 实测形态）
+        assert_eq!(restore_marker_space("a)法律法规要求；"), "a) 法律法规要求；");
+        assert_eq!(restore_marker_space("d）顾客要求："), "d） 顾客要求：");
+        assert_eq!(restore_marker_space("  f)对交付后活动采取以下控制措施："), "  f) 对交付后活动采取以下控制措施：", "前导空白保留");
+        // 已有空格 / 行尾：不动
+        assert_eq!(restore_marker_space("2) 确保与产品使用和维护相关的技术文件得到控制和更新；"), "2) 确保与产品使用和维护相关的技术文件得到控制和更新；");
+        assert_eq!(restore_marker_space("b)"), "b)");
+        // 收窄域：点式/顿号式/数字式不补（附录编号与标题编号域）
+        assert_eq!(restore_marker_space("A.1 结构和术语"), "A.1 结构和术语");
+        assert_eq!(restore_marker_space("A、总则"), "A、总则");
+        assert_eq!(restore_marker_space("1)按规定完成产品使用和维修的技术培训；"), "1)按规定完成产品使用和维修的技术培训；", "数字式不做");
+        // marker 后是数字（a)1 项）与行中出现：不动
+        assert_eq!(restore_marker_space("a)1 项"), "a)1 项");
+        assert_eq!(restore_marker_space("详见a)条款"), "详见a)条款");
+        // 非 marker 开头 / 空串
+        assert_eq!(restore_marker_space("（一）理解组织及其环境"), "（一）理解组织及其环境");
+        assert_eq!(restore_marker_space(""), "");
     }
 }

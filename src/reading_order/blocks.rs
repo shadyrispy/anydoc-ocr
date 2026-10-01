@@ -213,6 +213,7 @@ fn assemble_blocks<'a>(
                     consumed[i] = true;
                 }
             } else {
+            let before = consumed.iter().filter(|&&c| c).count();
             for &i in &inner_idx {
                 consumed[i] = true;
             }
@@ -240,6 +241,19 @@ fn assemble_blocks<'a>(
                 if haystack.iter().any(|h| h.contains(t)) {
                     consumed[i] = true;
                 }
+            }
+            // #15 尾巴（重叠块去重）：PP-DocLayout-S 会输出 bbox 交错、内容互
+            // 相包含的 Text 块（GJB 9001C 页 24 实测：Text 块 y[197,219] 与
+            // y[215,265] 交错，stitch text 都含同一批行——stitching 对每个
+            // 元素独立吸收行，重叠块各得一份重复 text）。前面的块已把这些行
+            // 消费并输出；本块 inner_idx 为空且宽松消费也没吃到新行 → 本块的
+            // stitch 文本必然是已输出内容的重复拼贴，再输出就是整段重行
+            // （实测页 24 8.5.3 整段两份）。跳过**输出**、保留消费标记——
+            // 被宽松消费吃掉的行确已由前块 stitch 拼走，不消费会被 leftover
+            // 重复输出；而真正的块外新行不受影响（inner_idx 非空或宽松消费
+            // 有进账时照常输出）。
+            if inner_idx.is_empty() && consumed.iter().filter(|&&c| c).count() == before {
+                continue;
             }
             // #11b：stitch 文本由**整个块**拼出 → 几何取块 bbox（不是行级框）。
             // 段落在块内按 y 均分不可靠（stitch 给的换行边界没有 y 信息），故整块
@@ -574,6 +588,88 @@ mod tests {
         let regions = regions_of(page.text_regions.as_ref().unwrap());
         let out = texts(order_structure_boxed(&page, &regions));
         assert_eq!(out, vec!["整句带行内公式", "第二段"]);
+    }
+
+    /// #15 尾巴（重叠块去重）：版面输出 bbox 交错、内容互相包含的 Text 块时
+    /// （stitching 对每个元素独立吸收行 → 重叠块各得一份重复 text），后面的
+    /// 块 inner_idx 为空且宽松消费无进账 → 其 stitch 文本必是已输出内容的
+    /// 重复拼贴，跳过输出。GJB 9001C 页 24 实测：8.5.3 段整段两份。
+    #[test]
+    fn overlapping_block_with_fully_consumed_lines_is_skipped() {
+        // 块1 y[197,219] 行 A/B 的 stitch；块2 y[215,265] 与块1 交错，stitch
+        // text 是同一批行的重拼。两行的 y_min 都落在块1 bbox 内（norm 口径），
+        // 块2 处理时 inner_idx 为空 → 不再输出。
+        let page = StructureResult {
+            layout_elements: vec![
+                el_text(
+                    80.0, 197.0, 509.0, 219.0,
+                    LayoutElementType::Text,
+                    Some(0),
+                    "text",
+                    "组织应爱护顾客财产。对构成产品和服务一部分的供方财产，组织应予以识别、保护和防",
+                ),
+                el_text(
+                    80.0, 215.0, 724.0, 265.0,
+                    LayoutElementType::Text,
+                    Some(1),
+                    "text",
+                    "组织应爱护顾客财产。\n对构成产品和服务一部分的供方财产，组织应予以识别、保护和防护。",
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(111.0, 203.0, 506.0, 213.0, "组织应爱护顾客财产。"),
+                tr(111.0, 225.0, 721.0, 231.0, "对构成产品和服务一部分的供方财产，组织应予以识别、保护和防"),
+            ]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        let out = texts(order_structure_boxed(&page, &regions));
+        // 只出块1 一份；块2 的重复拼贴被闸掉
+        assert_eq!(
+            out,
+            vec!["组织应爱护顾客财产。对构成产品和服务一部分的供方财产，组织应予以识别、保护和防"],
+            "got: {out:?}"
+        );
+    }
+
+    /// 对照（防误杀）：bbox 与前块重叠的正常相邻块（stitch 只有新内容，
+    /// inner_idx 非空）→ 照常输出，闸不误伤。
+    #[test]
+    fn overlapping_block_with_new_lines_still_renders() {
+        let page = StructureResult {
+            layout_elements: vec![
+                el_text(
+                    80.0, 197.0, 509.0, 219.0,
+                    LayoutElementType::Text,
+                    Some(0),
+                    "text",
+                    "第一句在前面的块",
+                ),
+                // 块2 bbox 与块1 交错（y[215,265] vs y[197,219]）但内容是
+                // 新段落——真实场景的相邻段落块微重叠
+                el_text(
+                    80.0, 215.0, 724.0, 265.0,
+                    LayoutElementType::Text,
+                    Some(1),
+                    "text",
+                    "块二自己的新行",
+                ),
+            ],
+            text_regions: Some(vec![
+                tr(111.0, 203.0, 506.0, 213.0, "第一句在前面的块"),
+                tr(111.0, 230.0, 721.0, 240.0, "块二自己的新行"),
+            ]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        let out = texts(order_structure_boxed(&page, &regions));
+        assert_eq!(
+            out,
+            vec!["第一句在前面的块", "块二自己的新行"],
+            "inner_idx 非空（新行在块内）→ stitch 照常输出",
+        );
     }
 
     /// #9 修法 2/3：display 公式带 `$$ … $$` 且同行右侧编号并入 `\tag{…}`；

@@ -460,10 +460,12 @@ fn url_starts_at(cs: &[char], i: usize) -> bool {
 /// 行级后处理（**带几何**，#11b 真相函数）：连字符合并取并集 + 全角归一化。
 /// #11b-v2 后 `Vec<String>` 薄封装已删（文字层通路全链 boxed，真相只有一份）。
 pub(crate) fn postprocess_lines_boxed(lines: Vec<Line>) -> Vec<Line> {
+    use crate::reading_order::list::restore_marker_space;
     merge_hyphenated_lines_boxed(lines)
         .into_iter()
         .map(|mut l| {
-            l.text = normalize_full_width_ascii(&l.text);
+            // 先全角归一（`ａ）`→`a）`）再恢复 marker 空格（判定只认半角字母）
+            l.text = restore_marker_space(&normalize_full_width_ascii(&l.text));
             l
         })
         .collect()
