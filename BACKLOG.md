@@ -2229,3 +2229,13 @@ rec 通路边界）。
 **翻默认双判据（旋转表修复>0 且正常表变化=0）满足**。但翻默认动作（models.rs
 语义反转为默认接线 + 测试 + 文档）**暂缓**：需先定量 doc_ori 分类器的每页推理
 开销（time/cost trade-off 未测，按优化采纳纪律补测后再执行）。
+
+## #7 复验（2026-10-01）：129MB cells 模型 auto-download 打通，三样本语义持平
+
+ModelScope auto-download 走通（`rt-detr-l_wireless_table_cell_det.onnx`
+129,331,821 字节 + sha256 落 `$OAR_HOME`）。三样本 OFF/ON 对拍：
+`wireless_simple` / `wireless_span` 差异**仅为 `<tbody>` 包装层**（逐格内容与
+colspan/rowspan 落位完全一致），`wired_table` IDENTICAL。历史结论
+（2026-09-27）维持：**不采用为默认**——多付 129MB + 每页一次单元格检测换不来
+语义增益；紧行高做坏场景本机 samples 未复现（历史样本不在库），开关保留供
+语料复核。
