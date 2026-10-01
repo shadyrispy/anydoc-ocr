@@ -2093,3 +2093,66 @@ MinerU 的 `window` 相关逻辑服务于"整页图 + 版面框"的分块喂送�
 的整页推理 + `predict_parallel` 页级并发，且 `--pages`（a25f35a）已提供文档级窗口。
 单页内窗口化对本仓的模型规格（tiny/small 整页输入尺寸固定）不产生精度或显存收益，
 故不实现。若后续引入大页（A0/长图）再评估。
+
+---
+
+## #15 OCR det→rec 通路对齐 MinerU `merge_det_boxes` + 残条/同内容保护
+
+状态：**已落地（2026-10-01）**。GJB 9001C 37 页全篇对照 avg ratio 0.906 → **0.9105**，
+页 11（最差页）0.711 → **0.799**，假名乱码（`4.1理期织み次六…` 类）全篇 **0 处**。
+
+### 现象 → 根因（页 11/24 取证，勿重复探索）
+
+页 11/24 输出整段重复 + 低 conf 乱码拼接（mine 1835 vs theirs 1115 字符）。
+逐层 dump 取证：**det 层 44 框全部干净整行框**（无碎片、无双检）——乱码不是 det 产生，
+而是 det 之后两个自研环节制造：
+
+1. **跨容器 split（det 后）**：`TEXT_BOX_SPLIT_IOA_THRESHOLD=0.3` 太松 +
+   IoA 分母用 `BoundingBox::area()`（鞋带多边形面积，斜框下**小于**轴对齐面积），
+   分子却是轴对齐交集面积 → IoA 虚高至 1.2-1.67（交集 > 自身面积，物理不可能）。
+   干净标题框 `(97,377,250,397)` 被 paragraph_title 与覆盖"标题+首行"的 text 大框
+   同时命中 → 拆出 `h=7` 残条 `(97,390,250,397)`，残条 rec 出乱码；正文行被拆出
+   上残条 + 主体两框 → 双份 rec → 整句重复。全页 5 处误拆。
+2. **`refine_overall_ocr_with_layout`（rec 后）**：OCR 框匹配 ≥2 个 layout 容器时按
+   交集裁图重 rec（对齐 PaddleX `get_sub_regions_ocr_res`，交叠 >3px 即算匹配）。
+   layout 检测输出**嵌套容器**（paragraph_title ⊂ text 大框），交集与原框
+   IoU 0.89-1.0（几乎重合）→ 同一段文本重 rec 一份（append）；交集为残条时
+   （crop 高/宽 < 原框 0.4）→ 乱码碎片。这是页 11 残留碎片的最终来源。
+
+### 修复内容
+
+- `third_party/oar-ocr-core/src/processors/merge_det.rs`（新增）：MinerU
+  `merge_det_boxes`（`model/ocr/geometry.py:149`）逐函数移植——
+  `merge_spans_to_line`（y0 排序、纵向重叠 >0.6×min_height 聚行、只比行尾 span）、
+  行宽 >4×行高时 `merge_overlapping_spans`（**任何 x 重叠即并框**，无比例阈值）、
+  `calculate_is_angle` 斜框透传；附表格/印章保护（与 Table/Seal 版面元素
+  IoA>0.5 的 det 框透传不合并——本仓表格 cell 填充依赖逐框粒度，MinerU 表格
+  文本由表格模型独立产出故无此需求）。7 单测含页 11 实测坐标用例。
+  接入点：单页通路 + 批量主路径 + 批量 fallback（`structure.rs` 三处 det 出口）。
+- split 修正（`structure.rs` 两处）：IoA 分母统一**轴对齐面积**（消虚高）、
+  阈值 0.3 → **0.5**（残条 IoA 0.21-0.36 全出局；真跨区块框两侧交叠 ≥0.88 保留）。
+- refine 保护（`refine_overall_ocr_with_layout`）：交集裁剪前两道闸——
+  crop 高或宽 < 原框对应边 ×0.4 → 跳过（残条闸）；`iou(ocr, crop) > 0.85` → 跳过
+  （同内容闸，页 11 实测重合对 IoU 0.893/0.964）。
+- `tests/merge_det_smoke.rs`（主 crate 集成测试）：oar-ocr-core 为 path 依赖
+  非 workspace 成员，其内嵌单测无法经主 workspace 跑通，故以公开 API 复刻 7 用例。
+
+### 验证
+
+- GJB 9001C 全篇 37 页 content_list v2 对照（cmp2 口径，SequenceMatcher
+  autojunk=False 整页字符级）：avg 0.906 → 0.9105；<0.85 页从 8 页收敛到
+  `[3(0.625), 1(0.681), 2(0.752), 24(0.759), 11(0.799), 29(0.810), 4(0.824), 36(0.837)]`，
+  其中页 11 +0.088；页 2 -0.031 为目次页码粘连口径差（OLD `前言V` vs NEW
+  `前言`+独立页码，MinerU 侧为 `前言`——NEW 语义更对）。
+- 假名乱码全篇 0 处；`…` 仅存于页 2/3/4 目次点线（合法 leader）。
+- golden 快照重基线：`batch_multipage` / `tests_samples_multipage` /
+  `tests_samples_real_samples_nuaa_tupian` / `golden.rs` 全部样本（行为变更 ticket，
+  符合重基线纪律）。
+
+### 剩余差异（已分类，暂不处理）
+
+页 1/3/4/29/36 的 <0.85 均为**结构口径差**而非文本缺陷：标题并入段落行 vs MinerU
+独立 `##` 行、注脚粘连、表格 cell 粘连/pipe vs HTML 渲染形式、目次点线页码
+rec 差异（本仓页码更全）。验证脚本已固化入库：`scripts/compare_mineru_page.py`（单页行级
+diff 明细）、`scripts/compare_mineru_full.py`（全篇整页字符级 ratio，
+口径 docstring 内置）。

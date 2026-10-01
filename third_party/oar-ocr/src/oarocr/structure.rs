@@ -46,7 +46,7 @@ const REGION_MEMBERSHIP_IOA_THRESHOLD: f32 = 0.1;
 
 /// IoA threshold for splitting text boxes that intersect with container elements.
 /// A moderate threshold (0.3 = 30%) balances precision with avoiding over-splitting.
-const TEXT_BOX_SPLIT_IOA_THRESHOLD: f32 = 0.3;
+const TEXT_BOX_SPLIT_IOA_THRESHOLD: f32 = 0.5;
 
 /// Internal structure holding the structure analysis pipeline adapters.
 #[derive(Debug)]
@@ -1526,6 +1526,26 @@ impl OARStructure {
                     continue;
                 };
 
+                // 残条保护：layout 检测可输出嵌套/边缘犬牙交错的容器（如
+                // paragraph_title 与覆盖标题+首行的 text 大框并存），交集
+                // 裁剪会切出高度/宽度不足原框 0.4 的残条，重新 rec 只会
+                // 产出乱码碎片（GJB 9001C 页 11 '4.1理期织み次六…'）；
+                // 真正横跨多个区块的 OCR 框与各区块的交叠都接近全框。
+                let ocr_h = (ocr_box.y_max() - ocr_box.y_min()).max(1.0);
+                let ocr_w = (ocr_box.x_max() - ocr_box.x_min()).max(1.0);
+                let crop_h = crop_box.y_max() - crop_box.y_min();
+                let crop_w = crop_box.x_max() - crop_box.x_min();
+                if crop_h < ocr_h * 0.4 || crop_w < ocr_w * 0.4 {
+                    continue;
+                }
+
+                // 同内容保护：layout 容器常与 OCR 框几乎重合（如覆盖标题+首行
+                // 的 text 大框 vs 正文行框，IoU≈0.89-0.99），按交集重 rec 只会
+                // 把同一段文本再输出一份（GJB 9001C 页 11 整句重复根因）。
+                if ocr_box.iou(&crop_box) > 0.85 {
+                    continue;
+                }
+
                 // Suppress existing OCR text fully covered by this crop (IoU > 0.8).
                 for (other_idx, other_region) in text_regions.iter_mut().enumerate() {
                     if other_idx == ocr_idx {
@@ -2264,6 +2284,24 @@ impl OARStructure {
             Vec::new()
         };
 
+        // MinerU 复刻：det 后按视觉行合并碎片/重复框（geometry.py merge_det_boxes），
+        // 每行只裁图 rec 一次；表格/印章区域透传保护（见 merge_det.rs 模块文档）。
+        if !detection_boxes.is_empty() {
+            let protected: Vec<crate::processors::BoundingBox> = layout_elements
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.element_type,
+                        crate::domain::structure::LayoutElementType::Table
+                            | crate::domain::structure::LayoutElementType::Seal
+                    )
+                })
+                .map(|e| e.bbox.clone())
+                .collect();
+            detection_boxes =
+                oar_ocr_core::processors::merge_det_boxes(&detection_boxes, &protected);
+        }
+
         // Debug: raw text detection boxes from overall OCR (before any splitting).
         let raw_detection_boxes = detection_boxes.clone();
         if tracing::enabled!(tracing::Level::DEBUG) && !raw_detection_boxes.is_empty() {
@@ -2315,7 +2353,12 @@ impl OARStructure {
             if !container_boxes.is_empty() {
                 for bbox in detection_boxes.into_iter() {
                     let mut intersections: Vec<crate::processors::BoundingBox> = Vec::new();
-                    let self_area = bbox.area();
+                    // IoA 分母与分子统一用轴对齐面积：det poly 可为斜框，
+                    // 鞋带面积（BoundingBox::area）小于轴对齐面积，与轴对齐
+                    // 交集面积相除会虚高（页 11 实测 1.2-1.67），导致残条
+                    // 子框越过阈值被误拆（GJB 9001C 页 11/24 乱码根因之一）。
+                    let self_area =
+                        (bbox.x_max() - bbox.x_min()) * (bbox.y_max() - bbox.y_min());
                     if self_area <= 0.0 {
                         split_boxes.push(bbox);
                         continue;
@@ -2960,8 +3003,28 @@ impl OARStructure {
                 Ok(det_result) => {
                     for (offset, detections) in det_result.detections.into_iter().enumerate() {
                         let page_idx = batch_page_indices[offset];
-                        batched_detection_boxes[page_idx] =
-                            Some(detections.into_iter().map(|d| d.bbox).collect());
+                        let mut boxes: Vec<crate::processors::BoundingBox> =
+                            detections.into_iter().map(|d| d.bbox).collect();
+                        // MinerU 复刻：det 后按视觉行合并碎片/重复框（与单页通路一致，
+                        // 表格/印章区域透传保护；layout 在 prepare 阶段已就绪）。
+                        if !boxes.is_empty() {
+                            if let Ok(prepared) = &prepared_pages[page_idx] {
+                                let protected: Vec<crate::processors::BoundingBox> = prepared
+                                    .layout_elements
+                                    .iter()
+                                    .filter(|e| {
+                                        matches!(
+                                            e.element_type,
+                                            crate::domain::structure::LayoutElementType::Table
+                                                | crate::domain::structure::LayoutElementType::Seal
+                                        )
+                                    })
+                                    .map(|e| e.bbox.clone())
+                                    .collect();
+                                boxes = oar_ocr_core::processors::merge_det_boxes(&boxes, &protected);
+                            }
+                        }
+                        batched_detection_boxes[page_idx] = Some(boxes);
                     }
                 }
                 Err(err) => {
@@ -3008,7 +3071,7 @@ impl OARStructure {
                     }
                 };
 
-                det_result
+                let mut detection_boxes = det_result
                     .detections
                     .first()
                     .map(|detections| {
@@ -3017,7 +3080,27 @@ impl OARStructure {
                             .map(|d| d.bbox.clone())
                             .collect::<Vec<_>>()
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+
+                // MinerU 复刻：det 后按视觉行合并碎片/重复框（与批量主路径一致）。
+                if !detection_boxes.is_empty() {
+                    let protected: Vec<crate::processors::BoundingBox> = prepared
+                        .layout_elements
+                        .iter()
+                        .filter(|e| {
+                            matches!(
+                                e.element_type,
+                                crate::domain::structure::LayoutElementType::Table
+                                    | crate::domain::structure::LayoutElementType::Seal
+                            )
+                        })
+                        .map(|e| e.bbox.clone())
+                        .collect();
+                    detection_boxes =
+                        oar_ocr_core::processors::merge_det_boxes(&detection_boxes, &protected);
+                }
+
+                detection_boxes
             };
 
             if !detection_boxes.is_empty() {
@@ -3060,7 +3143,12 @@ impl OARStructure {
                 if !container_boxes.is_empty() {
                     for bbox in detection_boxes.into_iter() {
                         let mut intersections: Vec<crate::processors::BoundingBox> = Vec::new();
-                        let self_area = bbox.area();
+                        // IoA 分母与分子统一用轴对齐面积：det poly 可为斜框，
+                        // 鞋带面积（BoundingBox::area）小于轴对齐面积，与轴对齐
+                        // 交集面积相除会虚高（页 11 实测 1.2-1.67），导致残条
+                        // 子框越过阈值被误拆（GJB 9001C 页 11/24 乱码根因之一）。
+                        let self_area =
+                            (bbox.x_max() - bbox.x_min()) * (bbox.y_max() - bbox.y_min());
                         if self_area <= 0.0 {
                             split_boxes.push(bbox);
                             continue;

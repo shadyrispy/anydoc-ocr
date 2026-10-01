@@ -91,6 +91,8 @@ anydoc-ocr 资料目录/ -o out_md/           # 目录批处理
 
 **对齐的是 basic，不是 MinerU 的默认档。** MinerU 自身默认 `tier=None → "standard"`（`parser/tier.py:53`），standard = 小模型 **+ VLM**（未配 `server_url` 时要装本地 VLM 引擎，`tier.py:75`）；`basic` 才是"layout + MFR + 表格模型、无 VLM"（映射 hybrid effort=medium，`tier.py:14`）。所以**别拿 `mineru` 默认跑出来的结果当本仓基线**——多栏阅读顺序、图表内容分析这类归 VLM 的活本仓刻意不做（与「CPU / 离线 / 单文件分发」的定位正面冲突，取舍见 `BACKLOG.md` #14），精度差属档位差而非 bug。真需要 standard 精度，唯一务实路径是加 `--server-url` 当客户端、不搬权重。另有一处口径差异：MinerU 的 LLM 辅助后处理（`title_leveling` / `cross_page_table_cell_merge`）**默认全关**（`config.py:395-397`），本仓对应实现走规则路径（标题三信号投票、跨页表几何列数对齐），语义上比它的默认更确定。
 
+**OCR det→rec 通路同款行合并**（#15，2026-10-01）：MinerU 在 det 与 rec 之间有 `merge_det_boxes`（`model/ocr/geometry.py:149`）——按视觉行合并碎片框/重复框，每行只裁图 rec 一次；本仓此前逐 det 框 rec，叠加自研跨容器 split 的 IoA 虚高（鞋带面积分母 + 0.3 阈值）与 refine 阶段对嵌套 layout 容器的交集重 rec，产生残条乱码与整句重复（GJB 9001C 页 11/24）。现已在 `merge_det.rs` 逐函数移植该步（表格/印章区域透传保护），split IoA 改轴对齐面积 + 阈值 0.5，refine 加残条（crop < 原框 0.4×）与同内容（IoU > 0.85）双闸；全篇对照 avg 0.906 → 0.9105，假名乱码清零。
+
 | 档 | 版面 | 文本检测（det） | 识别（rec） | 公式 | 适用 |
 |----|------|----------------|------------|------|------|
 | `mineru-basic`（默认） | PP-DocLayoutV2 | PP-OCRv6 tiny 1.7MB | small 20.2MB | PP-FormulaNet_plus-M | MinerU 同款流程与后处理（score 0.45、IoU 去重、header/footer 重标） |

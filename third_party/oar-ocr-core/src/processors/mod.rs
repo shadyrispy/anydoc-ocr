@@ -29,6 +29,7 @@ pub mod mineru_layout;
 pub mod layout_sorting;
 pub mod layout_utils;
 mod normalization;
+pub mod merge_det;
 pub mod resize_detection;
 pub mod resize_recognition;
 pub mod simd;
@@ -46,6 +47,7 @@ pub(crate) use decode::CTCArgmaxOutput;
 pub use decode::*;
 pub use formula_preprocess::{FormulaPreprocessParams, FormulaPreprocessor, normalize_latex};
 pub use geometry::*;
+pub use merge_det::merge_det_boxes;
 pub use layout_postprocess::*;
 pub use mineru_layout::{mineru_layout_post_process, MineruBox, normalize_to_int_bbox as mineru_normalize_to_int_bbox, V2_LABELS as MINERU_V2_LABELS};
 pub use layout_utils::{
