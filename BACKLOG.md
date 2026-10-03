@@ -2422,3 +2422,69 @@ MemAvailable 充足；`ulimit -a` 全项 unlimited；`df -i` inode 充足（256G
 或在本机`~/.cargo/config.toml` 的 `[target.x86_64-unknown-linux-gnu]`
 加 `rustflags = ["-C", "link-arg=-fuse-ld=bfd"]`（**不覆盖**仓库的
 aarch64 段配置）。
+
+## #10 chart 渲染落地（2026-10-03，方案 C 实施完成）
+
+**实现**：`RegionKind::Chart` 独立变体（非复用 `Image`——后者未来要裁图落盘，
+语义不同）→ producer 走 `gfm_adapter` 既有 `kind_bboxes` / `mark_layout_kinds`
+通路（与 `Aside`/`Code` 同构，不另起装配路径）→ `docir/render.rs` 渲染
+`<!-- chart -->` → `content_list v2` 投影复用既有 `ct::CHART` 常量。
+
+**图注来源取证（关键决策）**：图注是**独立的 `figure_title` 版面元素**，不在
+chart 块 text 里。dump 证据：chart 元素 text 全文 15 行全是图内数据
+（`171.2营业收入`/`160营业成本156.8`/…/`报告期`），**无一行图注**；两条图注是
+独立 `figure_title`（conf 0.94/0.83），y 带在 chart bbox **外侧**。故选
+"独立 FigureTitle 元素"方案——图注照常走正文流，无需从 text 剥离，**天然规避**
+basic 那个 `chart_caption`+`chart_footnote` 重复输出两次的缺陷。
+
+**与 basic 的有意差异**：图内文字在 markdown 端**丢弃**（10 行不进正文流），
+但**未真正丢弃**——content_list v2 里聚合成**一个** `chart` item，
+`bbox=[156,306,843,549]`，`content` 保留全部 10 行 span。结构化出口是这批
+文字唯一的幸存处，对齐 BACKLOG 定案口径「既不照抄 basic 的信息损失，也让丢弃
+可观测」。
+
+**未映射**：`ChartTitle` 版面类型（探针未产出，样本覆盖不到，`figure_title`
+已足够）。`Image` 变体保持零消费未动；文字层通路零改动。
+
+## #9 表内图：表格重建容纳 image 元素（2026-10-03，落地完成）
+
+**根因（取证）**：OCR 文本层**完全正确**（`72.4%`/`车载电子`/`81.2%`/`66.4%`
+全部存在且无误），破坏发生在**oar-ocr 的表格结构组装阶段**：
+`third_party/oar-ocr-core/src/processors/table_ocr_split.rs:276`
+`split_ocr_box_at_cell_boundaries` / `:332` `split_horizontally` 按单元格边界
+切分跨格 OCR 框，image bbox（445,281)-(617,364) ⊆ table bbox
+（76,197)-(748,456)引入额外边界，把 `72.4%` 按比例切成 `7` + `2.4%`。
+本仓**无法**在 `html_structure` 生成前介入（那是上游 `page.tables` 产物）。
+
+**修法**：`table.bbox` 内含 `Image` 元素时（`norm_membership` 归一化判定），
+改走本仓 `reconstruct_table_grid_embedded_image`——传进网格重建的 `items`
+**排除落在 image bbox 内的文本 region**，图内文字不进表格。失败回退原
+`html_structure`，表不丢。不含图的表格**一字未动**（golden 零漂移的三重保证：
+无图不启用 + 重建失败回退 + 旧入口语义不变）。
+
+**行距容差取p25 而非中位数**（`robust_row_tol`）：含图行被图撑高使行距双峰
+`[38,77,75,36]`，中位数 75 → 容差 37.5 > 真实行距 36 → 末两行被并成
+`车载电子新能源组件`。p25（38→19）后正确分离。**只在新路径启用**，不污染既有
+调用方（`reconstruct_table_grid{,_tolerant}` 传 `None` 走原 `relative_row_tol`）。
+
+**colspan 抑制的粒度（第二轮取证定案）**：`table_grid_to_html` 有「行内尾空 →
+colspan」推断（图排除后第 4 列变空 → `78.1%` 被 `colspan="2"` 吞掉第 4 列）。
+- **按格抑制错**：图 bbox y 276.7→358.4 **只覆盖行2**（工业模组），
+  行1（智能终端）**没有图**却是空的 → 按格抑制会漏掉行1、依旧输出 colspan。
+- **按列抑制对**：列3 被行2 的图证明是真实独立列 → 它在行1 的空格按「本格为空」
+  渲染。实现为 `embedded_image_table_to_html(g, img_x_ranges)`：算出图覆盖的列，
+  只对这些列禁推断，**其他列真实的合并单元格仍正常推断**。
+- **整表抑制否掉**：会连带禁掉本表其他列真实的合并单元格。
+
+**单测含三条对照**：`embedded_image_column_suppresses_colspan`（图占第 4 列
+→ 尾格 `<td></td>`）、`plain_table_keeps_colspan_inference`（同几何走原路径
+仍输出 `colspan="2"`）、`embedded_image_keeps_colspan_in_other_columns`（图只
+占第 4 列时其他列合并仍推断，且图列不被吞并）。
+
+**页 2 输出已与生成器真值逐格一致**（4 列，`72.4%`/`78.1%`/`64.9%`/`69.3%`/
+`81.2%`/`83.5%`/`58.7%`/`66.4%` 全部完整；`一` 是 OCR 对 `—` 的识别结果，
+属 OCR 保真范畴未处理）。
+
+⚠️ **本页真值是 4 列不是 3 列**（`产品线|2024Q2|2024Q3|趋势`），`2024Q3` 与
+`趋势` 是**并列两列**（y 带相同、x 不同），不是上下两行——初版任务书误写为
+3 列，由 agent 取证纠正。

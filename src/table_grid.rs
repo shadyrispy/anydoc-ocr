@@ -45,17 +45,37 @@ fn empty_cell() -> TableCell {
 ///
 /// `items`: `Region`（`x_min/x_max/y_min/y_max/text`）；`y` 越小越靠上（表头在上）。
 pub fn reconstruct_table_grid(items: &[Region], page_w: f32) -> Option<TableGrid> {
-    reconstruct_grid(items, page_w, false)
+    reconstruct_grid(items, page_w, false, None)
 }
 
 /// 宽松版（Image 块补救用）：列对齐用**中位数 + 离群率**，容忍 OCR 框起始抖动
 /// （扫描件表格如 C.1 条款号列 x 漂移 ~16px，绝对散布判据会误拒）。PDF 文字层
 /// 仍用严格版（绝对散布），防双列正文误判。调用方需自行做 2 列长文本兜底。
 pub fn reconstruct_table_grid_tolerant(items: &[Region], page_w: f32) -> Option<TableGrid> {
-    reconstruct_grid(items, page_w, true)
+    reconstruct_grid(items, page_w, true, None)
 }
 
-fn reconstruct_grid(items: &[Region], page_w: f32, tolerant: bool) -> Option<TableGrid> {
+/// 表内嵌图专用（`gfm_adapter::reconstruct_table_with_embedded_image` 调用）。
+///
+/// 行距容差走**低分位**（p25）而非中位数：表格里嵌一张图时，含图那行被图撑高，
+/// 行间距变成「双峰」（实测 synth_samples.pdf 第 2 页 `[38, 77, 75, 36]`），
+/// 中位数落在高位（75）→ 容差 37.5 > 真实行间距 37 → `车载电子` 与
+/// `新能源组件` 被并成一行（`join_cell_items` 拼成 `车载电子新能源组件`）。
+/// p25（38.4 → 容差 19.2）避开高位，行分组即正确。
+///
+/// 只在此路径启用；`reconstruct_table_grid{,_tolerant}` 的行距语义逐字节不变
+/// （`row_tol_override = None` 走原 `relative_row_tol`）。
+pub fn reconstruct_table_grid_embedded_image(items: &[Region], page_w: f32) -> Option<TableGrid> {
+    let row_tol = robust_row_tol(items, page_w);
+    reconstruct_grid(items, page_w, false, Some(row_tol))
+}
+
+fn reconstruct_grid(
+    items: &[Region],
+    page_w: f32,
+    tolerant: bool,
+    row_tol_override: Option<f32>,
+) -> Option<TableGrid> {
     if items.len() < 4 {
         return None;
     }
@@ -63,8 +83,9 @@ fn reconstruct_grid(items: &[Region], page_w: f32, tolerant: bool) -> Option<Tab
     sorted.sort_by(|a, b| a.y_min.total_cmp(&b.y_min)); // y 升序：小=上（表头在顶部）
     let gap_thr = 0.012 * page_w;
     // 行距自适应：row_tol 用相对值（0.5×中位行距），随 dpi/尺度变化，避免
-    // 高 dpi 扫描件同列 y 抖动 > 绝对 4px 时行误分（C2）。
-    let row_tol = relative_row_tol(items, page_w);
+    // 高 dpi 扫描件同列 y 抖动 > 绝对 4px 时行误分（C2）。表内嵌图路径由
+    // 调用方传入低分位容差（见 `reconstruct_table_grid_embedded_image`）。
+    let row_tol = row_tol_override.unwrap_or_else(|| relative_row_tol(items, page_w));
     let rows = group_rows(&sorted, row_tol, gap_thr);
     // 只保留列数 >=2 的行（丢弃单格散落文本）
     let rows: Vec<Vec<TableCell>> = rows.into_iter().filter(|r| r.len() >= 2).collect();
@@ -233,6 +254,42 @@ fn relative_row_tol(items: &[Region], page_w: f32) -> f32 {
     tol.clamp(4.0, upper)
 }
 
+/// 表内嵌图路径的行距容差：粗分组行距的 **p25**（低分位）而非中位数。
+///
+/// 为什么不用 [`relative_row_tol`] 的中位数：含图那行被图撑高，行距呈「双峰」
+/// （synth_samples.pdf 第 2 页实测 `[38, 77, 75, 36]`，两个大值都来自含图行），
+/// 中位数 75 → 容差 37.5 > 真实行间距 37 → 相邻两行被并成一行。低分位取到
+/// 常态行距（38）→ 容差 19.2 < 37，行分组正确。
+///
+/// 粗分组用行高中位数（与 `relative_row_tol` 同口径），仅**统计口径**换成 p25。
+fn robust_row_tol(items: &[Region], page_w: f32) -> f32 {
+    let mut hs: Vec<f32> = items.iter().map(|it| it.height()).collect();
+    hs.sort_by(|a, b| a.total_cmp(b));
+    let rh = if hs.is_empty() { 10.0 } else { hs[hs.len() / 2] };
+    let mut sorted: Vec<&Region> = items.iter().collect();
+    sorted.sort_by(|a, b| a.y_min.total_cmp(&b.y_min));
+    let coarse = group_rows(&sorted, (rh * 0.8).max(2.0), 0.012 * page_w);
+    let ys: Vec<f32> = coarse.iter().map(|r| row_center_y(r)).collect();
+    if ys.len() < 2 {
+        return relative_row_tol(items, page_w);
+    }
+    let mut diffs: Vec<f32> = ys.windows(2).map(|w| (w[0] - w[1]).abs()).collect();
+    diffs.retain(|d| *d > 0.0);
+    if diffs.is_empty() {
+        return relative_row_tol(items, page_w);
+    }
+    diffs.sort_by(|a, b| a.total_cmp(b));
+    // p25：常态行距。至少 1 元素时 p25 == min，故单峰/双元素退化为 min——
+    // 对「宁可多切一行也不并行」的表内嵌图场景是安全侧。
+    let pitch = diffs[(diffs.len() - 1) / 4];
+    let upper = (0.3 * page_w).max(4.0);
+    let tol = 0.5 * pitch;
+    if tol.is_nan() || upper.is_nan() {
+        return 4.0;
+    }
+    tol.clamp(4.0, upper)
+}
+
 /// 首行是否真表头（保守判定）。false-positive（数据行当表头）比 false-negative
 /// 更坏：表头去重会删首数据行。规则：含表头关键词 / 文本显著短于数据行。
 fn is_header_row(row: &[TableCell], body: &[Vec<TableCell>]) -> bool {
@@ -348,6 +405,77 @@ fn join_cell_items(items: &[&Region]) -> String {
 /// TableGrid → `<table><thead>…</thead><tbody>…</tbody></table>`。
 /// 合并单元格：行内尾空 → colspan；高 cell（h > 1.5×行距）→ rowspan 并吞下方空位。
 pub fn table_grid_to_html(g: &TableGrid) -> String {
+    table_grid_to_html_impl(g, &[])
+}
+
+/// 表内嵌图表格 → HTML：在 [`table_grid_to_html`] 基础上，把**被内嵌图占用的列**
+/// 排除出「行内尾空 → colspan」推断（这些列逐格输出空 `<td></td>`）。
+///
+/// `img_x_ranges`：内嵌图在**文本坐标系**下的 x 区间（`(x_min, x_max)` 列表）。
+///
+/// # 为什么按「列」而不是按「格」或「整表」抑制
+///
+/// 「行内尾空 → colspan」是一个**启发式**：它假定行尾空格意味着左边那格横跨了它。
+/// 内嵌图破坏了这个假定——图占住某一列后，该列在**其他行**的空格不再是「被合并」，
+/// 而是「本格确实有图 / 确实为空」。synth_samples.pdf 第 2 页取证：
+///
+/// ```text
+/// 图 bbox（文本系）  x 443.2 → 614.5     列左边界  c0=81 c1=210 c2=312 c3=414
+/// 行1 智能终端  [.., .., "78.1%", 空 ]   ← 图不在这一行，格仍为空
+/// 行2 工业模组  [.., .., "69.3%", 空 ]   ← 图在这一行（y 276.7→358.4 覆盖 y=313）
+/// ```
+///
+/// 行1 的空格里**没有图**，按「格」抑制会漏掉它（依旧输出 `colspan="2"`）；
+/// 所以抑制粒度必须是**列**：列3 被行2 的图证明是一个真实独立的列，于是它在
+/// 行1 的空格按「本格为空」渲染，与真值 `<td></td>` 一致。
+///
+/// # 为什么不能整表抑制
+///
+/// 整表抑制会连带禁掉本表内**其他列**真实的合并单元格（真实扫描件的合并表头 /
+/// 跨行表头正依赖此推断）。按列抑制时，只有被图覆盖的列受影响，其余列的
+/// colspan 推断逐字节不变——`table_grid_to_html`（无图路径）完全不受影响。
+///
+/// # 只作用于数据行
+///
+/// 表头行（`table_grid_to_html_impl` 的 thead 段）**不**参与抑制：图落在数据格里，
+/// 表头的合并与图无关，且合并表头是既有承重功能（如 C.1 跨列表头）。故此处传入的
+/// 列号只影响 tbody。
+pub fn embedded_image_table_to_html(g: &TableGrid, img_x_ranges: &[(f32, f32)]) -> String {
+    let edges = col_left_edges(g);
+    let mut no_colspan = vec![false; g.cols];
+    for c in 0..g.cols {
+        // 列 c 的 x 区间 = [左边界, 下一列左边界)；末列右边界开放（+∞）。
+        let lo = edges[c];
+        let hi = edges.get(c + 1).copied().unwrap_or(f32::INFINITY);
+        if img_x_ranges.iter().any(|&(x0, x1)| x0 < hi && x1 > lo) {
+            no_colspan[c] = true;
+        }
+    }
+    table_grid_to_html_impl(g, &no_colspan)
+}
+
+/// 各列代表 x：该列**非补空格**（x>0）首格 x 的中位数，整列为空则回退 0.0。
+/// 与 `reconstruct_grid` 的 `col_centers` 同口径（补空格 x=0 会拉偏中位数，故先滤）。
+fn col_left_edges(g: &TableGrid) -> Vec<f32> {
+    (0..g.cols)
+        .map(|c| {
+            let mut xs: Vec<f32> = std::iter::once(&g.header)
+                .chain(g.rows.iter())
+                .filter_map(|r| r.get(c))
+                .filter(|cell| cell.x > 0.0)
+                .map(|cell| cell.x)
+                .collect();
+            if xs.is_empty() {
+                return 0.0;
+            }
+            xs.sort_by(|a, b| a.total_cmp(b));
+            xs[xs.len() / 2]
+        })
+        .collect()
+}
+
+/// colspan 抑制列标记（`embedded_image_table_to_html` 产出；全 false = 原行为）。
+fn table_grid_to_html_impl(g: &TableGrid, no_colspan: &[bool]) -> String {
     // 行距估计 = 相邻行首格 y 差的中位数（跨页边界跳变会拉大中位，抑制误判 rowspan）
     let mut ys: Vec<f32> = Vec::new();
     for row in std::iter::once(&g.header).chain(g.rows.iter()) {
@@ -385,12 +513,16 @@ pub fn table_grid_to_html(g: &TableGrid) -> String {
                 continue;
             }
             let cell = &g.rows[ri][c];
+            // 抑制列不发起 colspan，也不向右吞并相邻格。
             let mut colspan = 1;
-            while c + colspan < g.cols
-                && g.rows[ri][c + colspan].text.is_empty()
-                && !skip[ri][c + colspan]
-            {
-                colspan += 1;
+            if !no_colspan.get(c).copied().unwrap_or(false) {
+                while c + colspan < g.cols
+                    && g.rows[ri][c + colspan].text.is_empty()
+                    && !skip[ri][c + colspan]
+                    && !no_colspan.get(c + colspan).copied().unwrap_or(false)
+                {
+                    colspan += 1;
+                }
             }
             let mut rowspan = 1;
             if !cell.text.is_empty() && cell.h > pitch * 1.5 && pitch > 0.0 {
@@ -762,6 +894,110 @@ mod tests {
         let html = table_grid_to_html(&g);
         assert!(html.contains("colspan=\"2\""), "期望 colspan，got: {html}");
         assert!(html.contains("rowspan=\"2\""), "期望 rowspan，got: {html}");
+    }
+
+    /// 4 列 × 4 行，几何复刻 synth_samples.pdf 第 2 页：列左边界
+    /// c0=81 / c1=210 / c2=312 / c3=414，第 4 列（`趋势`）在**行1、行2** 为空
+    /// ——行2 的空格是内嵌 spark 图（文本已排除），行1 的空格是真值本来的空。
+    /// 两行都曾被误推断成 `colspan="2"`（`78.1%` / `69.3%` 跨两列）。
+    fn synth_page2_grid() -> TableGrid {
+        let cell = |text: &str, x: f32, y: f32| TableCell {
+            text: text.into(),
+            x,
+            y,
+            h: 24.0,
+        };
+        TableGrid {
+            cols: 4,
+            header: vec![
+                cell("产品线", 81.0, 198.0),
+                cell("2024Q2", 211.0, 198.0),
+                cell("2024Q3", 313.0, 198.0),
+                cell("趋势", 414.0, 197.0),
+            ],
+            rows: vec![
+                // 行1：col3 无图亦为空（真值 `<td></td>`）
+                vec![
+                    cell("智能终端", 82.0, 236.0),
+                    cell("72.4%", 210.0, 236.0),
+                    cell("78.1%", 313.0, 236.0),
+                    cell("", 0.0, 0.0),
+                ],
+                // 行2：col3 是内嵌图（文本已排除 → 空）
+                vec![
+                    cell("工业模组", 82.0, 313.0),
+                    cell("64.9%", 210.0, 313.0),
+                    cell("69.3%", 314.0, 313.0),
+                    cell("", 0.0, 0.0),
+                ],
+                vec![
+                    cell("车载电子", 83.0, 386.0),
+                    cell("81.2%", 210.0, 387.0),
+                    cell("83.5%", 312.0, 387.0),
+                    cell("一", 417.0, 394.0),
+                ],
+                vec![
+                    cell("新能源组件", 83.0, 423.0),
+                    cell("58.7%", 210.0, 425.0),
+                    cell("66.4%", 313.0, 425.0),
+                    cell("↑", 417.0, 424.0),
+                ],
+            ],
+            has_header: true,
+        }
+    }
+
+    /// 内嵌图占第 4 列 → 该列**不参与**「行内尾空 → colspan」推断：行1、行2 的
+    /// 尾空格逐格输出 `<td></td>`，第 4 列的列结构得以保留（与真值一致，图留空）。
+    ///
+    /// 关键：图 bbox 只覆盖行2 的 y（行1 那一行**并没有图**），但抑制必须按**列**
+    /// 生效——列3 被行2 的图证明是真实独立列，故它在行1 的空格按「本格为空」渲染。
+    #[test]
+    fn embedded_image_column_suppresses_colspan() {
+        let g = synth_page2_grid();
+        // 实测图 bbox（文本坐标系）x 443.2→614.5，落在第 4 列（x=414）内。
+        let html = embedded_image_table_to_html(&g, &[(443.2, 614.5)]);
+        assert!(
+            !html.contains("colspan"),
+            "图占用列不得推断 colspan，got: {html}"
+        );
+        assert!(html.contains("<td>78.1%</td><td></td>"), "行1 尾格留空: {html}");
+        assert!(html.contains("<td>69.3%</td><td></td>"), "行2 尾格留空: {html}");
+        // 非图列内容与表头不受影响。
+        assert!(html.contains("<td>趋势</td>"), "表头保留第 4 列: {html}");
+        assert!(html.contains("<td>↑</td>") && html.contains("<td>一</td>"));
+    }
+
+    /// 对照（防误伤）：同一条**无图**路径 `table_grid_to_html` 仍走原 colspan 推断，
+    /// 行1/行2 的尾空格照旧合并——证明抑制只由内嵌图触发，不是无差别关掉 colspan。
+    #[test]
+    fn plain_table_keeps_colspan_inference() {
+        let g = synth_page2_grid();
+        let html = table_grid_to_html(&g);
+        assert!(
+            html.contains("colspan=\"2\""),
+            "无图表必须保留原 colspan 语义，got: {html}"
+        );
+        assert!(html.contains("<td colspan=\"2\">78.1%</td>"), "got: {html}");
+        assert!(html.contains("<td colspan=\"2\">69.3%</td>"), "got: {html}");
+    }
+
+    /// 对照（粒度）：图只占第 4 列时，**其他列**真实的行内合并仍照推断出 colspan
+    /// ——证明抑制是按列窄化的，不会整表关掉 colspan。
+    #[test]
+    fn embedded_image_keeps_colspan_in_other_columns() {
+        let mut g = synth_page2_grid();
+        // 让行3 的 col2 变空（模拟该列存在真实合并单元格）：行尾空推断从 col1
+        // 起吞掉 col2 → `81.2%` 跨 col1+col2。
+        g.rows[2][2].text = String::new();
+        let html = embedded_image_table_to_html(&g, &[(443.2, 614.5)]);
+        // 第 3 列（未含图）仍推断 colspan="2"：81.2% 横跨 col2+col3。
+        assert!(
+            html.contains("<td colspan=\"2\">81.2%</td>"),
+            "非图列的 colspan 应保留，got: {html}"
+        );
+        // 且该合并**未**被图列污染——`一` 仍独立成格。
+        assert!(html.contains("<td>一</td>"), "图列未被吞并: {html}");
     }
 
     /// C1：纯数据表（无表头关键词、文本长）→ has_header=false；跨页续接

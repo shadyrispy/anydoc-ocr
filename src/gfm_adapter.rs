@@ -167,6 +167,93 @@ fn reconstruct_image_table(page: &StructureResult, page_w: f32) -> Option<TableG
     Some(grid)
 }
 
+/// 表内嵌图（table-with-image）：表格 bbox 内部含 `Image` 元素时走**本仓网格重建**，
+/// 绕开上游被内嵌图污染的 `html_structure`。
+///
+/// 为什么要重建（synth_samples.pdf 第 2 页取证）：表格里嵌一张图时，上游结构
+/// 模型把图所在的那一列**并进了相邻列**——实测 `cells` 里 (0,2)/(1,2)… 的
+/// `x_max` 全部越到 x≈730，而表格真实右边界只有 748 内的第 4 列（`趋势`，
+/// x≈414-452）。列 2 的 cell 覆盖了列 2 与列 3 两列，于是
+/// `split_ocr_box_at_cell_boundaries` 拿 overlapped 的 cell 边界去切跨列 OCR 框：
+/// `72.4%`（x=210-263）被 cell(1,0) 的右边界 215.8 切开，按宽度比例 5 字取
+/// 1 字 → `7` + `2.4%`；`车载电子`/`83.5%`/`66.4%` 同理被切碎。
+///
+/// 判据「表内含图」：**文本坐标系**下 table bbox 内部有 `Image` 元素中心点
+/// （用 [`norm_membership`]，与 `to_docir` 判定 `in_table` 同一套归一化尺度；
+/// layout bbox 与 text bbox 单位不同，见 [`page_scale`]）。
+///
+/// items 构造：**排除落在内嵌图 bbox 内的文本 region**（图内文字不该进表格；
+/// 本页图内零文本，但含图题/轴标签的图会命中此分支）。图内文本同时也不进正文
+/// ——`to_docir` 收集 regions 时已按 `in_table` 剔除，本函数只负责表内容。
+///
+/// 重建失败（列不齐 / 行数不足）返回 `None`，调用方回退 `html_structure`——
+/// 宁可输出被切碎的上游表，也不丢表。
+fn reconstruct_table_with_embedded_image(
+    page: &StructureResult,
+    table: &TableResult,
+    page_w: f32,
+    scale: (f32, f32, f32, f32),
+) -> Option<String> {
+    // 表内含图？Image 元素中心落在 table bbox 内。
+    let imgs: Vec<&oar_ocr::processors::BoundingBox> = page
+        .layout_elements
+        .iter()
+        .filter(|el| el.element_type == LayoutElementType::Image)
+        .map(|el| &el.bbox)
+        .filter(|ib| {
+            let cx = (ib.x_min() + ib.x_max()) / 2.0;
+            let cy = (ib.y_min() + ib.y_max()) / 2.0;
+            norm_membership(cx, cy, scale, &table.bbox)
+        })
+        .collect();
+    if imgs.is_empty() {
+        return None;
+    }
+    let mut blocks: Vec<Region> = Vec::new();
+    if let Some(regs) = &page.text_regions {
+        for r in regs {
+            let Some(t) = r.text.as_ref() else { continue };
+            let t = t.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let b = &r.bounding_box;
+            let cx = (b.x_min() + b.x_max()) / 2.0;
+            let cy = (b.y_min() + b.y_max()) / 2.0;
+            // 只取表内文本。
+            if !norm_membership(cx, cy, scale, &table.bbox) {
+                continue;
+            }
+            // 图内文字不进表。
+            if imgs.iter().any(|ib| norm_membership(cx, cy, scale, ib)) {
+                continue;
+            }
+            blocks.push(Region::from_top_left(
+                b.x_min(),
+                b.y_min(),
+                (b.x_max() - b.x_min()).max(1.0),
+                (b.y_max() - b.y_min()).max(1.0),
+                t.to_string(),
+            ));
+        }
+    }
+    // 严格列对齐 + 低分位行距（表内嵌图路径专用）：同列首格 x 散布 ≤ 0.02*page_w。
+    // 真实表格因图占位列不齐时返回 None → 上层回退 html_structure。
+    let grid = table_grid::reconstruct_table_grid_embedded_image(&blocks, page_w)?;
+    // 图占用的列不参与「行内尾空 → colspan」推断（见
+    // `table_grid::embedded_image_table_to_html` 的粒度论证）。图 bbox 是 layout
+    // 尺度，按 `page_scale` 的同一分母换算到 text 尺度，才能与网格列 x 比较。
+    let (tw, _th, lw, _lh) = scale;
+    let img_x_ranges: Vec<(f32, f32)> = imgs
+        .iter()
+        .map(|ib| (ib.x_min() / lw * tw, ib.x_max() / lw * tw))
+        .collect();
+    Some(table_grid::embedded_image_table_to_html(
+        &grid,
+        &img_x_ranges,
+    ))
+}
+
 /// 多页 StructureResult → DocIR（OCR 源 producer，P1.5）。
 ///
 /// 每页产出 source=`Ocr` 的 [`PageIR`]：正文行（阅读顺序 + 标题级别已赋）为
@@ -242,9 +329,10 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
             .filter(|el| el.element_type == LayoutElementType::Content && el.confidence >= 0.5)
             .map(|el| &el.bbox)
             .collect();
-        // #10 补全：aside/algorithm(→code)/reference 版面元素框，装配后回贴
+        // #10 补全：aside/algorithm(→code)/reference/chart 版面元素框，装配后回贴
         // kind（`mark_layout_kinds`）。这些行**不进 furniture**（aside/reference
-        // 的 markdown 形态是正文流普通段落，code 是原位 fenced block）。
+        // 的 markdown 形态是正文流普通段落，code 是原位 fenced block，chart 是
+        // 注释占位）。
         let kind_bboxes: Vec<(&oar_ocr::processors::BoundingBox, RegionKind)> = page
             .layout_elements
             .iter()
@@ -254,6 +342,11 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
                 LayoutElementType::Reference | LayoutElementType::ReferenceContent => {
                     Some((&el.bbox, RegionKind::Reference))
                 }
+                // #10 chart 票：块内文字（图内轴标签/图例/数据标签）回贴 Chart，
+                // 渲染层聚合成一个 `<!-- chart -->` 注释占位、不进正文流。
+                // 图注**不靠这里**——图注是独立的 `FigureTitle`/`ChartTitle`
+                // 元素，照常走普通正文流（见 `RegionKind::Chart` 文档的取证）。
+                LayoutElementType::Chart => Some((&el.bbox, RegionKind::Chart)),
                 _ => None,
             })
             .collect();
@@ -397,6 +490,16 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
         // 区域几何/文本已定型。
         out = mark_layout_index(out, &content_bboxes, scale);
         for table in &tables {
+            // 表内嵌图 → 本仓网格重建（绕开被图污染的上游 html_structure）。
+            // 不含图 / 重建失败 → 走下方原 html_structure 路径（逐字节不变）。
+            if let Some(html) = reconstruct_table_with_embedded_image(page, table, page_w, scale) {
+                let b = &table.bbox;
+                out.push(
+                    Region::new(b.x_min(), b.x_max(), b.y_min(), b.y_max(), html)
+                        .with_kind(RegionKind::TableHtml),
+                );
+                continue;
+            }
             if let Some(html) = &table.html_structure {
                 // #11b：表块几何 = 表格元素自带的 `bbox`（`TableResult.bbox`，
                 // 原图坐标）。此前恒退化框 → content_list v2 投影只能省略 bbox。
@@ -485,18 +588,19 @@ fn furniture_kind_of(ty: LayoutElementType) -> Option<RegionKind> {
 }
 
 /// #10 补全（2026-10-01）：版面 `AsideText` / `Algorithm` / `Reference`/
-/// `ReferenceContent` 元素内的行 → 回贴 [`RegionKind::Aside`] /
-/// [`RegionKind::Code`] / [`RegionKind::Reference`]。
+/// `ReferenceContent` / `Chart` 元素内的行 → 回贴 [`RegionKind::Aside`] /
+/// [`RegionKind::Code`] / [`RegionKind::Reference`] / [`RegionKind::Chart`]。
 ///
 /// 与 [`mark_layout_index`] 同构：只动 `Body`（标题/表格/家具/已回贴的不
 /// 覆盖），行框中心点落在版面元素 bbox 内（`norm_membership_union`）即回贴。
 /// 调用时机在段落合并/marker 配对之后——此时 Region 的 bbox 是行框或并段
 /// 并集框（stitch 快路行则携带块框），中心点仍落在所属版面元素内。
 ///
-/// 三类的 markdown 形态（MinerU `docvortex blocks.py` 实证）：aside/reference
+/// 四类的 markdown 形态（MinerU `docvortex blocks.py` 实证）：aside/reference
 /// 是**无标记普通段落**（渲染与 Body 同道，正文流位置不变）；code 走 fenced
-/// block。content_list v2：aside → `page_aside_text` 独立 item，reference →
-/// 相邻聚合 `reference_list`，code → `code` item。
+/// block；chart 走 `<!-- chart -->` 注释占位（块内文字丢弃）。content_list
+/// v2：aside → `page_aside_text` 独立 item，reference → 相邻聚合
+/// `reference_list`，code → `code` item，chart → `chart` item。
 fn mark_layout_kinds(
     mut regions: Vec<Region>,
     kind_bboxes: &[(&oar_ocr::processors::BoundingBox, RegionKind)],
@@ -1705,6 +1809,46 @@ mod tests {
         assert_eq!(same[0].kind, RegionKind::Body);
     }
 
+    /// #10 chart 票：chart bbox 内的行回贴 [`RegionKind::Chart`]，
+    /// **bbox 外的图注行保持 Body**（图注是独立 `FigureTitle` 元素）。
+    ///
+    /// 几何按 synth_samples.pdf 第 1 页实测等比缩放：chart 元素
+    /// `[129,358]-[696,642]`、图注 `figure_title` 在其上方（y=340-358，
+    /// 中心 349 <chart 框内）与下方（y=665-682）。
+    #[test]
+    fn chart_bbox_rows_marked_and_captions_stay_body() {
+        let scale = (100.0_f32, 100.0_f32, 100.0_f32, 100.0_f32);
+        let bb_chart = BoundingBox::from_coords(12.9, 35.8, 69.6, 64.2);
+        let bboxes = vec![(&bb_chart, RegionKind::Chart)];
+        let regions = vec![
+            // 图注（图上方，中心 y=34.9 在框外）→ 保持 Body
+            Region::new(33.9, 53.3, 34.0, 35.8, "图3-1分季度营业收入与成本对比"),
+            // 图内文字三行（中心都在框内）→ Chart
+            Region::new(20.0, 30.0, 36.7, 38.3, "171.2"),
+            Region::new(20.0, 30.0, 38.0, 39.8, "160"),
+            Region::new(20.0, 30.0, 40.5, 42.5, "140"),
+            // 图注（图下方，中心 y=67.4 在框外）→ 保持 Body
+            Region::new(25.0, 57.5, 66.5, 68.2, "图3-1分季度营业收入与成本对比 数据来源：内部财务台账"),
+        ];
+        let out = mark_layout_kinds(regions, &bboxes, scale);
+        let kind_of = |t: &str| {
+            out.iter()
+                .find(|r| r.text == t)
+                .map(|r| r.kind.clone())
+                .unwrap_or_else(|| panic!("文本 {t} 应在 IR 中"))
+        };
+        assert_eq!(kind_of("171.2"), RegionKind::Chart);
+        assert_eq!(kind_of("160"), RegionKind::Chart);
+        assert_eq!(kind_of("140"), RegionKind::Chart);
+        // 图注未被chart 框吞掉——这正是"图注靠独立 FigureTitle 元素、
+        // 不靠从 chart 块 text 里剥离"这条决策的几何前提。
+        assert_eq!(kind_of("图3-1分季度营业收入与成本对比"), RegionKind::Body);
+        assert_eq!(
+            kind_of("图3-1分季度营业收入与成本对比 数据来源：内部财务台账"),
+            RegionKind::Body
+        );
+    }
+
     // ── #9 修法 4：表内单元格"同一内容两份"去重 ──
 
     /// 表内公式：纯文本 + LaTeX 两份 → 取 LaTeX 那份（第 0 步对拍的 `X<br/>$X$`）。
@@ -1737,5 +1881,115 @@ mod tests {
     #[test]
     fn simplify_keeps_plain_text_input() {
         assert_eq!(simplify_table_html("裸文本"), "裸文本");
+    }
+
+    // ── C 线：表内嵌图（table-with-image）→ 本仓网格重建 ──
+    //
+    // 修法：`reconstruct_table_with_embedded_image` 对「table bbox 内含 Image
+    // 元素」的表改走 `table_grid` 网格重建，绕开被内嵌图污染的上游
+    // `html_structure`；不含图 / 重建失败一律回退原路径（golden 零漂移的依据）。
+
+    /// 上游被内嵌图污染的 `html_structure`：`72.4%` 的 OCR 框被 cell 边界切开，
+    /// 按宽度比例分配后变成 `7` + `2.4%`（synth_samples.pdf 第 2 页取证）。
+    const BROKEN_HTML: &str = "<table><tr><td>产品线</td><td>2024Q2</td><td>7</td>\
+         <td>2.4%</td></tr><tr><td>智能终端</td><td>72.4%</td></tr></table>";
+
+    /// 4 列 × 5 行表 + 落在 table bbox 内、**内部零文字**的 Image 元素。
+    ///
+    /// 几何按 synth_samples.pdf 第 2 页等比复刻，两个细节是回归的关键：
+    /// 1. 行距刻意双峰 `[38,77,75,36]`（含图那行被图撑高）——`relative_row_tol`
+    ///    的中位数会落在 77 上把末两行并成一行，故新路径必须走 p25 稳健估计；
+    /// 2. 额外给一条表外图注文本，把 text 侧 `th` 拉到与 layout 侧 `lh` 同量级
+    ///    ——否则 `norm_membership` 归一化后表 bbox 盖不住首行（真实页不是这样）。
+    ///
+    /// `col0_xs`  lets 单测注入首列 x 抖动，构造「列不齐 → 重建失败」样本。
+    fn page_table_with_embedded_image(col0_xs: [f32; 5], with_image: bool) -> StructureResult {
+        let rows: [[&str; 4]; 5] = [
+            ["产品线", "2024Q2", "2024Q3", "趋势"],
+            ["智能终端", "72.4%", "78.1%", ""],
+            // 第 4 列此行是图（真值里是 <img class="spark">），故无文本。
+            ["工业模组", "64.9%", "69.3%", ""],
+            ["车载电子", "81.2%", "83.5%", "—"],
+            ["新能源组件", "58.7%", "66.4%", "↑"],
+        ];
+        let row_y = [120.0_f32, 158.0, 235.0, 310.0, 346.0];
+        let mut trs = Vec::new();
+        let mut cells = Vec::new();
+        for (ri, row) in rows.iter().enumerate() {
+            for (ci, text) in row.iter().enumerate() {
+                cells.push(cell(ri, ci, text));
+                if text.is_empty() {
+                    continue;
+                }
+                let x = if ci == 0 { col0_xs[ri] } else { 260.0 + (ci as f32 - 1.0) * 140.0 };
+                // 首列窄（60）、其余列宽（120）：留出列间空隙，使 `col0_xs` 的
+                // 抖动在测试里只影响「列 x 对齐」判据，不会先触发行内聚类合并。
+                let w = if ci == 0 { 60.0 } else { 120.0 };
+                trs.push(tr(x, row_y[ri], x + w, row_y[ri] + 20.0, text));
+            }
+        }
+        // 表外图注：只影响 `page_scale` 的分母尺度，不进网格重建（非表内文本）。
+        trs.push(tr(20.0, 280.0, 80.0, 300.0, "（图注）"));
+        StructureResult {
+            layout_elements: if with_image {
+                // 图占第 4 列第 2 行的格位——该格在真值里是 <img class="spark">，
+                // 无文本。y 区间取得与第 3/4 行（第 4 列有 `—`/`↑`）不重叠。
+                vec![image_el(540.0, 180.0, 660.0, 240.0)]
+            } else {
+                Vec::new()
+            },
+            text_regions: Some(trs),
+            tables: vec![TableResult::new(
+                BoundingBox::from_coords(100.0, 100.0, 700.0, 390.0),
+                TableType::Wireless,
+            )
+            .with_cells(cells)
+            .with_html_structure(BROKEN_HTML)],
+            ..StructureResult::new("t", 0)
+        }
+    }
+
+    fn table_htmls(page: &StructureResult) -> Vec<String> {
+        to_docir(std::slice::from_ref(page), &[])
+            .pages
+            .iter()
+            .flat_map(|p| p.regions.iter())
+            .filter(|r| matches!(r.kind, RegionKind::TableHtml))
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    /// 表内含图 → 走网格重建：`72.4%` 完整（不被切成 `7` + `2.4%`），
+    /// 且输出与被污染的上游 `html_structure` 无关。
+    #[test]
+    fn embedded_image_table_uses_grid_reconstruction() {
+        let page = page_table_with_embedded_image([120.0; 5], true);
+        let htmls = table_htmls(&page);
+        assert_eq!(htmls.len(), 1, "表不得丢失");
+        let html = &htmls[0];
+        assert!(html.contains("<td>72.4%</td>"), "72.4% 应完整: {html}");
+        assert!(!html.contains(">7</td>"), "不得出现被切开的 7: {html}");
+        assert_ne!(html, BROKEN_HTML, "不应复用上游 html_structure");
+        // 其余被切碎的单元格同样完整。
+        for expect in ["智能终端", "78.1%", "64.9%", "69.3%", "81.2%", "83.5%", "58.7%", "66.4%"] {
+            assert!(html.contains(expect), "{expect} 缺失: {html}");
+        }
+        // 末两行未被并成一行（`车载电子新能源组件` 是行距双峰误并的症状）。
+        assert!(!html.contains("车载电子新能源组件"), "行被误并: {html}");
+    }
+
+    /// 不含图 → 逐字节走原 `html_structure` 路径（golden 零漂移的机制保证）。
+    #[test]
+    fn table_without_image_keeps_html_structure() {
+        let page = page_table_with_embedded_image([120.0; 5], false);
+        assert_eq!(table_htmls(&page), vec![simplify_table_html(BROKEN_HTML)]);
+    }
+
+    /// 含图但列 x 参差（首列散布 40 > `0.02*page_w`）→ 重建返回 `None` →
+    /// 回退 `html_structure`，表不丢。
+    #[test]
+    fn embedded_image_table_falls_back_when_columns_misaligned() {
+        let page = page_table_with_embedded_image([120.0, 130.0, 140.0, 150.0, 160.0], true);
+        assert_eq!(table_htmls(&page), vec![simplify_table_html(BROKEN_HTML)]);
     }
 }
