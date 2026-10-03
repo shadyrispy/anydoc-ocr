@@ -25,7 +25,7 @@ use crate::region::{NoiseKind, Region, RegionKind};
 ///
 /// 单测 `type_names_match_mineru_verbatim` 逐条钉死字面值——改名必须先改 MinerU 侧。
 ///
-/// 表是**完整性优先**：其中一部分本仓尚无 producer（algorithm / chart /
+/// 表是**完整性优先**：其中一部分本仓尚无 producer（algorithm /
 /// simple_table / complex_table / list / phonetic / md / code_inline 等），保留
 /// 常量是为"对齐面"本身，不是为消掉告警——故模块级 allow。
 #[allow(dead_code)]
@@ -97,10 +97,14 @@ fn page_items(page: &PageIR) -> Vec<Value> {
     // `_render_list`），被 Index 行/正文行/家具打断即拆开。
     // #10 补全：相邻连续的 `Reference` 条目聚合成一个 `reference_list` item
     // （v2.py `_reference_list_item`），被打断即拆开——与 index/list run 同构。
+    // #10 chart 票：相邻连续的 `Chart` 行聚合成**一个** `chart` item
+    // （一张图 = 一个 `ChartBlock`；`content` 收全部图内文字行），与
+    // render层 `collapse_chart_runs` 的聚合同构，两端口径一致。
     let mut items: Vec<Value> = Vec::new();
     let mut index_run: Vec<&Region> = Vec::new();
     let mut list_run: Vec<&Region> = Vec::new();
     let mut reference_run: Vec<&Region> = Vec::new();
+    let mut chart_run: Vec<&Region> = Vec::new();
     for r in page.regions.iter().filter(|r| !r.is_continues_prev()) {
         if r.kind == RegionKind::Index {
             if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
@@ -109,7 +113,23 @@ fn page_items(page: &PageIR) -> Vec<Value> {
             if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
                 items.push(v);
             }
+            if let Some(v) = chart_run_item(std::mem::take(&mut chart_run), page) {
+                items.push(v);
+            }
             index_run.push(r);
+            continue;
+        }
+        if r.kind == RegionKind::Chart {
+            if let Some(v) = index_run_item(std::mem::take(&mut index_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
+                items.push(v);
+            }
+            chart_run.push(r);
             continue;
         }
         if r.kind == RegionKind::Reference {
@@ -117,6 +137,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
                 items.push(v);
             }
             if let Some(v) = list_run_item(std::mem::take(&mut list_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = chart_run_item(std::mem::take(&mut chart_run), page) {
                 items.push(v);
             }
             reference_run.push(r);
@@ -127,6 +150,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
                 items.push(v);
             }
             if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
+                items.push(v);
+            }
+            if let Some(v) = chart_run_item(std::mem::take(&mut chart_run), page) {
                 items.push(v);
             }
             list_run.push(r);
@@ -141,6 +167,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
         if let Some(v) = reference_run_item(std::mem::take(&mut reference_run), page) {
             items.push(v);
         }
+        if let Some(v) = chart_run_item(std::mem::take(&mut chart_run), page) {
+            items.push(v);
+        }
         if let Some(v) = region_item(r, page) {
             items.push(v);
         }
@@ -152,6 +181,9 @@ fn page_items(page: &PageIR) -> Vec<Value> {
         items.push(v);
     }
     if let Some(v) = reference_run_item(reference_run, page) {
+        items.push(v);
+    }
+    if let Some(v) = chart_run_item(chart_run, page) {
         items.push(v);
     }
     items
@@ -264,6 +296,37 @@ fn reference_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {
     Some(Value::Object(item))
 }
 
+/// 一组相邻连续的 `Chart` 行 → 单个 `chart` item；空组 → `None`。
+///
+/// 形态逐字对齐 v2.py `_render_chart`（:263-281）的 `content` 四键。
+/// `content` 是**全部成员行的 span 顺次拼接**（图内文字在 markdown 端已按
+/// 定案丢弃，这里是它唯一的幸存处，见 `region_item` 的 `Chart` 分支注释）。
+/// bbox = 成员框并集（同 [`index_run_item`] 口径）——即整张图的外接框。
+fn chart_run_item(run: Vec<&Region>, page: &PageIR) -> Option<Value> {
+    if run.is_empty() {
+        return None;
+    }
+    let content: Vec<Value> = run.iter().flat_map(|r| spans_of(r)).collect();
+    if content.is_empty() {
+        return None; // 全空行不产出 item（与 index/list run 同口径）
+    }
+    let mut item = Map::new();
+    item.insert("type".into(), Value::String(ct::CHART.into()));
+    item.insert(
+        "content".into(),
+        json!({
+            "image_source": {"path": ""},
+            "content": content,
+            "chart_caption": [],
+            "chart_footnote": [],
+        }),
+    );
+    if let Some(b) = bbox_union(&run, page) {
+        item.insert("bbox".into(), json!(b));
+    }
+    Some(Value::Object(item))
+}
+
 /// 一组 region 的 bbox 并集（聚合块的几何），取不到归一分母或全无几何 → `None`。
 fn bbox_union(rs: &[&Region], page: &PageIR) -> Option<[i32; 4]> {
     let mut acc: Option<[i32; 4]> = None;
@@ -339,6 +402,33 @@ fn region_item(r: &Region, page: &PageIR) -> Option<Value> {
                 "image_source": {"path": ""},
                 "image_caption": [],
                 "image_footnote": [],
+            }),
+        ),
+        // #10 chart 票。形态逐字抄 MinerU `v2.py::_render_chart`（:263-281）：
+        // `image_source` + `content`（图内文字，`render_embedded_content(body.content)`）
+        // + `chart_caption` + `chart_footnote`。
+        //
+        // **与 basic 档的差别是有意的**：`content` 放本仓 OCR 读到的图内文字
+        // （basic 恒空串——`ChartBodyBlock(ImagePayloadContentBlock)` 的
+        // `content: str` 是类型层面的强制丢弃，为 VLM 二次填充预留，
+        // `postprocess/page_blocks.py:90-91` 置空）。markdown 端已按定案丢弃
+        // 这部分（只留 `<!-- chart -->`），结构化出口是它唯一的幸存处，
+        // 丢了就等于本仓白拿了一次 OCR。
+        //
+        // `image_source.path` 恒空串：本仓不产图片资产（markdown 端因此不写
+        // `![](…)` 死链），与 `Image` 分支同口径。
+        //
+        // `chart_caption`/`chart_footnote` 恒空数组：图注在本仓是**独立的
+        // `FigureTitle` 版面元素**、走普通正文流（见 `RegionKind::Chart` 文档
+        // 的取证），不是本块内的附属字段——这正是 basic 自身缺陷（`chart_caption`
+        // 与 `chart_footnote` 把同一图注重复输出两次）要避免的形状。
+        RegionKind::Chart => (
+            ct::CHART,
+            json!({
+                "image_source": {"path": ""},
+                "content": spans_of(r),
+                "chart_caption": [],
+                "chart_footnote": [],
             }),
         ),
         RegionKind::Index => (
@@ -837,6 +927,47 @@ mod tests {
             "〔2〕GJB 9001B…"
         );
         assert!(v[0][0]["content"].get("attribute").is_none(), "reference_list 无 attribute");
+    }
+
+    /// #10 chart 票：相邻连续 chart 行聚合成**一个** `chart` item
+    /// （`_render_chart` 的四键content：`image_source`/`content`/
+    /// `chart_caption`/`chart_footnote`），bbox = 成员框并集。
+    /// `content` 收图内文字——markdown 端已丢弃，结构化出口是它唯一幸存处。
+    #[test]
+    fn chart_runs_collapse_into_one_chart_item() {
+        let ch = |t: &str, y0: f32, y1: f32| {
+            let mut r = body(t);
+            r.y_min = y0;
+            r.y_max = y1;
+            r.kind = RegionKind::Chart;
+            r
+        };
+        let d = page_with(
+            PageDims::page_box_px(1000, 1000),
+            vec![
+                ch("171.2", 367.0, 383.0),
+                ch("160", 380.0, 398.0),
+                ch("140", 405.0, 425.0),
+            ],
+        );
+        let v = to_content_list_v2(&d);
+        assert_eq!(v[0].len(), 1, "一张图 = 一个 item");
+        assert_eq!(v[0][0]["type"], "chart");
+        let c = &v[0][0]["content"];
+        assert_eq!(c["image_source"]["path"], "", "本仓不产图片资产");
+        // 三行图内文字都在 content 里
+        let texts: Vec<&str> = c["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, vec!["171.2", "160", "140"]);
+        // 图注字段恒空（本仓图注是独立 FigureTitle 元素，走正文流）
+        assert_eq!(c["chart_caption"], json!([]));
+        assert_eq!(c["chart_footnote"], json!([]));
+        // bbox = 并集 [x_min,y_min,x_max,y_max] → 0–1000 归一化
+        assert_eq!(v[0][0]["bbox"], json!([10, 367, 100, 425]));
     }
 
     #[test]

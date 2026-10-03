@@ -41,6 +41,11 @@ pub const HEADING_LEVEL_MAX: usize = 6;
 /// 在那之前渲染层对它们零消费（与 `Body` 之外的既有类别一样不输出），
 /// 枚举先行的意义是让 #10 的投影层与单测有**可断言的落点**。
 ///
+/// **#10 补全后的现状**：`Code`/`Index`/`Aside`/`Reference`/`Chart` 已有
+/// producer 与渲染分支；`Image`/`Formula` **仍是零消费占位**（`Image` 的未来
+/// 行为是裁图落盘 + `![](images/…)`，与本仓 `Chart` 的"注释占位、不产资产"
+/// 是两条不同的线，勿混）。
+///
 /// `Footnote` 与 `Noise` 本步就有 producer（#10 例外项）：OCR 通路的
 /// `Footnote` 版面元素与页面家具（页眉/页脚/页码/印章区）不再静默丢弃，
 /// 而是以独立 kind 进 IR；渲染层**默认跳过**（输出逐字节不变），开关
@@ -62,7 +67,33 @@ pub enum RegionKind {
     /// 块内文字不进正文流（对齐 MinerU basic 的 image 块处理）。
     #[allow(dead_code)] // 占位变体：producer 未产（依赖 #10 样本），消费方是 #10 渲染分支
     Image,
-    /// 代码块（#6 第 5 步占位）：producer 未产。未来渲染为 fenced code block。
+    /// 图表块（#10 chart 票，2026-10-03）：版面 `Chart` 元素 bbox 内的行回贴
+    /// 本 kind（`gfm_adapter::mark_layout_kinds`，与 `Aside`/`Code` 同构）。
+    ///
+    /// **markdown 端丢弃块内文字**：`text` 暂存 OCR 读出的图内文字（轴标签/
+    /// 图例/数据标签），渲染层**不输出**它——只写一个 `<!-- chart -->` HTML
+    /// 注释占位。本仓不产图片资产，写 `![](…)` 是死链，故用注释占位。
+    ///
+    /// 与 MinerU basic 档的差别是**有意的**（勿"对齐"回去）：basic 把图内文字
+    /// 100% 丢弃（`ChartBodyBlock(ImagePayloadContentBlock)` 的
+    /// `content: str` 是类型层面的强制丢弃，为 VLM 二次填充预留，
+    /// `postprocess/page_blocks.py:90-91` 置空串），本仓 OCR 已经拿到这些文字，
+    /// 照抄即是无谓的信息损失。改用 HTML 注释是取"两头都要"：不把图内文字
+    /// 塞进正文流（对齐 basic 的可读性），又让"此处有图被有意略过"这件事
+    /// **可观测**（下游能区分"有图被略过"与"文档本来没图"）。
+    ///
+    /// **图注不靠本 kind 承载**：图注是**独立的 `FigureTitle` 版面元素**
+    /// （synth_samples.pdf 第1 页实测：chart 元素 `text` 的 15 行全是图内数据，
+    /// 无一行是图注；图注是同页两个 `figure_title` 元素，y=340-358 与
+    /// y=665-682，分别在 chart bbox `[358,642]` 的上方与下方）。图注照常走
+    /// 普通正文流（Body），因此本 kind 无需从 `text` 里剥离图注。
+    ///
+    /// 渲染层把**相邻连续**的 Chart 行聚合成**一个** `<!-- chart -->`（同一张图
+    /// 只留一个占位，对齐 MinerU「一个 ChartBlock 一个块」），位置在阅读序原处
+    /// ——图注因此自然落在占位前后。
+    Chart,
+    /// 代码块（#10 补全，2026-10-01）：版面 `Algorithm` 元素 bbox 内的行回贴
+    /// 本 kind。渲染为 fenced code block（连续 Code 行共享一个围栏）。
     #[allow(dead_code)] // 同上
     Code,
     /// 独立公式块（#6 第 5 步占位）：producer 未产。未来渲染为 `$$…$$`。

@@ -20,6 +20,15 @@ use crate::docir::{DocIR, PageSource};
 use crate::region::{NoiseKind, Region, RegionKind};
 use crate::table_grid::table_grid_to_html;
 
+/// 图表占位注释（#10 chart 票）。
+///
+/// **不带 bbox**（有意的）：markdown 里的坐标既不稳定（随页面尺寸/渲染 DPI
+/// 变）又与结构化出口重复——归一化 bbox 由 content_list v2 的 `chart` item
+/// 精确承载。裸 token 的好处是**可 grep**（下游按 `<!-- chart -->` 即可数出
+/// 一篇文档有几张图被有意略过），与 MinerU 的 `![Chart block](doc:…)` 同属
+/// "最小标记"思路。
+const CHART_PLACEHOLDER: &str = "<!-- chart -->";
+
 /// 渲染 DocIR 为 GFM 文本：按页分段（页号升序），段间空行，段两端 trim
 /// （与旧 `DocumentEmitter::finish` 一致，对齐 GFM 块语义）。
 pub(crate) fn render(doc: &DocIR) -> String {
@@ -52,11 +61,18 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
         //    #10 补全：`Aside`/`Reference` 与正文同道（MinerU `PageAuxTextBlock`
         //    /`RefTextBlock` 的 markdown 形态就是无标记普通段落）；`Code` 走
         //    fenced block（连续 Code 行共享一个围栏，见下方状态机）。
-        let bodies: Vec<&Region> = page.regions.iter().filter(|r| is_body_like(&r.kind)).collect();
-        /// 单个正文/目次行的渲染形态：目次 `- `，其余 [`Region::rendered_line`]。
+        let bodies: Vec<&Region> = collapse_chart_runs(
+            page.regions.iter().filter(|r| is_body_like(&r.kind)).collect(),
+        );
+        /// 单个正文/目次行的渲染形态：目次 `- `，图表 `<!-- chart -->`，
+        /// 其余 [`Region::rendered_line`]。
         fn body_line(r: &Region) -> String {
             if r.kind == RegionKind::Index {
                 format!("- {}", r.text)
+            } else if r.kind == RegionKind::Chart {
+                // 丢弃块内文字（图内轴标签/图例/数据标签），只留占位——见
+                // `RegionKind::Chart` 文档里与 MinerU basic 的取舍说明。
+                CHART_PLACEHOLDER.to_string()
             } else {
                 r.rendered_line().into_owned()
             }
@@ -74,6 +90,8 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
             // PDF 文字层 / OCR：标题（渲染后 `#` 开头）前后空行，正文行段落内单换行。
             PageSource::TextLayerPdf | PageSource::Ocr => {
                 let mut prev_index = false;
+                // #10 chart：占位块前后留空行用（`is_chart != prev_chart` 判据）。
+                let mut prev_chart = false;
                 // #10 补全：Code fence 状态机——进入 Code 输出 ```txt 开栏，
                 // 离开输出 ``` 闭栏 + 空行（GFM 围栏块独立）。连续 Code 行共享
                 // 一个围栏（MinerU `CodeBody.content` 同为块级原始内容）。
@@ -84,6 +102,7 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                 for r in &bodies {
                     let is_code = r.kind == RegionKind::Code;
                     let is_index = r.kind == RegionKind::Index;
+                    let is_chart = r.kind == RegionKind::Chart;
                     if is_code && !in_code {
                         in_code = true;
                         if !seg.is_empty() && !seg.ends_with("\n\n") {
@@ -104,6 +123,11 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                     if is_index != prev_index && !seg.is_empty() && !seg.ends_with("\n\n") {
                         seg.push('\n');
                     }
+                    // #10 chart：占位是独立 HTML 注释块，前 后各留一个空行
+                    // （与 Code 围栏块同口径），避免被并进相邻正文段。
+                    if is_chart != prev_chart && !seg.is_empty() && !seg.ends_with("\n\n") {
+                        seg.push('\n');
+                    }
                     let is_heading = r.is_heading();
                     if is_heading && !seg.is_empty() && !seg.ends_with("\n\n") {
                         seg.push('\n');
@@ -114,6 +138,7 @@ pub(crate) fn render_with_furniture(doc: &DocIR, emit: bool) -> String {
                         seg.push('\n');
                     }
                     prev_index = is_index;
+                    prev_chart = is_chart;
                 }
                 if in_code {
                     // 正文流结束仍有未闭合围栏（页尾即 Code 块尾）
@@ -246,6 +271,7 @@ fn regions_of(
 /// `Aside`/`Reference` 与 Body 同形态（MinerU markdown 为无标记普通段落），
 /// `Code` 也在正文流内原位输出（渲染循环里的 fence 状态机包裹）——四者
 /// 与 `Index`（`- ` 列表项）一样保持阅读顺序，不走段末追加。
+/// `Chart` 亦在正文流内原位输出（一个 `<!-- chart -->` 注释占位）。
 fn is_body_like(k: &RegionKind) -> bool {
     matches!(
         k,
@@ -254,7 +280,35 @@ fn is_body_like(k: &RegionKind) -> bool {
             | RegionKind::Aside
             | RegionKind::Reference
             | RegionKind::Code
+            | RegionKind::Chart
     )
+}
+
+/// 把**相邻连续**的 `Chart` 行压成**一个**（保留块内首行，其余丢弃）。
+///
+/// 一张图在 OCR 侧是**一个** `Chart` 元素 bbox 内的 N 行文字（synth 样本第1 页
+/// 实测 N=15：轴刻度/图例/数据标签），而 markdown 端只应留**一个**占位
+/// ——对齐 MinerU「一个 ChartBlock 一个块」（`ChartBodyBlock`），也避免输出
+/// 15 行重复的 `<!-- chart -->`。
+///
+/// 判据只有"正文流里相邻连续"（与 content_list 的 `index_run`/`list_run`
+/// 聚合同构）：若两张图之间被图注等正文行隔开，就分成两个占位——这正是
+/// "两张图"的正确语义。首行代表保留：它的 bbox 是块内首行框，占位落在图的
+/// 位置由它决定。
+///
+/// **非 Chart 行一律原样透传**（不改任何既有 kind 的输出）。
+fn collapse_chart_runs(bodies: Vec<&Region>) -> Vec<&Region> {
+    let mut out: Vec<&Region> = Vec::with_capacity(bodies.len());
+    let mut prev_was_chart = false;
+    for r in bodies {
+        let is_chart = r.kind == RegionKind::Chart;
+        if is_chart && prev_was_chart {
+            continue; // 同一张图的后续行：丢弃（占位已由首行给出）
+        }
+        out.push(r);
+        prev_was_chart = is_chart;
+    }
+    out
 }
 
 /// 取 Grid 区块的 HTML（调用处已由谓词保证类型）。
@@ -564,9 +618,9 @@ mod tests {
     }
 
     /// 占位变体（Image/Formula）：零消费——producer 未产，即便有人手工构造
-    /// 也不应出现在任何输出里。`Index` 已非占位（#10 INDEX 票有 producer），
+    /// 也不应出现在任何输出里。`Index` 已非占位（#10 INDEX 票有producer），
     /// 改由 [`index_entry_renders_as_list_item`] 单独钉住；`Code`/`Aside`/
-    /// `Reference` 自 #10 补全起有消费（下方三个用例）。
+    /// `Reference`/`Chart` 自 #10 补全起有消费（下方用例）。
     #[test]
     fn placeholder_variants_never_render() {
         let doc = DocIR {
@@ -582,6 +636,113 @@ mod tests {
         };
         assert_eq!(render(&doc), "");
         assert_eq!(render_with_furniture(&doc, true), "");
+    }
+
+    // ── #10 chart 票：图表注释占位 + 图注保留 + 块内文字丢弃 ──
+
+    /// chart 区域渲染出 `<!-- chart -->` 占位，**块内文字不进正文流**
+    /// （`text` 暂存的图内轴标签/图例/数据标签一律不输出）。
+    #[test]
+    fn chart_renders_placeholder_and_drops_inner_text() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 0.0, 5.0, "正文一段"),
+                    Region::new(0.0, 100.0, 10.0, 15.0, "171.2营业收入")
+                        .with_kind(RegionKind::Chart),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        let out = render(&doc);
+        assert_eq!(out, "正文一段\n\n<!-- chart -->");
+        // 块内文字确实没进输出
+        assert!(!out.contains("171.2"));
+        assert!(!out.contains("营业收入"));
+    }
+
+    /// 图注保留：图注是**独立的 FigureTitle 元素**，不在 chart 块内，
+    /// 照常走普通正文流，落在占位前后（阅读序原处）。
+    #[test]
+    fn chart_caption_is_preserved_around_placeholder() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 0.0, 5.0, "图3-1分季度营业收入与成本对比"),
+                    Region::new(0.0, 100.0, 10.0, 15.0, "0").with_kind(RegionKind::Chart),
+                    Region::new(0.0, 100.0, 20.0, 25.0, "图3-1分季度营业收入与成本对比 数据来源：内部财务台账"),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        let out = render(&doc);
+        assert_eq!(
+            out,
+            "图3-1分季度营业收入与成本对比\n\n<!-- chart -->\n\n图3-1分季度营业收入与成本对比 数据来源：内部财务台账"
+        );
+        // 图注出现两次是**原文如此**（图上方 + 图下方各一个figure_title），
+        // 不是 basic 那种 `chart_caption`/`chart_footnote` 重复渲染同一图注
+        // 的缺陷——本仓两个都是真实独立元素。
+        assert_eq!(out.matches("图3-1分季度营业收入与成本对比").count(), 2);
+    }
+
+    /// 相邻连续的 chart 行只出**一个**占位（一张图 = 一个块，对齐 MinerU
+    /// `ChartBlock`）；被正文行隔开则出两个占位（那是两张图）。
+    #[test]
+    fn consecutive_chart_lines_collapse_to_one_placeholder() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 10.0, 15.0, "171.2").with_kind(RegionKind::Chart),
+                    Region::new(0.0, 100.0, 20.0, 25.0, "营业收入")
+                        .with_kind(RegionKind::Chart),
+                    Region::new(0.0, 100.0, 30.0, 35.0, "0").with_kind(RegionKind::Chart),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(render(&doc), "<!-- chart -->");
+
+        // 两张图（中间隔一行正文）→ 两个占位
+        let doc2 = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![
+                    Region::new(0.0, 100.0, 10.0, 15.0, "a").with_kind(RegionKind::Chart),
+                    Region::new(0.0, 100.0, 20.0, 25.0, "夹在中间的正文"),
+                    Region::new(0.0, 100.0, 30.0, 35.0, "b").with_kind(RegionKind::Chart),
+                ],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        assert_eq!(
+            render(&doc2),
+            "<!-- chart -->\n\n夹在中间的正文\n\n<!-- chart -->"
+        );
+    }
+
+    /// 占位**不写** `![](…)` 图片语法——本仓不产图片资产，那会变成死链。
+    #[test]
+    fn chart_placeholder_is_not_image_markdown() {
+        let doc = DocIR {
+            pages: vec![PageIR {
+                page_no: 0,
+                regions: vec![Region::new(0.0, 100.0, 10.0, 15.0, "0")
+                    .with_kind(RegionKind::Chart)],
+                source: PageSource::Ocr,
+                dims: PageDims::default(),
+            }],
+        };
+        let out = render(&doc);
+        assert!(!out.contains("!["));
+        assert!(!out.contains(".png"));
     }
 
     // ── #10 补全：aside/reference 普通段落 + code fenced block ──
