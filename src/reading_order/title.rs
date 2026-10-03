@@ -24,6 +24,14 @@ pub fn title_level(text: &str) -> Option<usize> {
     if rest.trim().is_empty() {
         return None;
     }
+    // 编号后必须紧跟标题词（字母/汉字/数字）。紧跟标点说明这是正文里被切断的
+    // 数值行而非章条编号——如段落「…较上一年度增长 14.2%。其中…」在按行
+    // 切分后，行首 `14.2` 会被点分编号启发式命中，`.` 后的 `2` 吃成第二节，
+    // 剩下 `%。…` 当"标题文本"，于是一行普通数值被套上 `###` 并把段落截断。
+    match rest.trim().chars().next() {
+        Some(c) if c.is_alphanumeric() => {}
+        _ => return None,
+    }
     Some((dots + 2).clamp(2, 6))
 }
 
@@ -167,5 +175,38 @@ mod tests {
         assert_eq!(title_level("2024 年度报告"), None);
         // 三位及以下仍照旧（章条编号不会更长，但也不排除个别文档）
         assert_eq!(title_level("123 总则"), Some(2));
+    }
+
+    #[test]
+    fn decimal_or_percent_line_start_is_not_numbering() {
+        // 段落按行切断后行首只剩 `14.2%。…`：`14` 不足四位护栏，`.2` 被吃成
+        // 第二节，剩下 `%。…` 当标题文本 → 数值行套上 `###` 并截断段落。
+        // 复现：tests/samples/synth_samples.pdf 页1 文字层通路。
+        assert_eq!(title_level("14.2%。其中第四季度营业收入达到"), None);
+        assert_eq!(title_level("3.1%"), None);
+        // 编号后紧跟标题词（中文/西文）仍照旧命中
+        assert_eq!(title_level("2.1 分季度营收对比"), Some(3));
+        assert_eq!(title_level("1 绪论"), Some(2));
+        assert_eq!(title_level("2.1.1 细分"), Some(4));
+    }
+
+    /// #16 护栏的GJB 9001C 真实回归（GJB 全文 38 页，护栏前 173 标题 →护栏后 133，
+    /// **零新增**；40 处全是误判）。真值：MinerU 4.0.8 `--tier basic -p 20-24`
+    /// 对同一段落既不打 `#` 也不并入上级列表项——`1)` `2)` 各自独立成普通行。
+    #[test]
+    fn bracket_numbered_list_item_is_not_title() {
+        // 旧版把这40 行套成 `##`（`## 1)  过程；`），且因「标题强制独段」把
+        // 上行 `b)  建立下列内容的准则：` 截断——一个误判连带截断整段。
+        assert_eq!(title_level("1)  过程；"), None);
+        assert_eq!(title_level("2)  产品和服务的接收。"), None);
+        assert_eq!(title_level("3)  确定是否存在或可能发生类似的不合格。"), None);
+        // 半角/全角右括号、以及带尾随句号的形态一并覆盖（GJB 上两种都有）
+        assert_eq!(title_level("1)外部供方的绩效。"), None);
+        assert_eq!(title_level("2） 方法、过程和设备；"), None);
+        // 数值被全角右括号闭合：`（见 4.4）进行策划、实施和控制：`行首 `4.4`
+        // 吃成二级编号，旧版给 `###`，并把上一行「…对所需的过程（见」截断。
+        assert_eq!(title_level("4.4）进行策划、实施和控制："), None);
+        // 全角括号编号同样以标点收尾（GJB 目录残留「（5） （9）」曾被套 `##`）
+        assert_eq!(title_level("（5） （9）"), None);
     }
 }

@@ -13,6 +13,10 @@ third_party/dl/
 /fonts
 # 真实公文样本体积大，不入库；tests/samples 生成样本保留
 /tests/real_samples
+# 合成样本的中间资产（chart_bar.png / spark.png / seal.png）：由
+# tests/samples/gen/make_synth_samples.py 每次运行时重建（mkdir + 重绘），
+# 非真值来源。真值是 synth_samples_gt.json，真值载体是 synth_samples.pdf。
+/tests/samples/synth_assets/
 # MinerU 回归对照产物（36MB 输出/中间件），本地存档不入库
 /compare/
 # 根目录回归 scratch：真实样本 PDF 与其转换/对照 md（基线一律进 tests/golden）
@@ -38,3 +42,6 @@ third_party/dl/
 third_party/oar-ocr-core/.cargo-ok
 third_party/oar-ocr-core/Cargo.lock
 **/target
+# 历史重建 / 远端推送的一次性脚本（36 commit 重建链 + 通道探测），不入库
+/PUSH-GUIDE.md
+/rebuild-history.sh

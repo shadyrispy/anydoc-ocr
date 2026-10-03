@@ -1,0 +1,70 @@
+{
+  "_comment": "ground truth 由 tests/samples/gen/make_synth_samples.py 生成过程给出",
+  "page_size_pt": [
+    595,
+    842
+  ],
+  "pages": [
+    {
+      "page": 1,
+      "backlog": "#10 chart",
+      "kind": "chart",
+      "region": "页面中部（标题与图注之间）",
+      "expect_in_chart_block": [
+        "图 3-1 分季度营业收入与成本对比",
+        "营业收入",
+        "营业成本",
+        "报告期",
+        "金额（亿元）",
+        "第一季度",
+        "第二季度",
+        "第三季度",
+        "第四季度",
+        "128.5",
+        "142.3",
+        "156.8",
+        "171.2",
+        "96.2",
+        "104.5",
+        "112.1",
+        "118.9"
+      ],
+      "assert": "图内文字不并入正文流；图区与图注各自成块"
+    },
+    {
+      "page": 2,
+      "backlog": "#9 修法5",
+      "kind": "table_with_image",
+      "region": "第 2 行「工业模组」行「趋势」列单元格内",
+      "expect_image_in_table": true,
+      "assert": "折线图被判为 Image 且其 bbox 落在表格 bbox 内（图内无文字）"
+    },
+    {
+      "page": 3,
+      "backlog": "#7 ANYDOC_WIRELESS_CELLS",
+      "kind": "tight_wireless_table",
+      "region": "整页表格（8 行 6 列无线表，行高压缩至 1.0）",
+      "expect_in_table": [
+        "华东",
+        "华南",
+        "华北",
+        "华中",
+        "西南",
+        "东北",
+        "西北",
+        "合计",
+        "合计"
+      ],
+      "assert": "紧行高下无线表单元格不粘连、不丢行；供 ON/OFF 复测"
+    },
+    {
+      "page": 4,
+      "backlog": "#5a ANYDOC_SEAL_ARC",
+      "kind": "arc_seal",
+      "region": "页面右上角（38mm 见方）",
+      "expect_seal_arc_text": "江市市场监督管理局",
+      "expect_seal_straight_text": "档案专用",
+      "assert": "环排文字与横排文字各自处理；弧排默认关闭时该块可跳过"
+    }
+  ]
+}

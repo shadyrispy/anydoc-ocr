@@ -2239,3 +2239,186 @@ colspan/rowspan 落位完全一致），`wired_table` IDENTICAL。历史结论
 （2026-09-27）维持：**不采用为默认**——多付 129MB + 每页一次单元格检测换不来
 语义增益；紧行高做坏场景本机 samples 未复现（历史样本不在库），开关保留供
 语料复核。
+
+## #16 文字层标题误判：小数/百分比开头行被套 `###`（2026-10-03，已修）
+
+**触发**：合成样本 `tests/samples/synth_samples.pdf` 页1 文字层通路。段落
+「…较上一年度增长 14.2%。其中第四季度…」按行切断后，行首只剩 `14.2%。…`。
+`title_level`（`src/reading_order/title.rs`）的 ASCII 点分编号分支：`14` 不足
+四位年份护栏 → `.2` 被吃成"第二节" → 剩下 `%。…` 当"标题文本" → 数值行套上
+`### 14.2%。` 并把段落从中间截断。
+
+**连带症状**：`较上一年度增长` 的"一"被吞成 `较上半年增长`。**不是独立 bug**——
+段落被截断后重组时丢字，修好标题判定后自动恢复（`pdftotext` 确认 PDF 内为
+"较**一**年度增长"，本仓输出曾为"较上半年增长"）。
+
+**修法**（`title.rs:22-38`）：编号后必须紧跟标题词（`char::is_alphanumeric`），
+紧跟标点即判非编号。护栏覆盖 ASCII / 中文数字 / 括号数字三条分支。
+新增单测 `decimal_or_percent_line_start_is_not_numbering`（`14.2%。…`、`3.1%`
+判 `None`；`2.1 分季度营收对比`、`1 绪论`、`2.1.1 细分` 仍命中）。
+
+### GJB 9001C 全量回归：护栏修掉 40 处真误判，**零新增**（2026-10-03）
+
+护栏首个 golden 回归红在 `tests_samples_real_samples_gjb9001c_wenzi.pdf`
+（want `9ffac0283fd7039a` / got `77b89577e0e6164c`）。**首轮取证结论是错的**
+（曾判"标题 173 → 259、护栏把目录行判成标题"），重新逐行 diff 后纠正：
+
+| 版本 | 标题行数 | 目录点线误判 |
+|------|---------|-------------|
+| 护栏前 | 173 | 0 |
+| 护栏后 | **133** | 0 |
+
+- **减少 40 处，且新版零新增标题**（`diff | grep '^> #' ` 空集）；
+- 40 处全是**真误判**，形态两类：
+  1. **列表子项被当标题**（38 处）：`## 1)  过程；`、`## 2)  产品和服务的接收。`
+     ——GJB 正文里 `a)` `b)` 下挂的 `1)` `2)` `3)` 枚举项。旧版套`##` 后触发
+     `merge_into_paragraphs`的「标题强制独段」，**连带把上行截断**：
+     `b)  建立下列内容的准则：` 与 `1)  过程；` 被拆成两段。
+  2. **数值行被当标题**（2 处）：`### 4.4）进行策划、实施和控制：`（全角右括号
+     闭合的交叉引用，把上一行「…对所需的过程（见」截断）、`## （5） （9）`。
+
+**MinerU 4.0.8 真 CLI 对拍**（`mineru parse … --tier basic -p 20-24`，
+`/tmp/mineru_gjb2`）：同一段落 `c)  考虑:` 之后 MinerU 输出
+`1) 外部提供的过程…；` / `2) 由外部供方实施控制的有效性。`—— **独立成行、
+零 `#` 前缀、也不并入上级列表项**。护栏方向与上游真值一致。
+
+**"另一条路径"假设被否**：曾怀疑误判来自 `gfm_adapter::title_hints` /
+`vote_level` 字号投票路径（`title_hints` line 690）。**不成立**——GJB 文字版
+走 `pdf/text_layer.rs:800` 的 `title_levels(&lines, &[], true)`，hints 为空，
+字号投票（`merge_font_levels`）只在 `title_level` 判 `None` 后**补位**，
+不制造编号型误判。级联链条：`title_level` 返回值变 → `lines.rs:137` 的
+`is_heading` 变 → 段落合并边界移动 → 段级 `union_font_size` 变 →
+`merge_font_levels` 中位字号与阈值比较结果变（次生影响，非根因）。
+
+**golden 基线需重取**：`ANYDOC_GOLDEN_UPDATE=1` 重基线 `gjb9001c_wenzi`，
+并在BACKLOG 留此 diff 摘要作为审计凭据。
+
+**未覆盖**：本护栏只挡"编号后紧跟标点"。**行尾**的数值型伪标题（如句中
+`……增长 12.5%。` 恰在行尾）仍可能命中，需 `synth_samples` 页1 之外的语料复核。
+
+## #10 chart 输出口径定案（2026-10-03）
+
+**探针结论**：`pp-doclayoutv2` **判得出 `chart` 类**，且图内 OCR 文字全归入该块
+——`synth_samples.pdf` 页1 dump：`chart conf=0.98 box=(129,358)-(696,642) lines=15`，
+`text` 含全部轴标签/图例/数据标签；另有 `figure_title` ×2（conf 0.94/0.83）。
+**所以 #10 剩余缺口不是"识别"，而是"渲染形态"**。
+
+**MinerU basic 档实测**（4.0.8 已装，`mineru parse <pdf> --tier basic --pages 1`）：
+对 chart 区域**图内文字 100% 丢弃**，落 `chart` 父块 + `chart_caption` /
+`chart_body` / `chart_footnote` 三子块，其中 `chart_body.content = ""`（空串，
+非文字），markdown 端只渲染图注 + `![Chart block](doc:…)` 图片占位。
+源码根因：`docvortex/schema.py:603` `ChartBodyBlock(ImagePayloadContentBlock)`，
+`content: str` 是**类型层面的强制丢弃**（为 VLM 二次填充预留的槽位），非"图内
+文字无价值"判断；`postprocess/page_blocks.py:90-91` 置空串；chart 被列入
+`LOCAL_LAYOUT_IMAGE_BLOCK_BODY_TYPES`（`constants.py:65`）；chart 永不进原生
+表格解析（`tables.py:48-53`）。PDF 明确排除 base64（`parser/base.py:55`）。
+
+**定案口径（本仓取"方案 C"）**：输出 `<!-- chart -->` 占位 + 保留图注，
+**不照抄 basic 的信息损失**（本仓 OCR 已拿到 conf=0.98 的 15 行文字），但让
+丢弃**可观测**（下游能区分"此处有图被有意略过"与"文档本来没图"）。
+**不写 `![]()` 图片语法**——本仓不产图片资产，写出来是死链。
+若日后要给图内文字留出口，正确接法是进**可折叠旁路**（对齐 MinerU 自己的
+`_render_details`），默认关闭时与本口径一致。
+
+⚠️ 另记 basic 自身缺陷一处：图注被 `chart_caption` + `chart_footnote`
+**重复输出两次**，对齐时勿继承。
+
+**本轮只定口径，实现开票**：`RegionKind::Image` 目前是 `#[allow(dead_code)]`
+占位变体零消费（`src/region.rs:63`、`src/docir/render.rs:566`），产出
+`<!-- chart -->` 需新增 `RegionKind::Chart` + producer + 渲染分支 +
+content_list 投影（`ct::CHART` 常量已存在）+ golden 重基线。
+
+## #9 修法 5 判据可达性已证 + 真阻塞点更正（2026-10-03）
+
+**原判据「需要一个版面模型明确判为 Image 且落在表格 bbox 内的样本」从未被满足**
+——旧 `synth_samples.pdf` 页2 失败三要素：图 32mm 宽 + 透明底 + 无边框。
+
+**单变量对照实测**（4 变体，其余全同）：
+
+| 变体 | 边框 | 尺寸 | 图内文字 | 判定 |
+|---|---|---|---|---|
+| v1 | 有 | 55×26mm | 无 | `image` ⊆ table ✅ conf 0.574 |
+| v4 | 有 | 60×35mm | 无 | `image` ⊆ table ✅ conf 0.709 |
+| v5 | **无** | 60×35mm | 无 | 零 image 元素 ❌ |
+| v3 | 无 | 60×35mm | 2 字标题 | 零 image 元素 ❌ |
+| v2 | 无 | 60×35mm | 坐标轴+刻度 | `chart` ⊆ table ✅ conf 0.803 |
+
+→ **决定因素是边框**（`axis("off")` 会连 spines 一起不画，必须用显式
+`Rectangle` 叠 `zorder`），不是尺寸、不是图内文字。主样本按 v1 参数复现成功：
+`image conf=0.925 box=(445,281)-(617,364)`，`inside table = True`。
+**判据可达，已证。**
+
+**真阻塞点更正**（比"缺 image producer"更前置）：同页单变量对照——
+
+| 图边框 | image 元素 | markdown 表格输出 |
+|---|---|---|
+| 无 | 零 | 25 td，内容完整 ✅ |
+| 有 | `conf=0.925` ⊆ table | **15 td，`72.4%` 被撕成 `7`+`2.4%`，"子"字跨行** ❌ |
+
+→ **image 元素一旦落进表格 bbox，表格重建的文字→格位分配就崩**（按 y 邻近
+分配，被图的垂直跨度撕裂）。故修法顺序必须是：先让表格重建**容纳 image
+元素**（按 bbox 归属分配 + 图区域文字排除），再谈吸收/裁图落盘。
+另记 v2 暴露的同源缺陷：chart 的 OCR 文字（`10`/`本国`/`间司`）被错配进表格
+单元格、`趋势` 表头被塞进上一行格。
+
+**判据建议**（双通道，规避"边框决定可达性"这个偶然视觉特征——论文里表内
+插图多数无边框）：主通道接受 `image` **或** `chart` 且 bbox ⊆ table bbox；
+兜底通道在渲染侧按"table bbox 内非白像素占比 > 阈值且连通域孤立"判定。
+
+## 合成样本语料 `synth_samples`（2026-10-03）
+
+`tests/samples/synth_samples.pdf`（4 页 A4）+ `synth_samples_gt.json` +
+`synth_assets/`，生成器 `tests/samples/gen/make_synth_samples.py`（可复现，
+图内文字/数值全是源码常量 → **ground truth 由生成过程本身给出**）。
+
+| 页 | 目标 | GT 要点 |
+|---|---|---|
+| 1 | #10 chart | 图内 15 行文字应在 chart 块内、不并入正文流 |
+| 2 | #9 表内图 | 图被判 `image` 且 bbox ⊆ table bbox |
+| 3 | #7 紧行高无线表 | 8 行 6 列、`line-height:1.0`，供 `ANYDOC_WIRELESS_CELLS` 复测 |
+| 4 | #5a 弧形印章 | 环排"江市市场监督管理局"+ 横排"档案专用" |
+
+**造样本的意外收获**：页1 一次跑出 #16（`14.2%` 套 `###`）、#5a 现状复核
+（环排 0 识别，`seal conf=0.60` text=`5 档案专用 新`，五角星误识为"5"）、
+#10 chart 缺口定位、#9 判据可达性四项实证。**自造件的价值不在"补数据"，在
+"ground truth 已知 + 可定向命中缺口"**——OmniDocBench（HF 不通）虽有官方
+JSON/markdown GT，但不告诉你"这个块该判 chart"，且"版面判 Image 且落在表
+bbox 内"这种组合在真实数据里罕见且不可控。真实语料仍需补的只有 #7 紧行高
+现网件与 #5a 弧排真实件。
+
+## 构建环境坑：overlayfs 上 lld 链接大二进制必 SIGBUS（2026-10-03）
+
+**现象**：`./scripts/build-x64.sh test`（`--lib` / 集成测试）**100% 失败**，
+报`collect2: fatal error: ld terminated with signal 7 [Bus error]`；
+而 `build`（bin）正常。最小 crate（`/tmp/sigtest`）`cargo build` 正常。
+
+**根因**：rustc 默认 linker 是 `rust-lld`，它用 **mmap 写输出文件**。
+`target/debug/deps/anydoc_ocr-*` 的 test 二进制约 **480MB**，overlayfs
+（容器根文件系统）在这种规模下 mmap 写入触发 SIGBUS。`build` 产物
+（`target/debug/anydoc-ocr`）小且多为增量命中，故不受影响。
+
+**排除项**（都验过，不是原因）：内存 100GB available / SwapTotal 0 但
+MemAvailable 充足；`ulimit -a` 全项 unlimited；`df -i` inode 充足（256G /
+22G used）；手动 `mmap` 2GB 稀疏文件写入成功；最小 crate 正常。
+
+**可行解**（按代价排序）：
+1. `RUSTFLAGS="-C link-arg=-fuse-ld=bfd"` —— 换GNU ld，**实测有效**，
+   485MB test 二进制正常产出。⚠️ 代价：RUSTFLAGS 变更会触发**全量重编**
+   （970 crate / target 已18G），耗时 ~15-20 分钟。**且必须写进
+   `scripts/build-x64.sh` 或环境脚本，不能临时 export**——仓库
+   `.cargo/config.toml` 注释明确警告过RUSTFLAGS 会覆盖该配置。
+2. `CARGO_TARGET_DIR` 换文件系统 —— **不可行**：`/dev/shm` 是 tmpfs
+   8GB 且挂 `noexec`（`Permission denied (os error 13)`），容量也不够。
+
+**反模式（浪费了不少时间）**：
+- `RUSTFLAGS` 里加 `-C debuginfo=0` / `--no-mmap-output-file`：
+  前者同样触发全量重编且不解决链接；后者是 **lld 专属选项**，
+  配 bfd 会报 `unrecognized option`。
+- `CARGO_PROFILE_TEST_DEBUG=0`：也是全量重编（profile 变更 = 重编全部依赖）。
+- 反复重试同一命令：SIGBUS 是确定性失败，不是瞬时抖动。
+
+**建议**：把 `RUSTFLAGS="-C link-arg=-fuse-ld=bfd"` 固化进
+`scripts/build-x64.sh`（该脚本已export 一堆构建期变量，位置合适），
+或在本机`~/.cargo/config.toml` 的 `[target.x86_64-unknown-linux-gnu]`
+加 `rustflags = ["-C", "link-arg=-fuse-ld=bfd"]`（**不覆盖**仓库的
+aarch64 段配置）。
