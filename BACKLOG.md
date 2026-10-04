@@ -2807,7 +2807,8 @@ markdown 端丢弃但**保留在 content_list v2**。本次发现是它在 markd
 
 ## 依赖上游同步盘点（2026-10-04）
 
-`cargo update --dry-run` 显示 17 个可更新项。按「是否在本仓的行为面」分层：
+`cargo update --dry-run` 显示 17 个可更新项（本轮实取 16 项，差 1 项为
+`pdf-inspector` 自身，见下）。按「是否在本仓的行为面」分层：
 
 ### 已采纳：pdf-inspector 1.24.0 → 1.25.2（`daac2d4`，零回归）
 
@@ -2833,35 +2834,59 @@ Cargo 统一解析到 1.25.2。
 副作用（如实记录）：Cargo 顺带把 `windows-sys` 0.61.2 → 0.52.0
 （pdf-inspector 1.25.2 依赖更老版本）。Windows-only，Linux 构建无影响。
 
-### 未采纳（待决策）：oar-ocr / oar-ocr-core 0.9.2 → 0.10.0
+### 已采纳：oar-ocr / oar-ocr-core 0.9.2 → 0.10.0（`a38566e`，零回归）
 
-**上游变更极小**：仅 `structure.rs` 一个文件、57 行，且唯一实质改动是
-**CUDA arena shrinkage 默认开启**（防多页 PDF OOM：峰值19 GB → 9 GB，
-上游注释明确「byte-identical output」）。CPU-only 配置不受影响 → 对我们
-（CPU 推理）**预期零行为变化**。
+**上游变更极小**：wrapper 仅 `structure.rs` 一个文件 +57 行，core 仅 5 文件
+225 行。wrapper 的唯一实质改动是 **CUDA arena shrinkage 默认开启**（防多页
+PDF OOM：峰值 19 GB → 9 GB，上游注释明确「byte-identical output」）；core
+全是内部实现（CUDA arena 配置项 + SIMD 改用 `as_chunks`/`as_chunks_mut` 新 API）。
+CPU-only 路径不受影响 → 对我们**预期零行为变化**。
 
-**但本地 patch 与之重叠**：我们改了 `structure.rs` 10 处（layout preset 分支、
-残条保护、同内容保护、`mineru_processed` 透传、det 碎片合并、IoA 面积口径
-修正等，352 行含`stitching.rs`），与0.10.0 的改动**同文件**（行号相邻、
-内容不重叠）。需要人工 rebase 本地副本，不是纯 `cargo update` 能解决的。
+**本地 patch 需人工 rebase**（本仓在 `third_party/` 维护两份 vendored 副本）：
 
-风险与收益：
-- 收益：对 CPU 推理**无直接收益**（CUDA-only 特性）；主要价值是跟上上游安全修复。
-- 风险：rebase 352 行本地 patch 到新版本，可能引入 OCR 行为漂移；须重跑
-  全部 32 golden 快照 + 端到端对拍才能确认。
+| | 上游 0.10.0 改 | 我们改 | 撞? |
+|---|---|---|---|
+| core | `config/onnx.rs`、`inference/mod.rs`、`ort_infer_execution.rs`、`simd.rs` | — | 干净 |
+| core | `ort_infer_builders.rs` | 同文件（session 池化 + 输入名探测） | **撞** |
+| core | — | `layout_detection_adapter.rs`/`layout_detection.rs`/`db.rs`/`processors/mod.rs`/`image.rs` + 2 新文件 | 干净 |
+| wrapper | `structure.rs` | 同文件（10 处） | 位置相邻 |
+| wrapper | — | `stitching.rs`（表格 cell 回填） | 干净 |
 
-**建议**：单独立项做，不与常规依赖同步混在一起。验收标准是 golden 32 快照
-零漂移（当前基线已含 #9 分页标记）。
+**rebase 手法**：以 0.10.0 源码为基底重放本地 patch，而非反向。
+7 个文件 `patch -p1` 自动套用；wrapper 的 `structure.rs` 18 个 hunk 全部
+干净（30 行偏移正是上游那 3 处**纯新增**：`default_arena_shrinkage()` 函数
++ `build()` 里调用 + 1 条单测）。
 
-### 其余 15 项：传递依赖 / 纯工具库，下次批量带上
+**唯一冲突 `ort_infer_builders.rs` 的合并判据**：上游在 `OrtInfer` 加
+`run_options` 字段 + `arena_shrinkage_run_options()`，我们在 `from_config`
+同一函数体内加了 session 池化与输入名自动探测。关键观察是**两者互斥**：
+`run_options` 仅在 CUDA 下非空，而我们的 `session_pool_size()` 在
+CUDA/TensorRT 下强制池 = 1（onnxruntime#4829 要求 CUDA 驱动级串行）。
+故对首个 session 求一次 `run_options` 复用到全池即正确，`RunOptions` 内部
+是 `Arc<UntypedRunOptions>`（`ort` 2.0.0-rc.13）无 session 绑定。该互斥前提
+已写进代码注释 —— 否则日后有人开池会静默踩坑。
 
-`cc` 1.4.7→1.6.0、`glam` 0.33.10→0.33.12、`libc` 0.2.189→0.2.190、
-`uuid` 1.26.1→1.27.0、`zerocopy` 0.8.58→0.8.59、`lazy_static` 1.5.0→1.5.1、
-`find-msvc-tools` 0.1.13→0.1.14，以及 `js-sys`/`web-sys`/`wasm-bindgen*`
-系列（wasm-only，本仓不用）与新增 `tokio`（pdf-inspector 传递）。
+验收：lib **382 passed / 0 failed**（与基线一致）、golden **32 快照零漂移**
+（证实 arena shrinkage 在 CPU-only 路径无行为影响）。连带 `dirs` 6.0→7.0、
+`multiversion` 0.8→0.9（引入 `syn 3.0` 新依赖树，编译通过即证 API/MSRV 兼容）、
+`windows-sys` 0.52→0.61。
 
-风险低但**必须一起跑 golden**——`tokio` 是新增传递依赖，虽由
-pdf-inspector 引入且我们不直接用异步，需确认不改变线程/调度行为。
+### 其余 16 项：传递依赖，已批量采纳（`1401ec2`，零回归）
+
+按「是否在本仓行为面」分层，本批全部落在第二/三层：
+
+| 层 | 项 |
+|---|---|
+| 有行为面但影响为零 | `libc` 0.2.189→0.2.190、`uuid` 1.26.1→1.27.0、`zerocopy` 0.8.58→0.8.59（+derive）、`glam` 0.33.10→0.33.12 |
+| 纯构建工具链 | `cc` 1.4.7→1.6.0、`find-msvc-tools` 0.1.13→0.1.14、`lazy_static` 1.5.0→1.5.1 |
+| 平台专属（Linux 构建图里不存在） | `js-sys`/`web-sys`/`wasm-bindgen*` 共 8 项（wasm32 目标）、**`tokio` 1.53.2（新增）** |
+
+**`tokio` 的零影响是取证结论，不是推测**：`cargo tree -i tokio` 在 Linux
+依赖图中查不到该包 → 它来自 Windows/wasm 条件分支，编译期不参与，
+不可能改变线程/调度行为。原「需确认线程行为」的待办到此关闭。
+
+验收：build 通过、lib 382 passed、golden 32 快照**零漂移**。改动仅
+`Cargo.lock` 一个文件（+41/−31），无任何源码触碰。
 
 ### 已确认无需更新
 
