@@ -347,6 +347,11 @@ pub fn to_docir(pages: &[StructureResult], dims: &[Option<(u32, u32)>]) -> DocIR
                 // 图注**不靠这里**——图注是独立的 `FigureTitle`/`ChartTitle`
                 // 元素，照常走普通正文流（见 `RegionKind::Chart` 文档的取证）。
                 LayoutElementType::Chart => Some((&el.bbox, RegionKind::Chart)),
+                // #9 gap-B：图片元素 bbox 内的行回贴 Image，渲染层聚合成一个
+                // `<!-- image page:N -->` 注释占位、块内文字不进正文流。
+                // 与 Chart 的差别见 `RegionKind::Image` 文档（不落盘图片资产，
+                // 故不写 `![](…)` 死链）。
+                LayoutElementType::Image => Some((&el.bbox, RegionKind::Image)),
                 _ => None,
             })
             .collect();

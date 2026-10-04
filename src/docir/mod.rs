@@ -177,12 +177,26 @@ pub struct DocIR {
 /// ——两条通路历史上渲染风格就不同（见 [`PageSource`]），这里原样保留，
 /// #11 不改 markdown 的一个字节。
 pub(crate) fn finalize(doc: DocIR, fmt: OutputFormat, ocr_render: bool) -> String {
+    finalize_with_opts(doc, fmt, ocr_render, render::RenderOpts::from_env())
+}
+
+/// [`finalize`] 的**选项显式**版本（见 [`render::RenderOpts`]）。
+///
+/// 存在的理由同上：`RenderOpts` 一旦只经env 读取，测试就无法固定档位——
+/// `pdf::tests::merge_md` 断言的是「空页被丢弃后只剩两页段」，与页标记无关，
+/// 不该被 #9 gap-A 的默认档带着变。
+pub(crate) fn finalize_with_opts(
+    doc: DocIR,
+    fmt: OutputFormat,
+    ocr_render: bool,
+    opts: render::RenderOpts,
+) -> String {
     let mut doc = doc;
     passes::cross_page_table::run(&mut doc);
     match fmt {
         OutputFormat::Markdown => {
             let emit = ocr_render && std::env::var("ANYDOC_EMIT_FURNITURE").is_ok();
-            render::render_with_furniture(&doc, emit)
+            render::render_with_opts(&doc, emit, opts)
         }
         OutputFormat::ContentListV2 => content_list::to_content_list_v2_json(&doc),
     }

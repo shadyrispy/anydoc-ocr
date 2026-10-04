@@ -63,9 +63,28 @@ pub enum RegionKind {
     /// 渲染层原样追加，不二次加工——保证与旧 emitter 通路字节一致）。
     PreRendered,
     /// 图片块（#6 第 5 步占位）：`text` 暂存 OCR 读出的块内文字（若有）。
-    /// 未来行为（依赖 #10）：从渲染位图裁切落盘 + `![](images/…)` 引用，
-    /// 块内文字不进正文流（对齐 MinerU basic 的 image 块处理）。
-    #[allow(dead_code)] // 占位变体：producer 未产（依赖 #10 样本），消费方是 #10 渲染分支
+    ///
+    /// **#9 gap-B 起有 producer + 消费方**（2026-10-04）：版面 `Image` 元素
+    /// bbox 内的行回贴本 kind（`gfm_adapter::mark_layout_kinds`，与 `Chart`/
+    /// `Code` 同构），渲染层聚合成**一个** `<!-- image page:N -->` 注释占位、
+    /// 块内文字不进正文流。
+    ///
+    /// **为什么是注释而非 `![](images/…)`**：MinerU basic 写
+    /// `![Image block](doc:…/page:N/block:M)` 是因为它**产出了图片资产**（存进
+    /// doc store）。本仓不落盘图片，写 `![](…)` 是**死链**——比没有更糟（下游
+    /// markdown 渲染出破图）。沿用 #10 chart 分支已定的口径用 HTML 注释，可
+    /// grep、GFM 合法、不渲染。
+    ///
+    /// nuaa_tupian.pdf 实测：37 页共 2 个 `Image` 版面元素（另有 `HeaderImage` /
+    /// `FooterImage` 各 1 个属页眉页脚噪声，不接——见 `NoiseKind`），页 7/8 各
+    /// 一张 PDCA 示意图，与 MinerU 的 4 个 `![Image block]` 中的 2 个正文图
+    /// 对得上。
+    ///
+    /// **关掉占位（`ANYDOC_IMAGE_MARKER=0`）时 `text` 回到正文流**，不是丢弃
+    /// ——与 `Chart` 的恒丢弃不同。取舍依据见
+    /// `docir::render::collapse_runs` 的文档：Image 块内文字可能是读者需要的
+    /// 正文（nuaa 第 7 页 PDCA 图内的「起点/ 终点 / 输入 / 输出」），丢掉它
+    /// 会让逃生门关掉后输出**比不关更少**内容。
     Image,
     /// 图表块（#10 chart 票，2026-10-03）：版面 `Chart` 元素 bbox 内的行回贴
     /// 本 kind（`gfm_adapter::mark_layout_kinds`，与 `Aside`/`Code` 同构）。

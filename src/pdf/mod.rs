@@ -559,14 +559,23 @@ mod tests {
     }
 
     /// #11：`merge_hybrid` 返回 **pass 前** 的 DocIR（投影层要看到 IR），
-    /// 老断言是按 markdown 写的，这里补一步终渲染——口径与旧
+    /// 老断言是按markdown 写的，这里补一步终渲染——口径与旧
     /// `finalize_text_docir`（跨页表 pass + render）逐字节一致。
+    ///
+    /// 用 `finalize_with_opts(.., RenderOpts::OFF)`：本helper 下的断言验的是
+    /// **页序 / 空页丢弃 / 跨页表定格**，与 #9 gap-A/B 的开关无关，固定在
+    /// OFF 档才不会让失败信息指向错误的行。
     fn merge_md(
         text: DocIR,
         pages: &[(u32, oar_ocr::domain::structure::StructureResult)],
     ) -> String {
         let doc = merge_hybrid(text, pages, &[]).expect("merge ok");
-        crate::docir::finalize(doc, crate::docir::OutputFormat::Markdown, false)
+        crate::docir::finalize_with_opts(
+            doc,
+            crate::docir::OutputFormat::Markdown,
+            false,
+            crate::docir::render::RenderOpts::OFF,
+        )
     }
 
     /// 缺页 OCR 结果按真实页号插回：1(文字) + 2(OCR) + 3(文字) 顺序输出。
