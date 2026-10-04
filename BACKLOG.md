@@ -2915,6 +2915,65 @@ release 编译（各约 4.5 分钟），值得。`/tmp/vz2/anydoc-ocr` 那份旧
 包括 2 个图片占位（页 7/8）与 37 个页标记的位置——#9 的占位坐标判据
 不受 OCR 引擎版本影响。
 
+### 是否给上游提 PR：取证结论（2026-10-04）
+
+结论：**只提 `first_input_name` 一个 bug fix，池化不提。** 依据如下。
+
+#### 上游取证
+
+| 事项 | 取证结果 |
+|---|---|
+| 仓库 | `greatv/oar-ocr`（先前搜到的 `miltonlai013` / `asiandegener` 都是 fork） |
+| open issue 总数 | **1**（#185 paddle OCR V6 GPU 异常）——没有人在争池化 |
+| 相关 PR | **#93**（2026-02-09，0.6.1→0.6.2）`refactor(inference): unify OrtInfer to single multi-input/multi-output interface` |
+| #93 干了什么 | 合并 `OrtInfer2D/3D/4D` 进 `OrtInfer`，删固定维度类型别名，**新增 `input_names_from_model`** |
+
+**池化是 #93 重构时弄丢的**（docs.rs oar-ocr 0.2.0 源码逐行确认）：0.2.0 的
+`CommonBuilderConfig` 有完整 `session_pool_size: Option<usize>` 字段 +
+`get_session_pool_size()` + `validate()` 里的 `pool == 0` 报错 + 5 条单测。
+0.10.0 里该字段**彻底消失**，但同时：
+
+- 0.10.0 类型文档仍写 `/// Core ONNX Runtime inference engine with support for **pooling** and configurable sessions.`
+- `get_session(idx)` 仍写 `/// Gets a session from the **pool**.`
+- `infer()` 仍写 `// Acquire session lock (round-robin)`，代码仍按 `sessions.len()` 取模
+
+即**上游自己的文档承诺池化，构造器却硬编码 `vec![Mutex::new(session)]`（恒 1）**
+——文档与实现背离。这不是我们发明需求，是他们重构的残留缺口。
+
+#### 本地改动按「该不该提」分层
+
+| 改动 | 规模 | 判定 |
+|---|---|---|
+| `first_input_name` 输入名自动探测 | core 107 行内的一部分 | ✅ **提**。真 bug：硬编码 `"x"` 遇到声明 `image` 的模型（`seal_PP-OCRv4_det`）**推理直接失败且 CLI 不报错**。#93 刚新增了 `input_names_from_model`，方向一致，上游易接受 |
+| `db.rs` 传 `None` 而非 `Some("x")` | 11 行 | ✅ 随上一条走（其调用点） |
+| `session_pool_size` + 轮转激活 | 同 107 行内 | ❌ **不提**（见下实测） |
+| `fast_resize_rgb` | 48 行 + 新依赖 `fast_image_resize` | ❌ 我们的部署选择（ARMv8.0 NEON + 8GB 预算），their 场景未必成立 |
+| `mineru_layout.rs`(843) + `merge_det.rs`(234) | 1077 行新文件 | ❌ MinerU 复刻，下游需求非通用修复，提了必被关 |
+
+#### 池化不提的实测依据（32 核机器，每档 3 轮取中位）
+
+| 样本 | 池=1 | 池=2 | 池=4 | 池=8 | 峰值 RSS 1→8 |
+|---|---|---|---|---|---|
+| `gjb9001c_wenzi`（39 页纯文字） | **4.02s** | 6.21s (+54.5%) | 10.59s (+163%) | 13.59s (+238%) | 1.07 → 3.57 GB |
+| `nuaa_tupian`（37 页图文混排） | 67.27s | 58.17s (−13.5%) | 56.12s (−16.6%) | OOM 被杀 | 1.75 → 4.44 GB |
+
+**两个样本方向相反，且没有一方可推荐**：
+
+- GJB 是纯文字，推理已能吃满 intra-op 池；开池只是把 intra 从 32 降到
+  `32/pool`（`auto_intra_threads` 联动），**纯亏**——耗时涨 2.4 倍、内存涨 3.3 倍。
+- nuaa 确有 −16.6% 收益，但代价是内存 2.54 倍，且 **pool=8 直接 OOM 被 kill**
+  （残缺的 `.time` 文件只有 368 字节可证）。`nuaa` 是长文档流水线，2.5 GB 的
+  常驻代价换 16% 在服务端是亏的。
+
+**「实测 pool=4 无收益」的原注释需要更正**：`auto_intra_threads` 的 doc 写
+「实测 pool=4 无收益」，本轮实测是**分样本的**——GJB 显著变慢，nuaa 有 16.6%
+收益。「无收益」只在 GJB 类纯文字样本成立，说成全称结论是过度概括。已改。
+
+**输出一致性（池化的硬约束）**：21 个有效轮次（gjb 12 + nuaa 9）的输出 MD5
+**每样本各自唯一**（GJB 全 `c6b6f179…`、nuaa 全 `80bdb0cf…`）——池化**逐字节
+零影响**。这正是池化值得提的技术前提（若它会改结果，连带修复都不敢提）。
+但收益数据不支持，故仍不提。
+
 ### 已确认无需更新
 
 | crate | 锁定 | 原因 |

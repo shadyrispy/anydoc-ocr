@@ -120,9 +120,17 @@ fn session_pool_wanted() -> usize {
 ///
 /// `init_runtime` 的 auto 式 = `cores` 是为"P0-1b 引擎级串行、单 run 独占全核"
 /// 调的。池>1 后同时有 ≤pool 个 run 在跑，全局线程池仍是 `cores` 个 worker，
-/// 不降 intra 只会互相抢同一池（实测 pool=4 无收益，见 A/B 记录）。故池>1 时
-/// 把 auto intra 降为 `max(1, cores/pool)`——总线程≈核心数，页级并行才成立。
+/// 不降 intra 只会互相抢同一池。故池>1 时把 auto intra 降为 `max(1, cores/pool)`
+/// ——总线程≈核心数，页级并行才成立。
 /// 显式 `ANYDOC_ORT_INTRA_THREADS` / `cfg.ort_intra` 仍优先（调试覆盖）。
+///
+/// **实测是分样本的，不是全称结论**（2026-10-04，32 核，每档 3 轮取中位）：
+/// GJB 9001C（39 页纯文字）池 1/2/4/8 = 4.02/6.21/10.59/13.59s（**开池纯亏**，
+/// 纯文字页单 run 已能吃满 intra 池，降 intra 后总线程被页级并行摊薄）；
+/// nuaa 图文（37 页混排，含表格重建）= 67.3/58.2/56.1s，**池=4 有 −16.6%**，
+/// 但峰值 RSS 1.75→4.44 GB（×2.54），池=8 直接 OOM 被杀。
+/// 故默认保持 1；开池需按样本类型与内存预算判断，不是无脑提速开关。
+/// 完整数据见 BACKLOG「是否给上游提 PR：取证结论」。
 pub(crate) fn auto_intra_threads(cores: usize, pool: usize) -> usize {
     (cores / pool.max(1)).max(1)
 }
