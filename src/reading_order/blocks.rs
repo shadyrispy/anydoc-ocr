@@ -338,6 +338,26 @@ fn stitched_block_text(page: &StructureResult, blk: &LayoutElement) -> Option<St
             .map(|(n, _)| format!(" \\tag{{{n}}}"))
             .unwrap_or_default();
         let absorbed = num.map(|(_, raw)| raw).into_iter().collect();
+        // N4 降级：公式资产（`formula_m.onnx` + tokenizer）不在位时，上游 rec
+        // 给的不是 LaTeX 而是**无序ASCII 碎片**。硬套 `$$` 会产出畸形公式——
+        // `formula_mixed.pdf` 实测曾输出 `$$ 8+2\nC e−x²dx = $$`，定界符跨行
+        // 错位、式子无运算符，比不出公式更伤下游。
+        //
+        // 判据用「含裸换行」：真 LaTeX（公式识别模型的输出）是单行串，而 rec
+        // 碎片按识别框切分必然带换行。副作用为零——不依赖资产是否在位（那要
+        // 跨层传参），纯形态判据，有资产时的真 LaTeX 走原路不变。
+        //
+        // 降级形态：按行拆开各自成行，保留可读的ASCII 原样。语义上等于"公式块
+        // 退化成普通文本行"，与 `ocr_engine` 缺件告警里"公式块将不输出 LaTeX"
+        // 的设计意图一致——此前是实现没兑现这句承诺。
+        if text.contains('\n') {
+            let lines: Vec<String> = text
+                .split('\n')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Some(StitchedBlock { lines, absorbed });
+        }
         return Some(StitchedBlock {
             lines: vec![format!("$$ {text}{tag} $$")],
             absorbed,
@@ -720,6 +740,37 @@ mod tests {
         let out = texts(order_structure_boxed(&page, &regions));
         // 公式带定界符 + 编号并入；编号不独立成行；inline 公式不出
         assert_eq!(out, vec!["$$ V=IR \\tag{1} $$"], "got: {out:?}");
+    }
+
+    /// N4：公式资产缺位时rec 文本是**无序 ASCII 碎片**（含裸换行），不是
+    /// LaTeX。硬套 `$$` 会产出跨行错位的畸形公式——修复前 `formula_mixed.pdf`
+    /// 实测输出 `$$ 8+2\nC e−x²dx = $$`。降级为按行拆开的可读文本行。
+    #[test]
+    fn multiline_rec_fragment_is_not_wrapped_in_dollars() {
+        let page = StructureResult {
+            layout_elements: vec![el_text(
+                100.0,
+                100.0,
+                600.0,
+                160.0,
+                LayoutElementType::Formula,
+                Some(0),
+                "formula",
+                // 真值取自 formula_mixed.pdf 修复前的实际输出
+                "8+2\nC e−x²dx =",
+            )],
+            text_regions: Some(vec![tr(100.0, 110.0, 600.0, 150.0, "8+2")]),
+            region_blocks: None,
+            ..StructureResult::new("t", 0)
+        };
+        let regions = regions_of(page.text_regions.as_ref().unwrap());
+        let out = texts(order_structure_boxed(&page, &regions));
+        assert_eq!(out, vec!["8+2", "C e−x²dx ="], "got: {out:?}");
+        // 关键回归断言：不得出现任何 `$$`
+        assert!(
+            !out.iter().any(|l| l.contains("$$")),
+            "碎片行不得被套 $$ 定界符: {out:?}"
+        );
     }
 
     /// 元素无 stitch 文本 → 兜底走 region 装配（修法 1 前的行为，不得回归）。

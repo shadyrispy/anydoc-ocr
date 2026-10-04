@@ -476,15 +476,15 @@ fn build_analyzer(tier: OcrTier, layout: OcrLayout) -> Result<OARStructure> {
             .with_wireless_table_cell_detection(model_path(spec.wireless_cell_det))
             .use_wireless_table_cells_trans_to_html(true);
     }
-    // #8 A/B：表格**方向**矫正。默认**不挂**（`models::table_ori_wanted` 的成本
-    // 理由），`ANYDOC_TABLE_ORI` 存在且是 mineru 档才接。注意这是
-    // `with_table_orientation`——只转正"表格裁剪图"，与页面级
-    // `with_document_orientation`（本档 doc_ori 为空、刻意不接）是两个不同槽位：
-    // MinerU basic 有小模型版面时确实跑前者（window.py:389），但不跑后者。
-    // 复用同一张 pp-lcnet_x1_0_doc_ori 模型，按表逐个分类（0/90/180/270）。
+    // #8 表格**方向**矫正。N6 实测后**默认接**（`models::table_ori_wanted`
+    // 只在 `ANYDOC_TABLE_ORI=0` 时关），注意这是 `with_table_orientation`
+    // ——只转正"表格裁剪图"，与页面级 `with_document_orientation`（本档
+    // doc_ori 为空、刻意不接）是两个不同槽位：MinerU basic 有小模型版面时
+    // 确实跑前者（window.py:389），但不跑后者。复用同一张
+    // pp-lcnet_x1_0_doc_ori 模型，按表逐个分类（0/90/180/270）。
     if crate::models::table_ori_wanted() && tier.is_mineru() && !spec.table_ori.is_empty() {
         eprintln!(
-            "[anydoc-ocr] #8 A/B：ANYDOC_TABLE_ORI 已开，表格结构识别前逐个转正（额外加载 {}，6.8MB，$OAR_HOME 缓存）",
+            "[anydoc-ocr] #8：表格结构识别前逐个转正（{}，6.8MB，$OAR_HOME 缓存；ANYDOC_TABLE_ORI=0 可关）",
             spec.table_ori
         );
         builder = builder.with_table_orientation(model_path(spec.table_ori));

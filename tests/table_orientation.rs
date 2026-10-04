@@ -1,18 +1,24 @@
-//! #8 表格方向矫正（`ANYDOC_TABLE_ORI`）端到端回归。
+//! #8 表格方向矫正端到端回归。
 //!
-//! 子进程走真实 CLI（同 `wireless_table.rs`）：开关进 `EngineKey`，必须在进程启动前
-//! 定格；edition-2024 下 `set_var` 不安全。
+//! **N6 实测后翻默认**：`ANYDOC_TABLE_ORI` 现在默认**开**，`=0` 才关（见
+//! [`models::table_ori_wanted`](../src/models.rs) 的 A/B 数据表）。故本文件的
+//! "ON" = 不传该env（默认档）、"OFF" = `ANYDOC_TABLE_ORI=0`。
+//!
+//! 子进程走真实 CLI（同 `wireless_table.rs`）：该设置进 `EngineKey`，必须在进程
+//! 启动前定格；edition-2024 下 `set_var` 不安全。
 //!
 //! 前提（缺一即**跳过**，不当失败）：`OAR_HOME`/`ANYDOC_MODEL_DIR` 之一里有
-//! `pp-lcnet_x1_0_doc_ori.onnx`。否则开开关会触发 6.8MB auto-download，CI 上不该红
-//! （同 `wireless_table.rs` 对 129MB 件的处理口径）。
+//! `pp-lcnet_x1_0_doc_ori.onnx`。翻默认后它已是 `MINERU_ASSETS` 必需件（走
+//! auto-download），但 CI 上不该为了跑这三条契约去下 6.8MB——同
+//! `wireless_table.rs` 对 129MB 件的处理口径。
 //!
 //! 守的两件事（顺序即重要性）：
-//! 1. **开关不动正常表**——直立表 + 仓内全部既有表样本在 ON/OFF 下**逐字节相同**。
-//!    这是 #8 唯一的硬契约：它是"新增第二道方向信号"，不是"重做表格识别"。
-//!    实测（2026-09-27）：`table_upright` / `wired_table` / `wireless_span` /
-//!    `wireless_simple` / `image_table.pdf` / `rotated_table` 六件全等。
-//! 2. **开关确实修旋转表**——`table_rot90.pdf` 在 OFF 下是转置残局（3 行 × 5 列、
+//! 1. **默认档不动正常表**——直立表 + 仓内全部既有表样本在 ON/OFF 下**逐字节
+//!    相同**。这是 #8 唯一的硬契约：它是"新增第二道方向信号"，不是"重做表格
+//!    识别"。实测（2026-09-27）：`table_upright` / `wired_table` /
+//!    `wireless_span` / `wireless_simple` / `image_table.pdf` / `rotated_table`
+//!    六件全等。
+//! 2. **默认档确实修旋转表**——`table_rot90.pdf` 在 OFF 下是转置残局（3 行 × 5 列、
 //!    单元格被劈成 "C" / "herry" / "B" / "nana"），ON 下网格形状正确（每行 3 格、
 //!    ≥4 行、表头 Item/Quantity 就位）。
 //!    注意 ON 的 rec 仍不完美（"Price"→"rice"、"10"→"1"），故这里**只断言网格形状
@@ -67,8 +73,11 @@ fn run(pdf: &Path, base: &[(String, String)], extra: &[&str]) -> (Option<i32>, S
     for (k, v) in base {
         cmd.env(k, v);
     }
+    // N6 翻默认后 `ANYDOC_TABLE_ORI` **默认开**（见 `models::table_ori_wanted`），
+    // 故此helper 的 `extra` 是「**关**某个 gate」而非「开」：传 `("ANYDOC_TABLE_ORI", "0")`
+    // 得到关闭态，不传即默认开启态。`ANYDOC_TABLE_ORI=1` 与不传同义。
     for k in extra {
-        cmd.env(k, "1");
+        cmd.env(k, "0");
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -116,15 +125,15 @@ fn gate_leaves_upright_and_existing_tables_byte_identical() {
     ] {
         let pdf = sample(name);
         assert!(pdf.exists(), "缺样本 {name}");
-        let (co, off, eoff) = run(&pdf, &base, &[]);
-        assert_eq!(co, Some(0), "{name} OFF 应成功: {eoff}");
-        let (cn, on, eon) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
-        assert_eq!(cn, Some(0), "{name} ON 应成功: {eon}");
-        assert_eq!(off, on, "{name} 开 #8 开关后输出变了——该页没有旋转表，第二道方向信号不该改变结果");
+        let (co, on, eon) = run(&pdf, &base, &[]);
+        assert_eq!(co, Some(0), "{name} 默认档应成功: {eon}");
+        let (cn, off, eoff) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
+        assert_eq!(cn, Some(0), "{name} 显式关闭应成功: {eoff}");
+        assert_eq!(on, off, "{name} 关掉表格方向矫正后输出变了——该页没有旋转表，第二道方向信号不该改变结果");
     }
 }
 
-/// 开关生效要有痕迹：ON 运行时 stderr 打一行说明（6.8MB 的加载不能无声）。
+/// 生效要有痕迹：默认档运行时 stderr 打一行说明（6.8MB 的加载不能无声）。
 #[test]
 fn gate_announces_itself_when_enabled() {
     let _g = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
@@ -133,10 +142,10 @@ fn gate_announces_itself_when_enabled() {
         return;
     };
     let pdf = sample("table_upright.pdf");
-    let (_, _, err_on) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
-    assert!(err_on.contains("#8 A/B"), "开启时应在 stderr 说明: {err_on}");
-    let (_, _, err_off) = run(&pdf, &base, &[]);
-    assert!(!err_off.contains("#8 A/B"), "关闭时不该出现 #8 说明");
+    let (_, _, err_on) = run(&pdf, &base, &[]);
+    assert!(err_on.contains("#8"), "默认档应在 stderr 说明: {err_on}");
+    let (_, _, err_off) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
+    assert!(!err_off.contains("#8"), "显式关闭时不该出现 #8 说明");
 }
 
 /// 契约 2：旋转表在 ON 下网格形状正确，OFF 下是转置残局。
@@ -150,11 +159,11 @@ fn gate_uprights_rotated_table_grid() {
     let pdf = sample("table_rot90.pdf");
     assert!(pdf.exists(), "缺样本 table_rot90.pdf（gen_table_ori.py 生成）");
 
-    let (co, off, eoff) = run(&pdf, &base, &[]);
-    assert_eq!(co, Some(0), "OFF 应成功: {eoff}");
-    let (cn, on, eon) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
-    assert_eq!(cn, Some(0), "ON 应成功: {eon}");
-    assert_ne!(off, on, "旋转表在 ON 下必须与 OFF 不同，否则开关没接线");
+    let (co, on, eoff) = run(&pdf, &base, &[]);
+    assert_eq!(co, Some(0), "默认档应成功: {eoff}");
+    let (cn, off, eon) = run(&pdf, &base, &["ANYDOC_TABLE_ORI"]);
+    assert_eq!(cn, Some(0), "显式关闭应成功: {eon}");
+    assert_ne!(on, off, "旋转表在默认档必须与关闭态不同，否则 table_ori 没接线");
 
     // 真值（`tests/gen_table_ori.py`）：4 行数据 × 3 列。
     // OFF 实测 3 行 × 5 列（转置）；ON 实测每行 3 列、行数 ≥4。

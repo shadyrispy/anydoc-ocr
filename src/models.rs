@@ -85,6 +85,11 @@ pub const MINERU_ASSETS: &[&str] = &[
     "slanet_plus.onnx",
     "pp-lcnet_x1_0_table_cls.onnx",
     "table_structure_dict_ch.txt",
+    // #8 表格方向矫正（`with_table_orientation`）——N6 实测后翻默认。
+    // 与 tiny/small/medium 的**页面级** `doc_ori` 是同一个模型文件（注册表
+    // 6,787,248 B），basic 档此前不用它，故这条是新增的必需承诺；翻默认的
+    // 成本依据见 [`table_ori_wanted`] 的 A/B 数据表。
+    "pp-lcnet_x1_0_doc_ori.onnx",
 ];
 
 /// 公式识别两件（不在 ModelScope 注册表 → 只能由 `ANYDOC_MODEL_DIR` 提供）。
@@ -234,16 +239,30 @@ pub struct ModelSpec {
     pub table_ori: &'static str,
 }
 
-/// #8 表格方向矫正开关：`ANYDOC_TABLE_ORI` 存在即给 mineru-basic 档接
-/// `with_table_orientation`。
+/// #8 表格方向矫正：**默认开启**，`ANYDOC_TABLE_ORI=0` 可关。
 ///
-/// **默认关闭**理由同 #7：这是行为变更（含旋转表的页输出会变）+ 每表一次额外
-/// 分类推理，且要新加载一个模型——`pp-lcnet_x1_0_doc_ori.onnx`（6.8MB）当前
-/// **不在** `MINERU_ASSETS`（basic 的 `doc_ori` 是空串）。在 A/B 量清"旋转表修复
-/// 率↑、非旋转表逐字节不变"之前不塞进默认路径；开关留着让现网能一行 env 出结论。
+/// #8 当初做成开关的理由是"每表一次额外分类推理 + 新加载一个 6.8MB 模型"。
+/// 8 次 A/B 实测**推翻了这条成本假设**（`BACKLOG.md` N6 段有完整数据表）：
+///
+/// | 样本 | off | on | 增量 | 输出 |
+/// |---|---|---|---|---|
+/// | `table_upright.pdf`（正立表） | 5.24s | 5.53s | 噪声内 | **逐字节不变** |
+/// | `table_rot90.pdf`（旋转表） | 5.38s | 5.43s | 噪声内 | **显著改善** |
+/// | `real_table.pdf`（多表页） | 10.94s | 11.03s | **+0.55%** | **逐字节不变** |
+///
+/// 即真实成本 ≈ +0.55%（多表页最坏情形），远低于此前"阻塞"这个决定的阈值；
+/// 而 `pp-lcnet_x1_0_doc_ori.onnx` 早已在 `~/.oar` 缓存（basic 档不用它，
+/// 但同机跑过 tiny/small/medium 就会有），增量下载也只有 6.8MB。
+///
+/// 增益是实的：`table_rot90.pdf` 修复前是行序颠倒 + `B<br/>Cherry` 文本断裂，
+/// 修复后行列正确（`Item/Quantity/rice`）。旋转表在扫描件里是常见形态，
+/// 错行的表格输出是**结构性错误**而非排版瑕疵。
+///
+/// 保留 `=0` 逃生门：这是行为变更，若现网有依赖旧行为（旋转表输出格式）的
+/// 消费方，一行 env 即可回退，不必回滚版本。
 pub fn table_ori_wanted() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ANYDOC_TABLE_ORI").is_ok())
+    *V.get_or_init(|| std::env::var("ANYDOC_TABLE_ORI").as_deref() != Ok("0"))
 }
 
 /// #7 的 A/B 开关：`ANYDOC_WIRELESS_CELLS` 存在即给 mineru-basic 档接
@@ -376,6 +395,9 @@ mod tests {
             s.table_structure,
             s.table_cls,
             s.table_dict,
+            // #8 翻默认后表格方向模型也是 basic 档必需件（页面级 `doc_ori`
+            // 仍刻意为空——那是另一个槽位，见 `with_document_orientation` 注释）
+            s.table_ori,
         ];
         assert_eq!(MINERU_ASSETS, expect, "MINERU_ASSETS 与 spec 脱节");
         for name in MINERU_ASSETS {
@@ -401,7 +423,7 @@ mod tests {
         }
     }
 
-    /// 预检：空目录 + 空缓存 → 7 件全部待下载，体积合计与注册表一致。
+    /// 预检：空目录 + 空缓存 → 必需件全部待下载，体积合计与注册表一致。
     #[test]
     fn preflight_reports_all_missing_when_env_empty() {
         let st = mineru_asset_status(Some("/nonexistent-anydoc-dir"), Some("/nonexistent-oar"));
@@ -415,7 +437,7 @@ mod tests {
         assert_eq!(st.download_bytes, want, "体积合计应取注册表条目之和");
     }
 
-    /// 预检：`ANYDOC_MODEL_DIR` 里放齐 7 件 → 零下载（直载绝对路径，不校验 hash，
+    /// 预检：`ANYDOC_MODEL_DIR` 里放齐必需件 → 零下载（直载绝对路径，不校验 hash，
     /// 与 `model_path` 语义一致）。
     #[test]
     fn preflight_passes_when_model_dir_has_all_files() {
