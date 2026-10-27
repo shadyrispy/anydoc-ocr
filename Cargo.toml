@@ -16,7 +16,7 @@ memmap2 = "^0.9.11"
 # #11b-v2 文字层页框读取（MediaBox/CropBox 继承链）：pdf-inspector 的
 # `visible_page_box` 是 pub(crate)，用其同款 lopdf 复刻读取规则（不 vendor）
 lopdf = "^0.45.0"
-oar-ocr = { version = "=0.10.0", default-features = false, features = ["auto-download", "simd"] }
+oar-ocr = { version = "=0.10.2", default-features = false, features = ["auto-download", "simd"] }
 # 直接依赖 ort（与 oar-ocr-core 锁定的 =2.0.0-rc.13 同版本、特性完全镜像），
 # 仅为拿到进程级线程池 API（A：消除 rayon×ORT 线程超额订阅）。特性与上游一致，
 # Cargo 自动合一、不引入第二份、不改链接行为（仍走 ORT_LIB_PATH）。

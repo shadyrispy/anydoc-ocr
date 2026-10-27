@@ -73,6 +73,8 @@ impl OrtInfer {
             model_path: source.display_path(),
             model_name,
             run_options: None,
+            #[cfg(feature = "cuda")]
+            cuda_device: None,
         })
     }
 
@@ -92,6 +94,10 @@ impl OrtInfer {
         // subsequent run unless CUDA work is serialized at the driver level.
         Self::ensure_cuda_launch_blocking_if_needed(common);
 
+        // 0.10.2：cuda_device 探测（上游新增）。池化下所有 session 同配置同模型，
+        // EP 归属一致，沿用首个 session 的判定（与 run_options 同一 i==0 分支）。
+        #[cfg(feature = "cuda")]
+        let mut cuda_device: Option<i32> = None;
         let pool = session_pool_size(common.ort_session.as_ref());
         let mut sessions = Vec::with_capacity(pool);
         let mut first_input_name: Option<String> = None;
@@ -129,6 +135,23 @@ impl OrtInfer {
                 // session（见 `session_pool_size`），故只需对首个 session 求一次
                 // run_options；`RunOptions` 与 session 无绑定关系，可安全复用到全池。
                 run_options = Self::arena_shrinkage_run_options(common, &session)?;
+                #[cfg(feature = "cuda")]
+                {
+                    cuda_device = common
+                        .ort_session
+                        .as_ref()
+                        .and_then(|cfg| cfg.execution_providers.as_ref())
+                        .and_then(|eps| {
+                            eps.iter().find_map(|ep| match ep {
+                                crate::core::config::OrtExecutionProvider::CUDA {
+                                    device_id,
+                                    ..
+                                } => Some(device_id.unwrap_or(0)),
+                                _ => None,
+                            })
+                        })
+                        .filter(|&id| Self::session_has_cuda_allocator(&session, id));
+                }
             }
             sessions.push(Mutex::new(session));
         }
@@ -142,7 +165,6 @@ impl OrtInfer {
             (None, Some(detected)) => detected,
             (None, None) => "x".to_string(), // pool 恒 >=1，理论不可达
         };
-
         Ok(OrtInfer {
             sessions,
             next_idx: std::sync::atomic::AtomicUsize::new(0),
@@ -150,6 +172,8 @@ impl OrtInfer {
             model_path: source.display_path(),
             model_name,
             run_options,
+            #[cfg(feature = "cuda")]
+            cuda_device,
         })
     }
 

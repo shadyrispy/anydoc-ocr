@@ -46,6 +46,13 @@ struct Cli {
     /// 置的小模型 → 降 tiny/small/medium。详见 --help 末尾档位说明。
     #[arg(long, value_enum, default_value_t = OcrTier::MineruBasic)]
     ocr_tier: OcrTier,
+    /// **对比通道**：绕过主转换管线，直接走 oar_ocr::indra 原生 ONNX pipeline
+    /// （上游 0.10.1+），输出 indra 自带 Markdown。不做文字层回退/质量路由/
+    /// 表格后处理。与 --ocr-tier/--text-only/--format 互斥。模型不走
+    /// auto-download：设 ANYDOC_INDRA_DIR 或放 ./models/datalab-to/indra-ocr
+    /// （datalab-to/indra-ocr，OpenRAIL-M 许可）。
+    #[arg(long)]
+    indra: bool,
     /// OFD 强制走 OCR（重建表格结构）
     #[arg(long)]
     ofd_force_ocr: bool,
@@ -88,6 +95,61 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // --indra 对比通道：互斥检查 + 独立执行，不进主转换管线。
+    if cli.indra {
+        if cli.ocr_tier != OcrTier::MineruBasic {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 与 --ocr-tier 互斥（indra 是独立引擎，无档位概念）"),
+            ));
+        }
+        if cli.text_only {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 与 --text-only 互斥"),
+            ));
+        }
+        if cli.format != OutputFormatArg::Md {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 仅输出 Markdown（indra 自带格式，--format 不适用）"),
+            ));
+        }
+        if cli.pages.is_some() {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 暂不支持 --pages（全篇渲染）"),
+            ));
+        }
+        if cli.input == "-" {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 不支持 stdin 输入"),
+            ));
+        }
+        if let Err(e) = anydoc_ocr::validate_render_dpi(cli.dpi) {
+            exit_with_hint(&e);
+        }
+        let input = PathBuf::from(&cli.input);
+        if input.is_dir() {
+            exit_with_hint(&anydoc_ocr::ConvertError::new(
+                anydoc_ocr::ErrorKind::Unsupported,
+                anydoc_ocr::Stage::Convert,
+                String::from("--indra 仅支持单文档输入（对比通道不做目录批处理）"),
+            ));
+        }
+        let md = match anydoc_ocr::indra_path::convert_indra_to_markdown(&input, cli.dpi) {
+            Ok(md) => md,
+            Err(e) => exit_with_hint(&e),
+        };
+        write_single(&md, &cli.output)?;
+        return Ok(());
+    }
     // 审计 #9：--dpi 早期校验（NaN/Inf / 越界 [50,400] 立即退出）。库路径各通道
     // 内另有同语义闸（route_pdf / convert_ofd），这里只是 CLI 早失败、省掉
     // stdin 落盘等前置开销。

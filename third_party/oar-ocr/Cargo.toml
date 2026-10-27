@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "oar-ocr"
-version = "0.10.0"
+version = "0.10.2"
 authors = ["Wang Xin <xinwang614@gmail.com>"]
 build = false
 autolib = false
@@ -115,17 +115,17 @@ name = "text_recognition"
 path = "examples/text_recognition.rs"
 
 [dependencies.image]
-version = "0.25.6"
+version = "0.25.10"
 
 [dependencies.imageproc]
 version = "0.27.0"
 
 [dependencies.oar-ocr-core]
-version = "0.10.0"
+version = "0.10.2"
 default-features = false
 
 [dependencies.oar-ocr-derive]
-version = "0.10.0"
+version = "0.10.2"
 default-features = false
 
 [dependencies.rayon]
@@ -144,6 +144,30 @@ version = "1.0"
 [dependencies.tracing]
 version = "0.1"
 
+[dependencies.ort]
+version = "=2.0.0-rc.13"
+default-features = false
+features = ["std"]
+
+[dependencies.regex]
+version = "1.11.1"
+
+[dependencies.unicode-bidi]
+version = "0.3.18"
+
+[dependencies.unicode-normalization]
+version = "0.1.25"
+
+[dependencies.unicode-properties]
+version = "0.1.4"
+features = ["general-category"]
+default-features = false
+
+[dependencies.zip]
+version = "8.6"
+default-features = false
+features = ["deflate-flate2"]
+
 [dev-dependencies.ab_glyph]
 version = "0.2"
 
@@ -152,13 +176,10 @@ version = "4.5.42"
 features = ["derive"]
 
 [dev-dependencies.fontdb]
-version = "0.23"
+version = "0.24"
 
 [dev-dependencies.hayro]
-version = "0.7"
-
-[dev-dependencies.regex]
-version = "1.11.1"
+version = "0.8"
 
 [dev-dependencies.tempfile]
 version = "3.19"

@@ -45,3 +45,4 @@ third_party/oar-ocr-core/Cargo.lock
 # 历史重建 / 远端推送的一次性脚本（36 commit 重建链 + 通道探测），不入库
 /PUSH-GUIDE.md
 /rebuild-history.sh
+models/

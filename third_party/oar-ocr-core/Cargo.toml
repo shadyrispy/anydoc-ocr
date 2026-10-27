@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "oar-ocr-core"
-version = "0.10.0"
+version = "0.10.2"
 authors = ["Wang Xin <xinwang614@gmail.com>"]
 build = false
 autolib = false
@@ -84,7 +84,7 @@ version = "7.0"
 optional = true
 
 [dependencies.image]
-version = "0.25.6"
+version = "0.25.10"
 
 [dependencies.imageproc]
 version = "0.27.0"
@@ -164,7 +164,7 @@ optional = true
 default-features = false
 
 [dependencies.wide]
-version = "1.5"
+version = "1.6"
 optional = true
 
 [dev-dependencies.tempfile]

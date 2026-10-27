@@ -17,7 +17,7 @@
 //! * `--vis` - Enable visualization output
 //! * `--model-name` - Model name to explicitly specify the model type
 //! * `--score-threshold` - Score threshold for layout elements (default: 0.5)
-//! * `--device` - Device to use for inference (e.g., 'cpu', 'cuda', 'cuda:0')
+//! * `--device` - Device to use for inference (e.g., 'auto', 'cpu', 'cuda', 'cuda:0')
 //! * `<IMAGES>...` - Paths to input document images to process
 //!
 //! # Example
@@ -84,8 +84,8 @@ struct Args {
     #[arg(long)]
     dump_json: bool,
 
-    /// Device to use for inference (e.g., 'cpu', 'cuda', 'cuda:0')
-    #[arg(long, default_value = "cpu")]
+    /// Device to use for inference (e.g., 'auto', 'cpu', 'cuda', 'cuda:0')
+    #[arg(long, default_value = "auto")]
     device: String,
 }
 
@@ -236,15 +236,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let elements = &output.elements[0];
             info!("Detected {} layout elements", elements.len());
 
-            // Group elements by type
-            let mut type_counts = std::collections::HashMap::new();
+            // Group elements by type, sorted so the summary is stable across runs
+            let mut type_counts = std::collections::BTreeMap::new();
             for element in elements {
-                *type_counts.entry(element.element_type.clone()).or_insert(0) += 1;
+                *type_counts
+                    .entry(element.element_type.as_str())
+                    .or_insert(0) += 1;
             }
 
             info!("Layout element summary:");
             for (element_type, count) in type_counts {
-                let type_name = format_element_type(&element_type);
+                let type_name = format_element_type(element_type);
                 info!("  {}: {}", type_name, count);
             }
 

@@ -139,6 +139,9 @@ pub mod utils;
 // High-level OCR API (remains in main crate)
 pub mod oarocr;
 
+// Indra OCR, Datalab's ONNX page reader (its own pipeline)
+pub mod indra;
+
 // Re-export derive macros for convenient use
 pub use oar_ocr_derive::{ConfigValidator, TaskPredictorBuilder};
 
@@ -163,7 +166,7 @@ pub mod prelude {
     // High-level builder APIs
     pub use crate::oarocr::{
         EdgeProcessorConfig, OAROCR, OAROCRBuilder, OAROCRResult, OARStructure,
-        OARStructureBuilder, TextRegion,
+        OARStructureBuilder, PpOcrV6Size, TextRegion,
     };
 
     // Error Handling

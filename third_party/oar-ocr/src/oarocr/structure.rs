@@ -5,8 +5,8 @@
 //! and optionally integrate OCR for text extraction.
 
 use super::builder_utils::{
-    build_optional_adapter, default_cpu_region_batch_size, resolve_device_batch_sizes,
-    resolve_model_path, resolve_model_source,
+    apply_gpu_memory_budget, build_optional_adapter, default_cpu_region_batch_size,
+    resolve_device_batch_sizes, resolve_model_path, resolve_model_source,
 };
 use oar_ocr_core::core::config::OrtSessionConfig;
 use oar_ocr_core::core::traits::OrtConfigurable;
@@ -197,6 +197,51 @@ pub struct OARStructureBuilder {
     // Batch sizes
     image_batch_size: Option<usize>,
     region_batch_size: Option<usize>,
+    gpu_memory_budget: Option<usize>,
+}
+
+/// Detection thresholds and merge rules for a layout preset without an explicit
+/// config; PP-StructureV3 defaults cover the earlier 20/23-class models.
+fn default_layout_detection_config(model_name: &str) -> LayoutDetectionConfig {
+    match model_name {
+        "pp-doclayoutv2" => LayoutDetectionConfig::with_pp_doclayoutv2_defaults(),
+        "pp-doclayoutv3" => LayoutDetectionConfig::with_pp_doclayoutv3_defaults(),
+        _ => LayoutDetectionConfig::with_pp_structurev3_defaults(),
+    }
+}
+
+/// Resolves a `layout_model_name` preset, falling back to PP-DocLayout_plus-L.
+fn layout_model_config_for(name: &str) -> oar_ocr_core::domain::adapters::LayoutModelConfig {
+    use oar_ocr_core::domain::adapters::LayoutModelConfig;
+    // Match presets case- and separator-insensitively so the documented
+    // forms (e.g. `PicoDet-L_layout_17cls`, `RT-DETR-H_layout_17cls`,
+    // `PP-DocLayout_plus-L`) resolve correctly. Mirrors the normalization
+    // used by `region_model_name` below.
+    match name.to_lowercase().replace('-', "_").as_str() {
+        "picodet_layout_1x" => LayoutModelConfig::picodet_layout_1x(),
+        "picodet_layout_1x_table" => LayoutModelConfig::picodet_layout_1x_table(),
+        "picodet_s_layout_3cls" => LayoutModelConfig::picodet_s_layout_3cls(),
+        "picodet_l_layout_3cls" => LayoutModelConfig::picodet_l_layout_3cls(),
+        "picodet_s_layout_17cls" => LayoutModelConfig::picodet_s_layout_17cls(),
+        "picodet_l_layout_17cls" => LayoutModelConfig::picodet_l_layout_17cls(),
+        "rt_detr_h_layout_3cls" => LayoutModelConfig::rtdetr_h_layout_3cls(),
+        "rt_detr_h_layout_17cls" => LayoutModelConfig::rtdetr_h_layout_17cls(),
+        "pp_docblocklayout" => LayoutModelConfig::pp_docblocklayout(),
+        "pp_doclayout_s" => LayoutModelConfig::pp_doclayout_s(),
+        "pp_doclayout_m" => LayoutModelConfig::pp_doclayout_m(),
+        "pp_doclayout_l" => LayoutModelConfig::pp_doclayout_l(),
+        "pp_doclayout_plus_l" => LayoutModelConfig::pp_doclayout_plus_l(),
+        "pp_doclayoutv2" | "pp_doclayout_v2" => LayoutModelConfig::pp_doclayoutv2(),
+        "pp_doclayoutv3" | "pp_doclayout_v3" => LayoutModelConfig::pp_doclayoutv3(),
+        _ => {
+            tracing::warn!(
+                requested = %name,
+                "Unknown --layout-model-name preset; falling back to PP-DocLayout_plus-L. \
+                 This may apply the wrong class labels/preprocessing for your model."
+            );
+            LayoutModelConfig::pp_doclayout_plus_l()
+        }
+    }
 }
 
 /// Turns CUDA arena shrinkage on for a CUDA session config unless the caller
@@ -270,7 +315,48 @@ impl OARStructureBuilder {
             text_recognition_config: None,
             image_batch_size: None,
             region_batch_size: None,
+            gpu_memory_budget: None,
         }
+    }
+
+    /// Creates a PP-StructureV3-style document analysis pipeline.
+    ///
+    /// This is the stack the benchmark tool's `structure-v3` case runs:
+    /// PP-DocLayoutV3 layout detection, PP-OCRv6 Tiny text detection and
+    /// recognition (the structure pipeline OCRs many small region crops, where
+    /// the tiny recognizer's throughput wins and the larger layout and table
+    /// models already dominate memory), PP-LCNet table classification,
+    /// SLANeXt wired and SLANet+ wireless table structure recognition, the
+    /// RT-DETR-L wired cell detector, and the Chinese table structure
+    /// dictionary. With the `auto-download` feature the names resolve through
+    /// the model registry; without it they resolve as local paths like any
+    /// other model source. The returned builder is ordinary, so every setter
+    /// can still override anything.
+    ///
+    /// ```no_run
+    /// use oar_ocr::oarocr::OARStructureBuilder;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let structure = OARStructureBuilder::pp_structurev3().build()?;
+    /// # let _ = structure;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn pp_structurev3() -> Self {
+        use super::ocr::PpOcrV6Size;
+        let size = PpOcrV6Size::Tiny;
+        Self::new("pp-doclayoutv3.onnx")
+            .layout_model_name("PP-DocLayoutV3")
+            .with_ocr(
+                size.detection_model(),
+                size.recognition_model(),
+                size.character_dict(),
+            )
+            .with_table_classification("pp-lcnet_x1_0_table_cls.onnx")
+            .with_wired_table_structure("slanext_wired.onnx")
+            .with_wireless_table_structure("slanet_plus.onnx")
+            .with_wired_table_cell_detection("rt-detr-l_wired_table_cell_det.onnx")
+            .table_structure_dict_path("table_structure_dict_ch.txt")
     }
 
     /// Sets the ONNX Runtime session configuration.
@@ -278,6 +364,20 @@ impl OARStructureBuilder {
     /// This configuration will be applied to all models in the pipeline.
     pub fn ort_session(mut self, config: OrtSessionConfig) -> Self {
         self.ort_session_config = Some(config);
+        self
+    }
+
+    /// Sets a GPU memory budget in bytes without selecting a device.
+    ///
+    /// With `g = floor(bytes / GiB)`, image batches use `clamp(2*g - 6, 1, 8)`
+    /// and text-region batches use `clamp(12*g - 28, 4, 64)`, saturating negative
+    /// values at zero. Thus 4 GiB gives 2/20, and 8 GiB or more gives 8/64.
+    /// Explicit batch sizes take precedence. CUDA sessions cap each arena at half
+    /// the budget and default to idle memory recovery and SameAsRequested growth.
+    /// Existing smaller limits and explicit arena settings are retained. This is a tuning hint, not a device-wide cap:
+    /// other sessions, weights, and driver allocations also consume memory.
+    pub fn gpu_memory_budget(mut self, bytes: usize) -> Self {
+        self.gpu_memory_budget = Some(bytes);
         self
     }
 
@@ -295,6 +395,7 @@ impl OARStructureBuilder {
     /// `pp_doclayout_plus_l` are equivalent. Supported presets:
     /// - `PP-DocLayout_plus-L` (default)
     /// - `PP-DocLayout-S`, `PP-DocLayout-M`, `PP-DocLayout-L`
+    /// - `PP-DocLayoutV2`, `PP-DocLayoutV3`
     /// - `PP-DocBlockLayout`
     /// - `PicoDet_layout_1x`, `PicoDet_layout_1x_table`
     /// - `PicoDet-S_layout_3cls`, `PicoDet-L_layout_3cls`
@@ -506,13 +607,24 @@ impl OARStructureBuilder {
     ///
     /// * `model_path` - Path to the table cell detection model
     /// * `cell_type` - `"wired"`, `"wireless"`, or the corresponding [`TableType`]
+    ///
+    /// This replaces any model previously set for the same type with
+    /// [`with_wired_table_cell_detection`](Self::with_wired_table_cell_detection)
+    /// or [`with_wireless_table_cell_detection`](Self::with_wireless_table_cell_detection),
+    /// for example one chosen by [`pp_structurev3`](Self::pp_structurev3).
     pub fn with_table_cell_detection(
         mut self,
         model_source: impl Into<ModelSource>,
         cell_type: impl AsRef<str>,
     ) -> Self {
+        let cell_type = cell_type.as_ref().parse();
+        match cell_type {
+            Ok(TableType::Wired) => self.wired_table_cell_model = None,
+            Ok(TableType::Wireless) => self.wireless_table_cell_model = None,
+            _ => {}
+        }
         self.table_cell_detection_model = Some(model_source.into());
-        self.table_cell_detection_type = Some(cell_type.as_ref().parse());
+        self.table_cell_detection_type = Some(cell_type);
         self
     }
 
@@ -529,14 +641,24 @@ impl OARStructureBuilder {
     /// * `model_path` - Path to the table structure recognition model
     /// * `table_type` - `"wired"`, `"wireless"`, or the corresponding [`TableType`]
     ///
-    /// This component recognizes the structure of tables and outputs HTML.
+    /// This component recognizes the structure of tables and outputs HTML. It
+    /// replaces any model previously set for the same type with
+    /// [`with_wired_table_structure`](Self::with_wired_table_structure) or
+    /// [`with_wireless_table_structure`](Self::with_wireless_table_structure),
+    /// for example one chosen by [`pp_structurev3`](Self::pp_structurev3).
     pub fn with_table_structure_recognition(
         mut self,
         model_source: impl Into<ModelSource>,
         table_type: impl AsRef<str>,
     ) -> Self {
+        let table_type = table_type.as_ref().parse();
+        match table_type {
+            Ok(TableType::Wired) => self.wired_table_structure_model = None,
+            Ok(TableType::Wireless) => self.wireless_table_structure_model = None,
+            _ => {}
+        }
         self.table_structure_recognition_model = Some(model_source.into());
-        self.table_structure_recognition_type = Some(table_type.as_ref().parse());
+        self.table_structure_recognition_type = Some(table_type);
         self
     }
 
@@ -683,6 +805,12 @@ impl OARStructureBuilder {
     ///
     /// This method instantiates all adapters and returns a ready-to-use structure analyzer.
     pub fn build(mut self) -> Result<OARStructure, OCRError> {
+        for config in [
+            self.ort_session_config.as_mut(),
+            self.formula_ort_session_config.as_mut(),
+        ] {
+            apply_gpu_memory_budget(config, self.gpu_memory_budget)?;
+        }
         for (component, selection) in [
             ("table_cell_detection", &self.table_cell_detection_type),
             (
@@ -760,6 +888,11 @@ impl OARStructureBuilder {
             }
         }
 
+        self.ort_session_config = self.ort_session_config.map(OrtSessionConfig::resolve_auto);
+        self.formula_ort_session_config = self
+            .formula_ort_session_config
+            .map(OrtSessionConfig::resolve_auto);
+
         // Resolve every model/dict/tokenizer path through the auto-download
         // cache when the `auto-download` feature is enabled. With the feature
         // off these calls are infallible no-ops.
@@ -806,6 +939,7 @@ impl OARStructureBuilder {
             self.region_batch_size,
             1,
             cpu_region_batch_size,
+            self.gpu_memory_budget,
         );
 
         // Load character dictionary if OCR is enabled
@@ -841,49 +975,16 @@ impl OARStructureBuilder {
         let mut layout_builder = LayoutDetectionAdapterBuilder::new();
 
         // Use explicit model name or default
-        let layout_model_config = if let Some(name) = &self.layout_model_name {
-            use oar_ocr_core::domain::adapters::LayoutModelConfig;
-            // Match presets case- and separator-insensitively so the documented
-            // forms (e.g. `PicoDet-L_layout_17cls`, `RT-DETR-H_layout_17cls`,
-            // `PP-DocLayout_plus-L`) resolve correctly. Mirrors the normalization
-            // used by `region_model_name` below.
-            match name.to_lowercase().replace('-', "_").as_str() {
-                "picodet_layout_1x" => LayoutModelConfig::picodet_layout_1x(),
-                "picodet_layout_1x_table" => LayoutModelConfig::picodet_layout_1x_table(),
-                "picodet_s_layout_3cls" => LayoutModelConfig::picodet_s_layout_3cls(),
-                "picodet_l_layout_3cls" => LayoutModelConfig::picodet_l_layout_3cls(),
-                "picodet_s_layout_17cls" => LayoutModelConfig::picodet_s_layout_17cls(),
-                "picodet_l_layout_17cls" => LayoutModelConfig::picodet_l_layout_17cls(),
-                "rt_detr_h_layout_3cls" => LayoutModelConfig::rtdetr_h_layout_3cls(),
-                "rt_detr_h_layout_17cls" => LayoutModelConfig::rtdetr_h_layout_17cls(),
-                "pp_docblocklayout" => LayoutModelConfig::pp_docblocklayout(),
-                "pp_doclayout_s" => LayoutModelConfig::pp_doclayout_s(),
-                "pp_doclayout_m" => LayoutModelConfig::pp_doclayout_m(),
-                "pp_doclayout_l" => LayoutModelConfig::pp_doclayout_l(),
-                "pp_doclayout_plus_l" => LayoutModelConfig::pp_doclayout_plus_l(),
-                "pp_doclayoutv2" => LayoutModelConfig::pp_doclayoutv2(),
-                "pp_doclayoutv3" => LayoutModelConfig::pp_doclayoutv3(),
-                _ => {
-                    tracing::warn!(
-                        requested = %name,
-                        "Unknown --layout-model-name preset; falling back to PP-DocLayout_plus-L. \
-                         This may apply the wrong class labels/preprocessing for your model."
-                    );
-                    LayoutModelConfig::pp_doclayout_plus_l()
-                }
-            }
-        } else {
-            // Default fallback
-            crate::domain::adapters::LayoutModelConfig::pp_doclayout_plus_l()
+        let layout_model_config = match &self.layout_model_name {
+            Some(name) => layout_model_config_for(name),
+            None => crate::domain::adapters::LayoutModelConfig::pp_doclayout_plus_l(),
         };
 
-        layout_builder = layout_builder.model_config(layout_model_config);
-
-        // If caller didn't provide an explicit layout config, fall back to PP-StructureV3 defaults.
         let effective_layout_cfg = self
             .layout_detection_config
             .clone()
-            .unwrap_or_else(LayoutDetectionConfig::with_pp_structurev3_defaults);
+            .unwrap_or_else(|| default_layout_detection_config(&layout_model_config.model_name));
+        layout_builder = layout_builder.model_config(layout_model_config);
         layout_builder = layout_builder.with_config(effective_layout_cfg);
 
         if let Some(ref ort_config) = self.ort_session_config {
@@ -3645,7 +3746,12 @@ impl OARStructure {
         let results: Vec<_> = prepared_pages
             .into_iter()
             .zip(per_page_formulas)
-            .map(|(prepared, formulas)| self.complete_page(prepared?, formulas))
+            .enumerate()
+            .map(|(index, (prepared, formulas))| {
+                let mut result = self.complete_page(prepared?, formulas)?;
+                result.index = index;
+                Ok(result)
+            })
             .collect();
         tracing::debug!(
             "structure batch: pages={}, preprocess={:.1} ms, layout/region={:.1} ms, formula={:.1} ms, ocr={:.1} ms, complete={:.1} ms, total={:.1} ms",
@@ -3664,6 +3770,110 @@ impl OARStructure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pp_structurev3_preset_sets_the_benchmark_stack() {
+        let builder = OARStructureBuilder::pp_structurev3();
+        assert_eq!(
+            builder.layout_detection_model.as_path(),
+            Some(std::path::Path::new("pp-doclayoutv3.onnx"))
+        );
+        assert_eq!(builder.layout_model_name.as_deref(), Some("PP-DocLayoutV3"));
+        assert_eq!(
+            builder
+                .text_detection_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("pp-ocrv6_tiny_det.onnx"))
+        );
+        assert_eq!(
+            builder
+                .text_recognition_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("pp-ocrv6_tiny_rec.onnx"))
+        );
+        assert_eq!(
+            builder.character_dict_path.as_deref(),
+            Some(std::path::Path::new("ppocrv6_tiny_dict.txt"))
+        );
+        assert_eq!(
+            builder
+                .table_classification_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("pp-lcnet_x1_0_table_cls.onnx"))
+        );
+        assert_eq!(
+            builder
+                .wired_table_structure_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("slanext_wired.onnx"))
+        );
+        assert_eq!(
+            builder
+                .wireless_table_structure_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("slanet_plus.onnx"))
+        );
+        assert_eq!(
+            builder
+                .wired_table_cell_model
+                .as_ref()
+                .and_then(|m| m.as_path()),
+            Some(std::path::Path::new("rt-detr-l_wired_table_cell_det.onnx"))
+        );
+        assert_eq!(
+            builder.table_structure_dict_path.as_deref(),
+            Some(std::path::Path::new("table_structure_dict_ch.txt"))
+        );
+    }
+
+    #[test]
+    fn layout_presets_include_doclayout_v2_and_v3() {
+        for (name, expected) in [
+            ("PP-DocLayoutV2", "pp-doclayoutv2"),
+            ("pp_doclayout_v2", "pp-doclayoutv2"),
+            ("PP-DocLayoutV3", "pp-doclayoutv3"),
+            ("PP-DocLayout-V3", "pp-doclayoutv3"),
+        ] {
+            let config = layout_model_config_for(name);
+            assert_eq!(config.model_name, expected, "{name}");
+            assert_eq!(config.num_classes, 25, "{name}");
+        }
+        assert_eq!(
+            layout_model_config_for("unknown").model_name,
+            layout_model_config_for("PP-DocLayout_plus-L").model_name
+        );
+    }
+
+    #[test]
+    fn layout_presets_select_their_detection_defaults() {
+        let json = |config: LayoutDetectionConfig| serde_json::to_value(config).unwrap();
+        for (preset, expected) in [
+            (
+                "PP-DocLayoutV2",
+                LayoutDetectionConfig::with_pp_doclayoutv2_defaults(),
+            ),
+            (
+                "PP-DocLayoutV3",
+                LayoutDetectionConfig::with_pp_doclayoutv3_defaults(),
+            ),
+            (
+                "PP-DocLayout_plus-L",
+                LayoutDetectionConfig::with_pp_structurev3_defaults(),
+            ),
+        ] {
+            let name = layout_model_config_for(preset).model_name;
+            assert_eq!(
+                json(default_layout_detection_config(&name)),
+                json(expected),
+                "{preset}"
+            );
+        }
+    }
 
     #[test]
     fn arena_shrinkage_defaults_on_for_cuda_only() {
@@ -3690,6 +3900,16 @@ mod tests {
             OrtSessionConfig::new().with_execution_providers(vec![OrtExecutionProvider::CPU]);
         default_arena_shrinkage(&mut cpu);
         assert_eq!(cpu.arena_shrinkage, None);
+    }
+
+    #[test]
+    fn generic_table_setters_replace_same_type_preset_models() {
+        let builder = OARStructureBuilder::pp_structurev3()
+            .with_table_structure_recognition("custom_structure.onnx", "wired")
+            .with_table_cell_detection("custom_cells.onnx", "wired");
+        assert!(builder.wired_table_structure_model.is_none());
+        assert!(builder.wired_table_cell_model.is_none());
+        assert!(builder.wireless_table_structure_model.is_some());
     }
 
     #[test]

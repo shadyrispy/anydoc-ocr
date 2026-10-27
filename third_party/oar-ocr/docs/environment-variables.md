@@ -19,9 +19,15 @@ Runtime environment variables read by the oar-ocr crates. Project-specific varia
 | [`OAR_PADDLEOCR_VL_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable PaddleOCR-VL CUDA graphs |
 | [`OAR_GLMOCR_DISABLE_MTP`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable GLM-OCR MTP |
 | [`OAR_GLMOCR_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable GLM-OCR CUDA graphs |
+| [`OAR_JINAOCR_ENABLE_MTP`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Opt in to jina-ocr-v1 FastMTP speculation |
+| [`OAR_JINAOCR_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable all jina-ocr-v1 CUDA graphs |
+| [`OAR_DEEPSEEK_V2_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable jina-ocr-v1 target decode/verification graphs |
+| [`OAR_JINAOCR_DISABLE_LAZY_DECODE_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Eager MTP cooldown decoding (A/B numerics) |
 | [`OAR_HUNYUAN_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable HunyuanOCR CUDA graphs |
 | [`OAR_HUNYUAN_DISABLE_AR_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable HunyuanOCR AR CUDA graph |
 | [`OAR_MINERU_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable MinerU CUDA graphs |
+| [`OAR_OVISOCR2_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable the shared OvisOCR2/OvisOCR3 decoder CUDA graph |
+| [`OAR_XIAOMI_OCR_DISABLE_CUDA_GRAPH`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable the Xiaomi-OCR-0 decoder CUDA graph |
 | [`OAR_MINERU_DISABLE_GPU_SAMPLING`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable MinerU GPU sampling |
 | [`OAR_MINERU_DIFFUSION_DISABLE_GPU_SAMPLING`](#vl-performance-and-debug-overrides) | `oar-ocr-vl` | unset | Disable MinerU-Diffusion GPU sampling |
 | [`CUDA_COMPUTE_CAP`](#cuda-build-overrides) | `oar-ocr-vl` build | auto | CUDA PTX target architecture |
@@ -39,7 +45,7 @@ OAR_HOME=/data/oar-models cargo run --release --example ocr -- doc.jpg
 
 ## `OAR_VL_DTYPE`
 
-Overrides the automatic weight/compute dtype selection for Vision-Language models (PaddleOCR-VL, GLM-OCR, OvisOCR2, MonkeyOCRv2, HunyuanOCR, MinerU2.5/Pro, and MinerU-Diffusion).
+Overrides the automatic weight/compute dtype selection for Vision-Language models (PaddleOCR-VL, GLM-OCR, OvisOCR2, OvisOCR3, [OXR](../oar-ocr-vl/README.md#oxr-10), MonkeyOCRv2, HunyuanOCR, MinerU2.5/Pro, and MinerU-Diffusion).
 
 Accepted values (case-insensitive):
 
@@ -65,7 +71,7 @@ OAR_VL_ATTN_FULL_SEQ_THRESHOLD=0 cargo run --release --features cuda -p oar-ocr-
 
 ## VL Performance and Debug Overrides
 
-The following presence-based switches select portable fallbacks or disable optional accelerations. Setting a variable to any value enables the switch.
+The following presence-based switches select portable fallbacks, disable optional accelerations, or opt in to the ones that are off by default. Setting a variable to any value enables the switch.
 
 | Variable | Scope | Effect |
 |---|---|---|
@@ -74,20 +80,26 @@ The following presence-based switches select portable fallbacks or disable optio
 | `OAR_VL_METAL_NATIVE_SOFTMAX` | Metal VLM backends | Keep F16/BF16 eager-attention softmax in its input dtype instead of converting to F32 |
 | `OAR_VL_METAL_F32_SOFTMAX` | Metal VLM backends | Keep the default F32 round trip for eager attention; this takes precedence over `OAR_VL_METAL_NATIVE_SOFTMAX` |
 | `OAR_VL_DISABLE_METAL_SDPA` | Metal VLM backends | Disable fused Metal SDPA and use the portable grouped-query attention path |
-| `OAR_VL_DISABLE_CUDA_GRAPH` | PaddleOCR-VL, GLM-OCR, MinerU2.5/Pro | Disable decoder CUDA graph capture and replay |
+| `OAR_VL_DISABLE_CUDA_GRAPH` | PaddleOCR-VL, GLM-OCR, MinerU2.5/Pro, OvisOCR2, OvisOCR3, Xiaomi-OCR-0 | Disable decoder CUDA graph capture and replay |
 | `OAR_VL_DISABLE_SPECULATIVE` | GLM-OCR | Disable MTP speculative decoding |
 | `OAR_PADDLEOCR_VL_DISABLE_CUDA_GRAPH` | PaddleOCR-VL variants | Disable decoder CUDA graphs only for PaddleOCR-VL |
 | `OAR_GLMOCR_DISABLE_MTP` | GLM-OCR | Do not load or use the MTP predictor |
 | `OAR_GLMOCR_DISABLE_CUDA_GRAPH` | GLM-OCR | Disable autoregressive and MTP CUDA graphs |
+| `OAR_JINAOCR_ENABLE_MTP` | jina-ocr-v1 | Opt in to FastMTP speculative decoding (off by default: adaptive MTP won on none of the 18 OmniDocBench demo pages, RTX 4090 bf16; CUDA only). Output matches plain decoding in exact arithmetic — in bf16 the verification block's kernel batching can flip near-tie picks |
+| `OAR_JINAOCR_DISABLE_CUDA_GRAPH` | jina-ocr-v1 | Disable all jina-ocr-v1 CUDA graphs (target decode, verification, MTP draft) |
+| `OAR_DEEPSEEK_V2_DISABLE_CUDA_GRAPH` | DeepSeek-V2 backbone (jina-ocr-v1) | Disable the target decode and verification CUDA graphs |
+| `OAR_JINAOCR_DISABLE_LAZY_DECODE_GRAPH` | jina-ocr-v1 | A/B numerics knob: with MTP enabled, keep cooldown decoding eager (verification graph and KV snapshot/restore still run) |
 | `OAR_HUNYUAN_DISABLE_CUDA_GRAPH` | HunyuanOCR | Disable target, autoregressive, and DFlash CUDA graphs |
 | `OAR_HUNYUAN_DISABLE_AR_CUDA_GRAPH` | HunyuanOCR | Disable only the single-token autoregressive CUDA graph |
 | `OAR_MINERU_DISABLE_CUDA_GRAPH` | MinerU2.5/Pro | Disable decoder CUDA graphs |
+| `OAR_OVISOCR2_DISABLE_CUDA_GRAPH` | OvisOCR2, OvisOCR3 | Disable the decoder CUDA graph (lazy capture at the first decode step and bucket-ladder re-capture) |
+| `OAR_XIAOMI_OCR_DISABLE_CUDA_GRAPH` | Xiaomi-OCR-0 | Disable the decoder CUDA graph (same lazy-capture behavior as OvisOCR2's shared Qwen3.5 tower) |
 | `OAR_MINERU_DISABLE_GPU_SAMPLING` | MinerU2.5/Pro | Use the host sampling fallback instead of the CUDA greedy sampler |
 | `OAR_MINERU_DIFFUSION_DISABLE_GPU_SAMPLING` | MinerU-Diffusion | Use the host sampling fallback instead of the CUDA sampler |
 
-These switches are primarily useful for compatibility checks, debugging, and numerical comparisons. The accelerated paths remain enabled by default when the active device and dtype support them.
+These switches are primarily useful for compatibility checks, debugging, and numerical comparisons. Except where a row says otherwise, the accelerated paths remain enabled by default when the active device and dtype support them.
 
-OvisOCR2 uses the shared dtype, FlashAttention, and grouped-query-attention controls. It has no model-specific runtime environment override.
+OvisOCR2, OvisOCR3, and Xiaomi-OCR-0 use the shared dtype, FlashAttention, and grouped-query-attention controls, plus their model-specific `OAR_OVISOCR2_DISABLE_CUDA_GRAPH` / `OAR_XIAOMI_OCR_DISABLE_CUDA_GRAPH` switches listed above.
 
 ## CUDA Build Overrides
 

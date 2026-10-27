@@ -7,6 +7,7 @@ use crate::core::errors::OCRError;
 use ort::{session::Session, value::ValueType};
 use std::sync::Mutex;
 
+mod environment;
 mod model_source;
 pub mod session;
 mod tensor_output;
@@ -20,6 +21,7 @@ mod ort_infer_config;
 #[path = "ort_infer_execution.rs"]
 mod ort_infer_execution;
 
+pub use environment::initialize_ort_environment;
 pub use model_source::ModelSource;
 pub use ort_infer_builders::ensure_cuda_launch_blocking;
 pub use ort_infer_execution::TensorInput;
@@ -34,6 +36,9 @@ pub struct OrtInfer {
     pub(self) input_name: String,
     pub(self) model_path: std::path::PathBuf,
     pub(self) model_name: String,
+    /// Device with an actually registered CUDA allocator, not merely a requested EP.
+    #[cfg(feature = "cuda")]
+    pub(crate) cuda_device: Option<i32>,
     /// Run options applied to every `session.run`; set when CUDA arena
     /// shrinkage is enabled.
     pub(self) run_options: Option<ort::session::RunOptions>,
@@ -92,6 +97,13 @@ impl OrtInfer {
             ValueType::Tensor { shape, .. } => Some(shape.iter().copied().collect()),
             _ => None,
         }
+    }
+
+    /// Returns the run options applied to every inference (set when CUDA
+    /// arena shrinkage is enabled), for callers that run a session from
+    /// [`get_session`](Self::get_session) directly.
+    pub fn run_options(&self) -> Option<&ort::session::RunOptions> {
+        self.run_options.as_ref()
     }
 
     /// Returns the declared output names and tensor shapes from the first session.

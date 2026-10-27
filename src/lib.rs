@@ -11,6 +11,7 @@ pub(crate) mod docir;
 pub(crate) mod fallback;
 pub(crate) mod gfm_adapter;
 pub(crate) mod heading_levels;
+pub mod indra_path;
 pub(crate) mod html;
 pub(crate) mod limits;
 pub mod models;

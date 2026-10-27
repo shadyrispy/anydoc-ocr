@@ -63,6 +63,61 @@ impl<'a> TensorInput<'a> {
 }
 
 impl OrtInfer {
+    /// Retains a single float output on the registered CUDA device. Multi-output
+    /// models keep the normal path so binding cannot prune other outputs.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn infer_cuda_output(
+        &self,
+        inputs: &[(&str, TensorInput)],
+    ) -> Result<Option<ort::value::Tensor<f32>>, OCRError> {
+        let Some(device) = self.cuda_device else {
+            return Ok(None);
+        };
+        let idx = self
+            .next_idx
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut session = self.get_session(idx)?;
+        if session.outputs().len() != 1 {
+            return Ok(None);
+        }
+        let mut run = || -> ort::Result<ort::value::Tensor<f32>> {
+            use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
+            let name = session.outputs()[0].name().to_owned();
+            let mut binding = session.create_binding()?;
+            // Keep borrowed host buffers alive through input synchronization/run.
+            let tensors = inputs
+                .iter()
+                .map(|(_, input)| input.to_tensor_ref())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| ort::Error::new(e.to_string()))?;
+            for ((name, _), tensor) in inputs.iter().zip(&tensors) {
+                binding.bind_input(*name, tensor)?;
+            }
+            let memory = MemoryInfo::new(
+                AllocationDevice::CUDA,
+                device,
+                AllocatorType::Device,
+                MemoryType::Default,
+            )?;
+            binding.bind_output_to_device(&name, &memory)?;
+            binding.synchronize_inputs()?;
+            let mut outputs = match &self.run_options {
+                Some(options) => session.run_binding_with_options(&binding, options)?,
+                None => session.run_binding(&binding)?,
+            };
+            binding.synchronize_outputs()?;
+            outputs
+                .remove(&name)
+                .ok_or_else(|| ort::Error::new("missing bound output"))?
+                .downcast()
+        };
+        run().map(Some).map_err(|e| OCRError::Inference {
+            model_name: self.model_name.clone(),
+            context: "CUDA output binding".into(),
+            source: Box::new(e),
+        })
+    }
+
     /// Runs one inference, applying the instance's run options (CUDA arena
     /// shrinkage) when configured.
     fn run_session<'s>(
@@ -240,10 +295,9 @@ impl OrtInfer {
     /// after the session lock is dropped. For text recognition that copy is
     /// ruinous: the `(batch, time, vocab)` logits tensor can total **gigabytes**
     /// per pipeline run (vocab is 6.9k–18.7k), and the copy alone can exceed the
-    /// inference time. This variant keeps the ONNX Runtime output alive and lets
-    /// the caller reduce it straight from the borrowed buffer under the lock.
-    /// Callers should return a compact owned result from `f` so heavier
-    /// postprocessing can proceed after the session lock is released.
+    /// inference time. This variant retains the first output's owned ORT value
+    /// without copying its tensor data, releases the session lock, then borrows
+    /// its buffer for `f`. Postprocessing does not hold up the next session run.
     ///
     /// `f` receives `(shape, data)` where `data` is row-major contiguous.
     pub fn infer_first_output_f32<R>(
@@ -272,7 +326,7 @@ impl OrtInfer {
                 ),
             })?;
 
-        // Read the first output by position (`outputs[0]`) below to avoid
+        // Take the first output by position below to avoid
         // allocating its name as a `String` on every call; validate it exists here.
         if session_guard.outputs().is_empty() {
             return Err(OCRError::InvalidInput {
@@ -308,7 +362,17 @@ impl OrtInfer {
                     .build(e)
             })?;
 
-        let value = &outputs[0];
+        // SessionOutputs borrows the session's output names; its DynValues own
+        // their buffers and retain the session's allocator through an Arc.
+        // Discard the borrowed names before unlocking, keeping only that handle.
+        let value = outputs
+            .into_iter()
+            .next()
+            .map(|(_, value)| value)
+            .ok_or_else(|| OCRError::InvalidInput {
+                message: format!("Model '{}': no output returned", self.model_name),
+            })?;
+        drop(session_guard);
         let (shape, data) =
             value
                 .try_extract_tensor::<f32>()
