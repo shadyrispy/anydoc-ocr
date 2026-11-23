@@ -103,7 +103,10 @@ version = "0.35"
 version = "0.17"
 
 [dependencies.oar-ocr-derive]
-version = "0.10.0"
+# 0.10.3 与 0.11.0 的 proc-macro 源码逐字节相同（ConfigValidator/TaskPredictorBuilder），
+# 此前 0.10.0 是 rebase 遗留错位，导致 Cargo.lock 同时锁两份 derive。统一到 0.11.0
+# 与 core/wrapper 版本一致，消除重复编译单元。
+version = "0.11.0"
 default-features = false
 
 [dependencies.ort]
