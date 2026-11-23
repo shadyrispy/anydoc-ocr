@@ -204,8 +204,8 @@ let json = convert_to_markdown(std::path::Path::new("公文.pdf"), &opts, ForceF
 等效手动方式：
 
 ```bash
-export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.28.2/lib
-export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.28.2/include
+export ORT_LIB_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.31.0/lib
+export ORT_INCLUDE_LOCATION=$PWD/third_party/ort/x64/onnxruntime-linux-x64-1.31.0/include
 export ORT_PREFER_DYNAMIC_LINK=1
 export PDFIUM_LIB_DIR=$PWD/third_party/pdfium/x64/lib
 cargo build --release

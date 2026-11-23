@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use crate::error::{Result, Stage, runtime};
 use image::RgbImage;
+use oar_ocr::core::inference::set_ort_environment;
 use oar_ocr::oarocr::{OARStructure, OARStructureBuilder};
 use oar_ocr::domain::tasks::{LayoutDetectionConfig, TextDetectionConfig};
 
@@ -68,7 +69,22 @@ pub(crate) fn init_runtime(cfg: &crate::convert::ParallelConfig) {
                 return;
             }
         };
-        let _ = ort::init().with_global_thread_pool(opts).commit();
+        // ort rc.15：commit() 已移除，每进程仅一个 Environment，且 OAR 0.11 自行 build。
+        // 必须把自建 env 交给 OAR，否则 OAR 二次 build 报 "only one environment is allowed per process"。
+        match ort::init().with_global_thread_pool(opts).build() {
+            Ok(env) => {
+                if let Err(e) = set_ort_environment(env) {
+                    eprintln!(
+                        "[anydoc-ocr] 警告：安装自定义 ORT Environment 失败（{e}）；OAR 将用自建环境，线程池配置可能不生效"
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[anydoc-ocr] 警告：构建带线程池的 ORT Environment 失败（{e}）；回落 ORT 默认线程池"
+                );
+            }
+        }
     });
 }
 

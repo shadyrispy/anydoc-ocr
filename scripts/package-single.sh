@@ -67,7 +67,7 @@ arch_conf() {
     x86_64)
       TARGET=x86_64-unknown-linux-gnu
       PKG_DIR=anydoc-ocr-linux-x86_64
-      ORT_SO="third_party/ort/x64/onnxruntime-linux-x64-1.28.2/lib/libonnxruntime.so"
+      ORT_SO="third_party/ort/x64/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so"
       PDFIUM_SO="third_party/pdfium/x64/lib/libpdfium.so"
       BIN="target/release/anydoc-ocr"   # host 构建（无 triple 前缀目录）
       ;;
