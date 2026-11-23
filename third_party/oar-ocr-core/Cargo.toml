@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "oar-ocr-core"
-version = "0.10.2"
+version = "0.11.0"
 authors = ["Wang Xin <xinwang614@gmail.com>"]
 build = false
 autolib = false
@@ -107,7 +107,7 @@ version = "0.10.0"
 default-features = false
 
 [dependencies.ort]
-version = "=2.0.0-rc.13"
+version = "=2.0.0-rc.15"
 features = [
     "std",
     "ndarray",

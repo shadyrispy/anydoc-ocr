@@ -6,21 +6,21 @@ edition = "2024"
 [dependencies]
 # 版本策略（P0-4，spec ADR 附录）：深耦合（行为镜像/特性镜像/RC/0.x 演进期）锁 "="，
 # 纯 Rust 工具库统一 "^"（patch/minor 可吸收，Cargo.lock 锁定实际版本）。
-anydoc = "=0.2.4"          # 行为镜像其私有 map_error（error.rs），锁死
+anydoc = "=0.2.5"          # 行为镜像其私有 map_error（error.rs），锁死；0.2.5 修 zip 8.x 五个 CVE
 clap = { version = "4", features = ["derive"] }
 image = "^0.25.10"
 # Step 5：HTML → GFM 结构化通道（html5ever 解析，纯 Rust；anydoc 0.2.4 无 HTML 前端）
-htmd = "=0.5.5"
+htmd = "=0.6.0"
 # 末页表探针零拷贝映射（T11）：已由 fontdb 传递引入，提升为直接依赖不增编译单元
 memmap2 = "^0.9.11"
 # #11b-v2 文字层页框读取（MediaBox/CropBox 继承链）：pdf-inspector 的
 # `visible_page_box` 是 pub(crate)，用其同款 lopdf 复刻读取规则（不 vendor）
 lopdf = "^0.45.0"
-oar-ocr = { version = "=0.10.2", default-features = false, features = ["auto-download", "simd"] }
-# 直接依赖 ort（与 oar-ocr-core 锁定的 =2.0.0-rc.13 同版本、特性完全镜像），
+oar-ocr = { version = "=0.11.0", default-features = false, features = ["auto-download", "simd"] }
+# 直接依赖 ort（与 oar-ocr-core 锁定的 =2.0.0-rc.15 同版本、特性完全镜像），
 # 仅为拿到进程级线程池 API（A：消除 rayon×ORT 线程超额订阅）。特性与上游一致，
 # Cargo 自动合一、不引入第二份、不改链接行为（仍走 ORT_LIB_PATH）。
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "copy-dylibs"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "tracing", "copy-dylibs"] }
 ofd-core = "=0.3.0"        # 0.x 演进期，错误映射逐变体（error.rs），锁死
 pdf-inspector = "^1.24.0"
 pdfium-render = "^0.9.4"

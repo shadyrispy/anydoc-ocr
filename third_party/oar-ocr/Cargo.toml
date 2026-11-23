@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "oar-ocr"
-version = "0.10.2"
+version = "0.11.0"
 authors = ["Wang Xin <xinwang614@gmail.com>"]
 build = false
 autolib = false
@@ -121,11 +121,11 @@ version = "0.25.10"
 version = "0.27.0"
 
 [dependencies.oar-ocr-core]
-version = "0.10.2"
+version = "0.11.0"
 default-features = false
 
 [dependencies.oar-ocr-derive]
-version = "0.10.2"
+version = "0.11.0"
 default-features = false
 
 [dependencies.rayon]
@@ -144,8 +144,11 @@ version = "1.0"
 [dependencies.tracing]
 version = "0.1"
 
+[dependencies.nalgebra]
+version = "0.35"
+
 [dependencies.ort]
-version = "=2.0.0-rc.13"
+version = "=2.0.0-rc.15"
 default-features = false
 features = ["std"]
 
@@ -164,7 +167,7 @@ features = ["general-category"]
 default-features = false
 
 [dependencies.zip]
-version = "8.6"
+version = "9.5"
 default-features = false
 features = ["deflate-flate2"]
 
@@ -179,7 +182,7 @@ features = ["derive"]
 version = "0.24"
 
 [dev-dependencies.hayro]
-version = "0.8"
+version = "0.9"
 
 [dev-dependencies.tempfile]
 version = "3.19"
