@@ -25,7 +25,10 @@ permissions:
   contents: write
 
 env:
-  ORT_VER: '1.28.2'
+  # 与 build-x64.sh / ort 2.0.0-rc.15（面向 ONNX Runtime 1.31）保持一致；
+  # 旧值 1.28.2 只存在于 aarch64 本地脚本，曾导致 x64 CI 下载 1.28.2 却按
+  # 1.31.0 路径找库而失败。双架构统一由本变量驱动下载与 ORT_LIB_LOCATION。
+  ORT_VER: '1.31.0'
 
 jobs:
   build-x86_64:
@@ -124,8 +127,8 @@ jobs:
 
       - name: Build release (aarch64 native)
         env:
-          ORT_LIB_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.28.2/lib
-          ORT_INCLUDE_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-1.28.2/include
+          ORT_LIB_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-${{ env.ORT_VER }}/lib
+          ORT_INCLUDE_LOCATION: ${{ github.workspace }}/third_party/ort/aarch64/onnxruntime-linux-aarch64-${{ env.ORT_VER }}/include
           PDFIUM_LIB_DIR: ${{ github.workspace }}/third_party/pdfium/aarch64/lib
           ORT_PREFER_DYNAMIC_LINK: '1'
         run: |
