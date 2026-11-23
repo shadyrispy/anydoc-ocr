@@ -60,7 +60,7 @@ arch_conf() {
     aarch64)
       TARGET=aarch64-unknown-linux-gnu
       PKG_DIR=anydoc-ocr-linux-arm64
-      ORT_SO="third_party/ort/aarch64/onnxruntime-linux-aarch64-1.28.2/lib/libonnxruntime.so"
+      ORT_SO="third_party/ort/aarch64/onnxruntime-linux-aarch64-1.31.0/lib/libonnxruntime.so"
       PDFIUM_SO="third_party/pdfium/aarch64/lib/libpdfium.so"
       BIN="target/$TARGET/release/anydoc-ocr"
       ;;
