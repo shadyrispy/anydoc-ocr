@@ -40,7 +40,8 @@ esac
 # CLI 撤下而不再内嵌——包内启动器恒注入 tiny/small 档，走不到 table 版面。
 COMMON_MODELS="slanet_plus.onnx \
 pp-lcnet_x1_0_table_cls.onnx table_structure_dict_ch.txt \
-pp-lcnet_x1_0_doc_ori.onnx"
+pp-lcnet_x1_0_doc_ori.onnx \
+pp-ocrv4_mobile_seal_det.onnx"
 TINY_MODELS="pp-doclayout-s.onnx \
 pp-ocrv6_tiny_det.onnx pp-ocrv6_tiny_rec.onnx ppocrv6_tiny_dict.txt"
 SMALL_MODELS="pp-doclayout-m.onnx \
@@ -94,17 +95,19 @@ pack_arch() {
 
   # 离线模型：内嵌所选档（复用 auto-download 布局：扁平 + .sha256 伴生）
   local PACKED=0 m
+  local MDIR="${OAR_MODEL_SRC:-$HOME/.oar}"
   for m in $MODELS; do
-    if [ -f "$HOME/.oar/$m" ]; then
-      cp "$HOME/.oar/$m" "$STAGE/oar-home/"
-      [ -f "$HOME/.oar/$m.sha256" ] && cp "$HOME/.oar/$m.sha256" "$STAGE/oar-home/"
+    if [ -f "$MDIR/$m" ]; then
+      cp "$MDIR/$m" "$STAGE/oar-home/"
+      [ -f "$MDIR/.$m.sha256" ] && cp "$MDIR/.$m.sha256" "$STAGE/oar-home/"
+      [ -f "$MDIR/$m.sha256" ] && cp "$MDIR/$m.sha256" "$STAGE/oar-home/"
       PACKED=$((PACKED + 1))
     fi
   done
   local EXPECTED
   EXPECTED=$(printf '%s\n' $MODELS | wc -l)
   if [ "$PACKED" -ne "$EXPECTED" ]; then
-    echo "警告: $HOME/.oar 模型不全（${PACKED}/${EXPECTED} 件，${TIER} 档），缺件将在线下载"
+    echo "警告: $MDIR 模型不全（${PACKED}/${EXPECTED} 件，${TIER} 档），缺件将在线下载"
   fi
 }
 
@@ -191,6 +194,8 @@ DIR="\${ANYDOC_INSTALL_DIR:-\$HOME/.anydoc-ocr}"
 exec "\$DIR/run.sh" "\$@"
 CMDEOF
   chmod +x "$BIN_DIR/anydoc"
+  # 同时提供 anydoc-ocr（与 anydoc 等价，兼容上游命令名）
+  ln -sf "$BIN_DIR/anydoc" "$BIN_DIR/anydoc-ocr"
 
   # PATH 追加（幂等）：~/.local/bin 不在 PATH 则写 shell rc
   if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
